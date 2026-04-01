@@ -31,7 +31,7 @@ int main() {
 
     char buffer[1024];
     memset(buffer, 0, sizeof(buffer));
-    std::cin.getline(buffer, sizeof(buffer));  //从标准输入读一行
+    std::cin.getline(buffer, sizeof(buffer));  // 从标准输入读一行
     write(client_fd, buffer, strlen(buffer));
 
     char recv_buf[1024];
