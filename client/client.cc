@@ -5,6 +5,15 @@
 #include <cstring>
 #include <iostream>
 
+/**
+ * @file client.cc
+ * @brief Simple interactive TCP client for manual server testing.
+ */
+
+/**
+ * @brief Connects to the server, sends one line, and prints one response.
+ * @return 0 on success, non-zero on failure.
+ */
 int main() {
     int client_fd = socket(AF_INET, SOCK_STREAM, 0);
     if (client_fd == -1) {
@@ -32,6 +41,10 @@ int main() {
     char buffer[1024];
     memset(buffer, 0, sizeof(buffer));
     std::cin.getline(buffer, sizeof(buffer));  // 从标准输入读一行
+    while (strlen(buffer) == 0) {
+        std::cout << "没有正确输入内容，请重新输入\n";
+        std::cin.getline(buffer, sizeof(buffer));
+    }
     write(client_fd, buffer, strlen(buffer));
 
     char recv_buf[1024];

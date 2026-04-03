@@ -1,1 +1,1 @@
-/usr/bin/c++ CMakeFiles/server.dir/src/server.cc.o -o server 
+/usr/bin/c++ CMakeFiles/server.dir/src/main.cc.o CMakeFiles/server.dir/src/TcpConnection.cc.o CMakeFiles/server.dir/src/EchoHandler.cc.o CMakeFiles/server.dir/src/TcpServer.cc.o -o server 

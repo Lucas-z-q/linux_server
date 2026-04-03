@@ -3,6 +3,11 @@
 #include <unistd.h>
 #include <cstring>
 
+/**
+ * @file TcpConnection.cc
+ * @brief Implements TcpConnection socket operations.
+ */
+
 TcpConnection::TcpConnection(int conn_fd, const std::string& peer_ip, uint16_t peer_port)
     : conn_fd_(conn_fd), peer_ip_(peer_ip), peer_prot_(peer_port) {}
 

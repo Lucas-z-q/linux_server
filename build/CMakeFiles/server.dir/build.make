@@ -69,31 +69,79 @@ include CMakeFiles/server.dir/progress.make
 # Include the compile flags for this target's objects.
 include CMakeFiles/server.dir/flags.make
 
-CMakeFiles/server.dir/src/server.cc.o: CMakeFiles/server.dir/flags.make
-CMakeFiles/server.dir/src/server.cc.o: ../src/server.cc
-CMakeFiles/server.dir/src/server.cc.o: CMakeFiles/server.dir/compiler_depend.ts
-	@$(CMAKE_COMMAND) -E cmake_echo_color --switch=$(COLOR) --green --progress-dir=/home/lzq/coding/linux_server/build/CMakeFiles --progress-num=$(CMAKE_PROGRESS_1) "Building CXX object CMakeFiles/server.dir/src/server.cc.o"
-	/usr/bin/c++ $(CXX_DEFINES) $(CXX_INCLUDES) $(CXX_FLAGS) -MD -MT CMakeFiles/server.dir/src/server.cc.o -MF CMakeFiles/server.dir/src/server.cc.o.d -o CMakeFiles/server.dir/src/server.cc.o -c /home/lzq/coding/linux_server/src/server.cc
+CMakeFiles/server.dir/src/main.cc.o: CMakeFiles/server.dir/flags.make
+CMakeFiles/server.dir/src/main.cc.o: ../src/main.cc
+CMakeFiles/server.dir/src/main.cc.o: CMakeFiles/server.dir/compiler_depend.ts
+	@$(CMAKE_COMMAND) -E cmake_echo_color --switch=$(COLOR) --green --progress-dir=/home/lzq/coding/linux_server/build/CMakeFiles --progress-num=$(CMAKE_PROGRESS_1) "Building CXX object CMakeFiles/server.dir/src/main.cc.o"
+	/usr/bin/c++ $(CXX_DEFINES) $(CXX_INCLUDES) $(CXX_FLAGS) -MD -MT CMakeFiles/server.dir/src/main.cc.o -MF CMakeFiles/server.dir/src/main.cc.o.d -o CMakeFiles/server.dir/src/main.cc.o -c /home/lzq/coding/linux_server/src/main.cc
 
-CMakeFiles/server.dir/src/server.cc.i: cmake_force
-	@$(CMAKE_COMMAND) -E cmake_echo_color --switch=$(COLOR) --green "Preprocessing CXX source to CMakeFiles/server.dir/src/server.cc.i"
-	/usr/bin/c++ $(CXX_DEFINES) $(CXX_INCLUDES) $(CXX_FLAGS) -E /home/lzq/coding/linux_server/src/server.cc > CMakeFiles/server.dir/src/server.cc.i
+CMakeFiles/server.dir/src/main.cc.i: cmake_force
+	@$(CMAKE_COMMAND) -E cmake_echo_color --switch=$(COLOR) --green "Preprocessing CXX source to CMakeFiles/server.dir/src/main.cc.i"
+	/usr/bin/c++ $(CXX_DEFINES) $(CXX_INCLUDES) $(CXX_FLAGS) -E /home/lzq/coding/linux_server/src/main.cc > CMakeFiles/server.dir/src/main.cc.i
 
-CMakeFiles/server.dir/src/server.cc.s: cmake_force
-	@$(CMAKE_COMMAND) -E cmake_echo_color --switch=$(COLOR) --green "Compiling CXX source to assembly CMakeFiles/server.dir/src/server.cc.s"
-	/usr/bin/c++ $(CXX_DEFINES) $(CXX_INCLUDES) $(CXX_FLAGS) -S /home/lzq/coding/linux_server/src/server.cc -o CMakeFiles/server.dir/src/server.cc.s
+CMakeFiles/server.dir/src/main.cc.s: cmake_force
+	@$(CMAKE_COMMAND) -E cmake_echo_color --switch=$(COLOR) --green "Compiling CXX source to assembly CMakeFiles/server.dir/src/main.cc.s"
+	/usr/bin/c++ $(CXX_DEFINES) $(CXX_INCLUDES) $(CXX_FLAGS) -S /home/lzq/coding/linux_server/src/main.cc -o CMakeFiles/server.dir/src/main.cc.s
+
+CMakeFiles/server.dir/src/TcpConnection.cc.o: CMakeFiles/server.dir/flags.make
+CMakeFiles/server.dir/src/TcpConnection.cc.o: ../src/TcpConnection.cc
+CMakeFiles/server.dir/src/TcpConnection.cc.o: CMakeFiles/server.dir/compiler_depend.ts
+	@$(CMAKE_COMMAND) -E cmake_echo_color --switch=$(COLOR) --green --progress-dir=/home/lzq/coding/linux_server/build/CMakeFiles --progress-num=$(CMAKE_PROGRESS_2) "Building CXX object CMakeFiles/server.dir/src/TcpConnection.cc.o"
+	/usr/bin/c++ $(CXX_DEFINES) $(CXX_INCLUDES) $(CXX_FLAGS) -MD -MT CMakeFiles/server.dir/src/TcpConnection.cc.o -MF CMakeFiles/server.dir/src/TcpConnection.cc.o.d -o CMakeFiles/server.dir/src/TcpConnection.cc.o -c /home/lzq/coding/linux_server/src/TcpConnection.cc
+
+CMakeFiles/server.dir/src/TcpConnection.cc.i: cmake_force
+	@$(CMAKE_COMMAND) -E cmake_echo_color --switch=$(COLOR) --green "Preprocessing CXX source to CMakeFiles/server.dir/src/TcpConnection.cc.i"
+	/usr/bin/c++ $(CXX_DEFINES) $(CXX_INCLUDES) $(CXX_FLAGS) -E /home/lzq/coding/linux_server/src/TcpConnection.cc > CMakeFiles/server.dir/src/TcpConnection.cc.i
+
+CMakeFiles/server.dir/src/TcpConnection.cc.s: cmake_force
+	@$(CMAKE_COMMAND) -E cmake_echo_color --switch=$(COLOR) --green "Compiling CXX source to assembly CMakeFiles/server.dir/src/TcpConnection.cc.s"
+	/usr/bin/c++ $(CXX_DEFINES) $(CXX_INCLUDES) $(CXX_FLAGS) -S /home/lzq/coding/linux_server/src/TcpConnection.cc -o CMakeFiles/server.dir/src/TcpConnection.cc.s
+
+CMakeFiles/server.dir/src/EchoHandler.cc.o: CMakeFiles/server.dir/flags.make
+CMakeFiles/server.dir/src/EchoHandler.cc.o: ../src/EchoHandler.cc
+CMakeFiles/server.dir/src/EchoHandler.cc.o: CMakeFiles/server.dir/compiler_depend.ts
+	@$(CMAKE_COMMAND) -E cmake_echo_color --switch=$(COLOR) --green --progress-dir=/home/lzq/coding/linux_server/build/CMakeFiles --progress-num=$(CMAKE_PROGRESS_3) "Building CXX object CMakeFiles/server.dir/src/EchoHandler.cc.o"
+	/usr/bin/c++ $(CXX_DEFINES) $(CXX_INCLUDES) $(CXX_FLAGS) -MD -MT CMakeFiles/server.dir/src/EchoHandler.cc.o -MF CMakeFiles/server.dir/src/EchoHandler.cc.o.d -o CMakeFiles/server.dir/src/EchoHandler.cc.o -c /home/lzq/coding/linux_server/src/EchoHandler.cc
+
+CMakeFiles/server.dir/src/EchoHandler.cc.i: cmake_force
+	@$(CMAKE_COMMAND) -E cmake_echo_color --switch=$(COLOR) --green "Preprocessing CXX source to CMakeFiles/server.dir/src/EchoHandler.cc.i"
+	/usr/bin/c++ $(CXX_DEFINES) $(CXX_INCLUDES) $(CXX_FLAGS) -E /home/lzq/coding/linux_server/src/EchoHandler.cc > CMakeFiles/server.dir/src/EchoHandler.cc.i
+
+CMakeFiles/server.dir/src/EchoHandler.cc.s: cmake_force
+	@$(CMAKE_COMMAND) -E cmake_echo_color --switch=$(COLOR) --green "Compiling CXX source to assembly CMakeFiles/server.dir/src/EchoHandler.cc.s"
+	/usr/bin/c++ $(CXX_DEFINES) $(CXX_INCLUDES) $(CXX_FLAGS) -S /home/lzq/coding/linux_server/src/EchoHandler.cc -o CMakeFiles/server.dir/src/EchoHandler.cc.s
+
+CMakeFiles/server.dir/src/TcpServer.cc.o: CMakeFiles/server.dir/flags.make
+CMakeFiles/server.dir/src/TcpServer.cc.o: ../src/TcpServer.cc
+CMakeFiles/server.dir/src/TcpServer.cc.o: CMakeFiles/server.dir/compiler_depend.ts
+	@$(CMAKE_COMMAND) -E cmake_echo_color --switch=$(COLOR) --green --progress-dir=/home/lzq/coding/linux_server/build/CMakeFiles --progress-num=$(CMAKE_PROGRESS_4) "Building CXX object CMakeFiles/server.dir/src/TcpServer.cc.o"
+	/usr/bin/c++ $(CXX_DEFINES) $(CXX_INCLUDES) $(CXX_FLAGS) -MD -MT CMakeFiles/server.dir/src/TcpServer.cc.o -MF CMakeFiles/server.dir/src/TcpServer.cc.o.d -o CMakeFiles/server.dir/src/TcpServer.cc.o -c /home/lzq/coding/linux_server/src/TcpServer.cc
+
+CMakeFiles/server.dir/src/TcpServer.cc.i: cmake_force
+	@$(CMAKE_COMMAND) -E cmake_echo_color --switch=$(COLOR) --green "Preprocessing CXX source to CMakeFiles/server.dir/src/TcpServer.cc.i"
+	/usr/bin/c++ $(CXX_DEFINES) $(CXX_INCLUDES) $(CXX_FLAGS) -E /home/lzq/coding/linux_server/src/TcpServer.cc > CMakeFiles/server.dir/src/TcpServer.cc.i
+
+CMakeFiles/server.dir/src/TcpServer.cc.s: cmake_force
+	@$(CMAKE_COMMAND) -E cmake_echo_color --switch=$(COLOR) --green "Compiling CXX source to assembly CMakeFiles/server.dir/src/TcpServer.cc.s"
+	/usr/bin/c++ $(CXX_DEFINES) $(CXX_INCLUDES) $(CXX_FLAGS) -S /home/lzq/coding/linux_server/src/TcpServer.cc -o CMakeFiles/server.dir/src/TcpServer.cc.s
 
 # Object files for target server
 server_OBJECTS = \
-"CMakeFiles/server.dir/src/server.cc.o"
+"CMakeFiles/server.dir/src/main.cc.o" \
+"CMakeFiles/server.dir/src/TcpConnection.cc.o" \
+"CMakeFiles/server.dir/src/EchoHandler.cc.o" \
+"CMakeFiles/server.dir/src/TcpServer.cc.o"
 
 # External object files for target server
 server_EXTERNAL_OBJECTS =
 
-server: CMakeFiles/server.dir/src/server.cc.o
+server: CMakeFiles/server.dir/src/main.cc.o
+server: CMakeFiles/server.dir/src/TcpConnection.cc.o
+server: CMakeFiles/server.dir/src/EchoHandler.cc.o
+server: CMakeFiles/server.dir/src/TcpServer.cc.o
 server: CMakeFiles/server.dir/build.make
 server: CMakeFiles/server.dir/link.txt
-	@$(CMAKE_COMMAND) -E cmake_echo_color --switch=$(COLOR) --green --bold --progress-dir=/home/lzq/coding/linux_server/build/CMakeFiles --progress-num=$(CMAKE_PROGRESS_2) "Linking CXX executable server"
+	@$(CMAKE_COMMAND) -E cmake_echo_color --switch=$(COLOR) --green --bold --progress-dir=/home/lzq/coding/linux_server/build/CMakeFiles --progress-num=$(CMAKE_PROGRESS_5) "Linking CXX executable server"
 	$(CMAKE_COMMAND) -E cmake_link_script CMakeFiles/server.dir/link.txt --verbose=$(VERBOSE)
 
 # Rule to build all files generated by this target.

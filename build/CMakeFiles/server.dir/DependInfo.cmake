@@ -8,7 +8,10 @@ set(CMAKE_DEPENDS_LANGUAGES
 
 # The set of dependency files which are needed:
 set(CMAKE_DEPENDS_DEPENDENCY_FILES
-  "/home/lzq/coding/linux_server/src/server.cc" "CMakeFiles/server.dir/src/server.cc.o" "gcc" "CMakeFiles/server.dir/src/server.cc.o.d"
+  "/home/lzq/coding/linux_server/src/EchoHandler.cc" "CMakeFiles/server.dir/src/EchoHandler.cc.o" "gcc" "CMakeFiles/server.dir/src/EchoHandler.cc.o.d"
+  "/home/lzq/coding/linux_server/src/TcpConnection.cc" "CMakeFiles/server.dir/src/TcpConnection.cc.o" "gcc" "CMakeFiles/server.dir/src/TcpConnection.cc.o.d"
+  "/home/lzq/coding/linux_server/src/TcpServer.cc" "CMakeFiles/server.dir/src/TcpServer.cc.o" "gcc" "CMakeFiles/server.dir/src/TcpServer.cc.o.d"
+  "/home/lzq/coding/linux_server/src/main.cc" "CMakeFiles/server.dir/src/main.cc.o" "gcc" "CMakeFiles/server.dir/src/main.cc.o.d"
   )
 
 # Targets to which this target links.

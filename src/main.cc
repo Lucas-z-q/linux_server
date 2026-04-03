@@ -6,6 +6,15 @@
 #include "EchoHandler.h"
 #include "TcpServer.h"
 
+/**
+ * @file main.cc
+ * @brief Entry point for starting the TCP echo server.
+ */
+
+/**
+ * @brief Creates and runs the TCP server.
+ * @return 0 on success, non-zero on startup failure.
+ */
 int main() {
     EchoHandler tmp;
     TcpServer server("127.0.0.1", 8080, tmp);

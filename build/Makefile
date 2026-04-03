@@ -166,29 +166,101 @@ client/client.cc.s:
 	$(MAKE) $(MAKESILENT) -f CMakeFiles/client.dir/build.make CMakeFiles/client.dir/client/client.cc.s
 .PHONY : client/client.cc.s
 
-src/server.o: src/server.cc.o
-.PHONY : src/server.o
+src/EchoHandler.o: src/EchoHandler.cc.o
+.PHONY : src/EchoHandler.o
 
 # target to build an object file
-src/server.cc.o:
-	$(MAKE) $(MAKESILENT) -f CMakeFiles/server.dir/build.make CMakeFiles/server.dir/src/server.cc.o
-.PHONY : src/server.cc.o
+src/EchoHandler.cc.o:
+	$(MAKE) $(MAKESILENT) -f CMakeFiles/server.dir/build.make CMakeFiles/server.dir/src/EchoHandler.cc.o
+.PHONY : src/EchoHandler.cc.o
 
-src/server.i: src/server.cc.i
-.PHONY : src/server.i
+src/EchoHandler.i: src/EchoHandler.cc.i
+.PHONY : src/EchoHandler.i
 
 # target to preprocess a source file
-src/server.cc.i:
-	$(MAKE) $(MAKESILENT) -f CMakeFiles/server.dir/build.make CMakeFiles/server.dir/src/server.cc.i
-.PHONY : src/server.cc.i
+src/EchoHandler.cc.i:
+	$(MAKE) $(MAKESILENT) -f CMakeFiles/server.dir/build.make CMakeFiles/server.dir/src/EchoHandler.cc.i
+.PHONY : src/EchoHandler.cc.i
 
-src/server.s: src/server.cc.s
-.PHONY : src/server.s
+src/EchoHandler.s: src/EchoHandler.cc.s
+.PHONY : src/EchoHandler.s
 
 # target to generate assembly for a file
-src/server.cc.s:
-	$(MAKE) $(MAKESILENT) -f CMakeFiles/server.dir/build.make CMakeFiles/server.dir/src/server.cc.s
-.PHONY : src/server.cc.s
+src/EchoHandler.cc.s:
+	$(MAKE) $(MAKESILENT) -f CMakeFiles/server.dir/build.make CMakeFiles/server.dir/src/EchoHandler.cc.s
+.PHONY : src/EchoHandler.cc.s
+
+src/TcpConnection.o: src/TcpConnection.cc.o
+.PHONY : src/TcpConnection.o
+
+# target to build an object file
+src/TcpConnection.cc.o:
+	$(MAKE) $(MAKESILENT) -f CMakeFiles/server.dir/build.make CMakeFiles/server.dir/src/TcpConnection.cc.o
+.PHONY : src/TcpConnection.cc.o
+
+src/TcpConnection.i: src/TcpConnection.cc.i
+.PHONY : src/TcpConnection.i
+
+# target to preprocess a source file
+src/TcpConnection.cc.i:
+	$(MAKE) $(MAKESILENT) -f CMakeFiles/server.dir/build.make CMakeFiles/server.dir/src/TcpConnection.cc.i
+.PHONY : src/TcpConnection.cc.i
+
+src/TcpConnection.s: src/TcpConnection.cc.s
+.PHONY : src/TcpConnection.s
+
+# target to generate assembly for a file
+src/TcpConnection.cc.s:
+	$(MAKE) $(MAKESILENT) -f CMakeFiles/server.dir/build.make CMakeFiles/server.dir/src/TcpConnection.cc.s
+.PHONY : src/TcpConnection.cc.s
+
+src/TcpServer.o: src/TcpServer.cc.o
+.PHONY : src/TcpServer.o
+
+# target to build an object file
+src/TcpServer.cc.o:
+	$(MAKE) $(MAKESILENT) -f CMakeFiles/server.dir/build.make CMakeFiles/server.dir/src/TcpServer.cc.o
+.PHONY : src/TcpServer.cc.o
+
+src/TcpServer.i: src/TcpServer.cc.i
+.PHONY : src/TcpServer.i
+
+# target to preprocess a source file
+src/TcpServer.cc.i:
+	$(MAKE) $(MAKESILENT) -f CMakeFiles/server.dir/build.make CMakeFiles/server.dir/src/TcpServer.cc.i
+.PHONY : src/TcpServer.cc.i
+
+src/TcpServer.s: src/TcpServer.cc.s
+.PHONY : src/TcpServer.s
+
+# target to generate assembly for a file
+src/TcpServer.cc.s:
+	$(MAKE) $(MAKESILENT) -f CMakeFiles/server.dir/build.make CMakeFiles/server.dir/src/TcpServer.cc.s
+.PHONY : src/TcpServer.cc.s
+
+src/main.o: src/main.cc.o
+.PHONY : src/main.o
+
+# target to build an object file
+src/main.cc.o:
+	$(MAKE) $(MAKESILENT) -f CMakeFiles/server.dir/build.make CMakeFiles/server.dir/src/main.cc.o
+.PHONY : src/main.cc.o
+
+src/main.i: src/main.cc.i
+.PHONY : src/main.i
+
+# target to preprocess a source file
+src/main.cc.i:
+	$(MAKE) $(MAKESILENT) -f CMakeFiles/server.dir/build.make CMakeFiles/server.dir/src/main.cc.i
+.PHONY : src/main.cc.i
+
+src/main.s: src/main.cc.s
+.PHONY : src/main.s
+
+# target to generate assembly for a file
+src/main.cc.s:
+	$(MAKE) $(MAKESILENT) -f CMakeFiles/server.dir/build.make CMakeFiles/server.dir/src/main.cc.s
+.PHONY : src/main.cc.s
 
 # Help Target
 help:
@@ -203,9 +275,18 @@ help:
 	@echo "... client/client.o"
 	@echo "... client/client.i"
 	@echo "... client/client.s"
-	@echo "... src/server.o"
-	@echo "... src/server.i"
-	@echo "... src/server.s"
+	@echo "... src/EchoHandler.o"
+	@echo "... src/EchoHandler.i"
+	@echo "... src/EchoHandler.s"
+	@echo "... src/TcpConnection.o"
+	@echo "... src/TcpConnection.i"
+	@echo "... src/TcpConnection.s"
+	@echo "... src/TcpServer.o"
+	@echo "... src/TcpServer.i"
+	@echo "... src/TcpServer.s"
+	@echo "... src/main.o"
+	@echo "... src/main.i"
+	@echo "... src/main.s"
 .PHONY : help
 
 

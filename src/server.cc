@@ -5,6 +5,15 @@
 #include <cstring>
 #include <iostream>
 
+/**
+ * @file server.cc
+ * @brief Standalone legacy TCP server example (not built by current CMake target).
+ */
+
+/**
+ * @brief Demonstration server entry point.
+ * @return 0 on normal exit, non-zero on startup error.
+ */
 int main() {
     //创建套接字
     // AF_INET:IPV4,SOCK_STREAM:TCP
