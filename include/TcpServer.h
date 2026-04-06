@@ -65,21 +65,14 @@ private:
     bool startListen();
 
     /**
-     * @brief Accepts client connections in a blocking loop.
+     * @brief Runs the epoll event loop.
+     * @param epoll_fd epoll instance descriptor.
      */
-    void acceptLoop();
-
-    /**
-     * @brief Handles one connected client in a blocking read/write loop.
-     * @param conn_fd Connected socket descriptor.
-     * @param peer_id Remote client IPv4 string.
-     * @param peer_port Remote client TCP port.
-     */
-    void handleClient(int conn_fd, const std::string& peer_id, uint16_t peer_port,
-                      uint64_t conn_id);
+    void acceptLoop(int epoll_fd);
 
 private:
     int listen_fd_;
+    int epoll_fd_;
     std::string ip_;
     uint16_t port_;
     IMessageHandler& handler_;
@@ -123,4 +116,11 @@ private:
      * @param meta Connection metadata snapshot.
      */
     void logConnectionMeta(const ConnectionMeta& meta);
+
+    /**
+     * @brief Sets a socket descriptor to non-blocking mode.
+     * @param fd Socket descriptor.
+     * @return true on success, otherwise false.
+     */
+    bool set_nonblocking(int fd);
 };

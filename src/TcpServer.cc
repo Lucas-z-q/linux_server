@@ -1,6 +1,9 @@
 #include "TcpServer.h"
 #include <arpa/inet.h>
+#include <cerrno>
+#include <fcntl.h>
 #include <netinet/in.h>
+#include <sys/epoll.h>
 #include <sys/socket.h>
 #include <unistd.h>
 #include <chrono>
@@ -8,15 +11,14 @@
 #include <iomanip>
 #include <iostream>
 #include <sstream>
-#include "TcpConnection.h"
 
 /**
  * @file TcpServer.cc
- * @brief Implements TcpServer lifecycle and client handling loop.
+ * @brief Implements TcpServer lifecycle and the commit1 epoll skeleton.
  */
 
 TcpServer::TcpServer(const std::string& ip, uint16_t port, IMessageHandler& handler)
-    : listen_fd_(-1), ip_(ip), port_(port), handler_(handler) {}
+    : listen_fd_(-1), epoll_fd_(-1), ip_(ip), port_(port), handler_(handler) {}
 
 TcpServer::~TcpServer() {
     stop();
@@ -55,10 +57,30 @@ bool TcpServer::startListen() {
 }
 
 void TcpServer::stop() {
+    // Close epoll first so it no longer reports events on managed sockets.
+    if (epoll_fd_ != -1) {
+        close(epoll_fd_);
+        epoll_fd_ = -1;
+    }
+
     if (listen_fd_ != -1) {
         close(listen_fd_);
     }
     listen_fd_ = -1;
+}
+
+bool TcpServer::set_nonblocking(int fd) {
+    int flags = fcntl(fd, F_GETFL, 0);
+    if (flags == -1) {
+        perror("fcntl(F_GETFL) failed");
+        return false;
+    }
+
+    if (fcntl(fd, F_SETFL, flags | O_NONBLOCK) == -1) {
+        perror("fcntl(F_SETFL) failed");
+        return false;
+    }
+    return true;
 }
 
 bool TcpServer::start() {
@@ -71,64 +93,89 @@ bool TcpServer::start() {
     if (!startListen())
         return false;
 
-    acceptLoop();
+    // EPOLLET requires non-blocking sockets, otherwise edge-trigger behavior is unsafe.
+    if (!set_nonblocking(listen_fd_)) {
+        stop();
+        return false;
+    }
+
+    epoll_fd_ = epoll_create1(0);
+    if (epoll_fd_ < 0) {
+        perror("epoll_create failed.");
+        stop();
+        return false;
+    }
+
+    // Commit1 scope: only register the listen fd and build the event loop skeleton.
+    struct epoll_event event;
+    event.events = EPOLLIN | EPOLLET;
+    event.data.fd = listen_fd_;
+    if (epoll_ctl(epoll_fd_, EPOLL_CTL_ADD, listen_fd_, &event) < 0) {
+        perror("epoll_ctl add listen_fd failed");
+        stop();
+        return false;
+    }
+
+    acceptLoop(epoll_fd_);
     return true;
 }
 
-void TcpServer::acceptLoop() {
+void TcpServer::acceptLoop(int epoll_fd) {
+    constexpr int kMaxEvents = 1024;
+    struct epoll_event events[kMaxEvents];
     struct sockaddr_in client_addr;
+
     while (true) {
-        socklen_t client_len = sizeof(client_addr);
-        int client_fd = accept(listen_fd_, (struct sockaddr*)&client_addr, &client_len);
-
-        if (client_fd < 0) {
-            perror("Accept failed");
-            stop();
-            return;
-        }
-
-        std::cout << "Client accept! "
-                  << "IP: " << inet_ntoa(client_addr.sin_addr)
-                  << ", port: " << ntohs(client_addr.sin_port) << std::endl;
-
-        uint64_t conn_id = registerConnection(client_fd, inet_ntoa(client_addr.sin_addr),
-                                              ntohs(client_addr.sin_port));
-        handleClient(client_fd, inet_ntoa(client_addr.sin_addr), ntohs(client_addr.sin_port),
-                     conn_id);
-    }
-}
-
-void TcpServer::handleClient(int conn_fd, const std::string& peer_id, uint16_t peer_port,
-                             uint64_t conn_id) {
-    TcpConnection connect(conn_fd, peer_id, peer_port);
-
-    std::string close_reason = "peer_closed";
-    char buffer[1024];
-    while (true) {
-        memset(buffer, 0, sizeof(buffer));
-        ssize_t n = connect.recv(buffer, sizeof(buffer) - 1);
-        if (n > 0) {
-            touchOnRecv(conn_id, static_cast<size_t>(n));
-
-            std::string request(buffer, static_cast<size_t>(n));
-            std::string ret = handler_.handle(request);
-            if (!ret.empty() && connect.sendAll(ret.data(), ret.size())) {
-                touchOnSend(conn_id, ret.size());
-            }
-            continue;
-        }
-        if (n == 0) {
-            close_reason = "peer_closed";
-            break;
-        }
+        int n = epoll_wait(epoll_fd, events, kMaxEvents, -1);
         if (n < 0) {
-            perror("recive failed");
-            close_reason = "recv_error";
+            // Signal interruption is transient.
+            if (errno == EINTR) {
+                continue;
+            }
+            perror("epoll_wait");
             break;
         }
-    }
 
-    unregisterConnection(conn_id, close_reason);
+        for (int i = 0; i < n; ++i) {
+            // Commit1 only handles incoming connection events from listen fd.
+            if (events[i].data.fd != listen_fd_) {
+                continue;
+            }
+
+            // In ET mode, keep accepting until kernel reports no more pending clients.
+            while (true) {
+                socklen_t client_len = sizeof(client_addr);
+                int client_fd = accept(listen_fd_, (struct sockaddr*)&client_addr, &client_len);
+                if (client_fd < 0) {
+                    if (errno == EAGAIN || errno == EWOULDBLOCK) {
+                        break;
+                    }
+                    perror("Accept failed");
+                    stop();
+                    return;
+                }
+
+                if (!set_nonblocking(client_fd)) {
+                    close(client_fd);
+                    continue;
+                }
+
+                // Client IO events are only registered in commit1; no read/write handling yet.
+                struct epoll_event ev;
+                ev.events = EPOLLIN | EPOLLET;
+                ev.data.fd = client_fd;
+                if (epoll_ctl(epoll_fd, EPOLL_CTL_ADD, client_fd, &ev) < 0) {
+                    perror("epoll_ctl add client_fd failed");
+                    close(client_fd);
+                    continue;
+                }
+
+                std::cout << "Client accept! "
+                          << "IP: " << inet_ntoa(client_addr.sin_addr)
+                          << ", port: " << ntohs(client_addr.sin_port) << std::endl;
+            }
+        }
+    }
 }
 
 uint64_t TcpServer::registerConnection(int conn_fd, const std::string& peer_ip,
