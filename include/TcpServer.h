@@ -16,7 +16,8 @@
 /**
  * @brief Blocking TCP server that dispatches client messages to a handler.
  */
-class TcpServer {
+class TcpServer
+{
 public:
     /**
      * @brief Constructs a TCP server instance.
@@ -24,15 +25,15 @@ public:
      * @param port Local TCP port to listen on.
      * @param handler Message handler used to process requests.
      */
-    TcpServer(const std::string& ip, uint16_t port, IMessageHandler& handler);
+    TcpServer(const std::string &ip, uint16_t port, IMessageHandler &handler);
 
     /**
      * @brief Releases server resources.
      */
     ~TcpServer();
 
-    TcpServer(const TcpServer&) = delete;
-    TcpServer& operator=(const TcpServer&) = delete;
+    TcpServer(const TcpServer &) = delete;
+    TcpServer &operator=(const TcpServer &) = delete;
 
     /**
      * @brief Starts listening and enters the accept loop.
@@ -75,11 +76,14 @@ private:
     int epoll_fd_;
     std::string ip_;
     uint16_t port_;
-    IMessageHandler& handler_;
+    IMessageHandler &handler_;
 
-    std::atomic<uint64_t> next_conn_id_{1};  // 连接ID生成器
+    std::atomic<uint64_t> next_conn_id_{1}; // 连接ID生成器
     std::mutex connections_mutex_;
-    std::unordered_map<uint64_t, ConnectionMeta> connections_;  // 活跃连接
+    std::unordered_map<uint64_t, ConnectionMeta> connections_; // 活跃连接
+    // Maps runtime socket fd to server-side conn_id for lifecycle bookkeeping.
+    std::mutex fd_to_conn_id_mutex;
+    std::unordered_map<int, uint64_t> fd_to_conn_id;
 
     /**
      * @brief Registers a newly accepted connection and returns its unique ID.
@@ -88,7 +92,7 @@ private:
      * @param peer_port Remote peer TCP port.
      * @return Server-side unique connection id.
      */
-    uint64_t registerConnection(int conn_fd, const std::string& peer_ip, uint16_t peer_port);
+    uint64_t registerConnection(int conn_fd, const std::string &peer_ip, uint16_t peer_port);
 
     /**
      * @brief Updates connection activity and receive statistics.
@@ -109,13 +113,13 @@ private:
      * @param conn_id Server-side unique connection id.
      * @param reason Human-readable close reason.
      */
-    void unregisterConnection(uint64_t conn_id, const std::string& reason);
+    void unregisterConnection(uint64_t conn_id, const std::string &reason);
 
     /**
      * @brief Prints one connection metadata log entry.
      * @param meta Connection metadata snapshot.
      */
-    void logConnectionMeta(const ConnectionMeta& meta);
+    void logConnectionMeta(const ConnectionMeta &meta);
 
     /**
      * @brief Sets a socket descriptor to non-blocking mode.
@@ -123,4 +127,11 @@ private:
      * @return true on success, otherwise false.
      */
     bool set_nonblocking(int fd);
+
+    /**
+     * @brief Closes one client socket and removes its metadata from all tables.
+     * @param fd Client socket descriptor.
+     * @param reason Human-readable close reason used in connection logs.
+     */
+    void closeClientFd(int fd, const std::string &reason);
 };
