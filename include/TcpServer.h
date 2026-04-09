@@ -85,6 +85,10 @@ private:
     std::mutex fd_to_conn_id_mutex;
     std::unordered_map<int, uint64_t> fd_to_conn_id;
 
+    // Per-connection outbound buffer used by EPOLLOUT-driven async send path.
+    std::mutex pending_send_mutex;
+    std::unordered_map<int, std::string> pending_send_;
+
     /**
      * @brief Registers a newly accepted connection and returns its unique ID.
      * @param conn_fd Connected socket descriptor.
@@ -135,7 +139,30 @@ private:
      */
     void closeClientFd(int fd, const std::string &reason);
 
-    void onReadable(int fd); // 负责读事件主流程
+    // Read-side handler: parse incoming bytes, build response, enqueue to pending_send_.
+    void onReadable(int fd);
 
-    bool getConnIdByFd(int fd, uint64_t &conn_id); // 统一封装映射查询和加锁
+    // Safely resolves a runtime fd to server-side conn_id.
+    bool getConnIdByFd(int fd, uint64_t &conn_id);
+
+    // Write-side handler: drains pending_send_ for one fd until EAGAIN or empty.
+    void onWritable(int fd);
+
+    // Appends response bytes to one connection's send queue.
+    bool appendPendingSend(int fd, const std::string &data);
+
+    // Exposes current pending chunk for send() without copying.
+    bool popPendingChunk(int fd, const char *&data, size_t &len);
+
+    // Checks whether the connection still has queued outbound bytes.
+    bool hasPendingSend(int fd);
+
+    // Consumes sent bytes from the pending queue.
+    void consumePendingSend(int fd, size_t sent);
+
+    // Enables EPOLLOUT when pending_send_ is non-empty.
+    bool enableWritableEvent(int fd);
+
+    // Disables EPOLLOUT after pending_send_ is drained.
+    bool disableWritableEvent(int fd);
 };

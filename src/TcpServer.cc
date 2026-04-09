@@ -15,7 +15,7 @@
 
 /**
  * @file TcpServer.cc
- * @brief Implements TcpServer lifecycle and commit2 connection lifecycle management.
+ * @brief Implements TcpServer lifecycle with epoll-based read/write event handling.
  */
 
 TcpServer::TcpServer(const std::string &ip, uint16_t port, IMessageHandler &handler)
@@ -140,7 +140,7 @@ bool TcpServer::start()
 
     // Register the listen fd to receive incoming-connection notifications.
     struct epoll_event event;
-    event.events = EPOLLIN | EPOLLET;
+    event.events = EPOLLIN | EPOLLET | EPOLLRDHUP;
     event.data.fd = listen_fd_;
     if (epoll_ctl(epoll_fd_, EPOLL_CTL_ADD, listen_fd_, &event) < 0)
     {
@@ -178,17 +178,32 @@ void TcpServer::acceptLoop(int epoll_fd)
             const int fd = events[i].data.fd;
             const uint32_t event_mask = events[i].events;
 
-            // For already-connected sockets, commit2 only handles close/error lifecycle events.
+            // For connected sockets, handle close/error/read/write events.
             if (fd != listen_fd_)
             {
-                if (event_mask & (EPOLLERR | EPOLLHUP | EPOLLRDHUP))
+                // Hard errors are handled first.
+                if (event_mask & EPOLLERR)
                 {
-                    closeClientFd(fd, "peer_hup_or_error");
+                    closeClientFd(fd, "peer_error");
                     continue;
                 }
+
+                // Read/write first, so half-close peers can still receive queued responses.
                 if (event_mask & EPOLLIN)
                 {
                     onReadable(fd);
+                }
+                if (event_mask & EPOLLOUT)
+                {
+                    onWritable(fd);
+                }
+                // After I/O handling, close only when peer is closed and no data remains to send.
+                if (event_mask & (EPOLLHUP | EPOLLRDHUP))
+                {
+                    if (!hasPendingSend(fd))
+                    {
+                        closeClientFd(fd, "peer_hup_or_error");
+                    }
                 }
                 continue;
             }
@@ -215,7 +230,7 @@ void TcpServer::acceptLoop(int epoll_fd)
                     continue;
                 }
 
-                // Commit2 still does not process business read/write, only lifecycle management.
+                // New connections start in read-only interest; EPOLLOUT is enabled on demand.
                 struct epoll_event ev;
                 ev.events = EPOLLIN | EPOLLET | EPOLLRDHUP;
                 ev.data.fd = client_fd;
@@ -376,6 +391,12 @@ void TcpServer::closeClientFd(int fd, const std::string &reason)
         perror("close client_fd failed");
     }
 
+    // Drop any queued outbound bytes for this fd to avoid stale buffer growth.
+    {
+        std::lock_guard<std::mutex> lock(pending_send_mutex);
+        pending_send_.erase(fd);
+    }
+
     if (found)
     {
         unregisterConnection(conn_id, reason);
@@ -408,43 +429,23 @@ void TcpServer::onReadable(int fd)
         }
         if (n == 0)
         {
-            closeClientFd(fd, "peer_closed");
-            return;
+            // Peer half-closed. Keep socket alive until pending response is drained.
+            break;
         }
 
         touchOnRecv(conn_id, static_cast<size_t>(n));
         std::string request(buff, static_cast<size_t>(n));
         std::string response = handler_.handle(request);
 
-        size_t total_sent = 0;
-        while (total_sent < response.size())
+        if (response.empty())
         {
-            ssize_t sent =
-                send(fd, response.data() + total_sent, response.size() - total_sent, 0);
-            if (sent > 0)
-            {
-                total_sent += static_cast<size_t>(sent);
-                continue;
-            }
-
-            if (sent < 0)
-            {
-                if (errno == EAGAIN || errno == EWOULDBLOCK)
-                {
-                    // commit3: stop now and leave robust backpressure handling to commit4.
-                    break;
-                }
-                else
-                {
-                    closeClientFd(fd, "send_error");
-                    return;
-                }
-            }
+            continue;
         }
 
-        if (total_sent > 0)
+        appendPendingSend(fd, response);
+        if (!enableWritableEvent(fd))
         {
-            touchOnSend(conn_id, total_sent);
+            closeClientFd(fd, "enable_write_event_failed");
         }
     }
 }
@@ -459,4 +460,142 @@ bool TcpServer::getConnIdByFd(int fd, uint64_t &conn_id)
         return true;
     }
     return false;
+}
+
+void TcpServer::onWritable(int fd)
+{
+    uint64_t conn_id = 0;
+    if (!getConnIdByFd(fd, conn_id))
+    {
+        std::cerr << "can't find conn_id for fd=" << fd << std::endl;
+        return;
+    }
+
+    while (true)
+    {
+        const char *data = nullptr;
+        size_t len = 0;
+        if (!popPendingChunk(fd, data, len))
+        {
+            // No more pending data to send, disable writable event.
+            if (!disableWritableEvent(fd))
+            {
+                closeClientFd(fd, "disable_write_event_failed");
+            }
+            break;
+        }
+
+        ssize_t n = send(fd, data, len, 0);
+        if (n == 0)
+        {
+            // send() returning 0 on stream sockets is treated as a closed peer path.
+            closeClientFd(fd, "peer_closed_on_send");
+            return;
+        }
+        if (n < 0)
+        {
+            if (errno == EAGAIN || errno == EWOULDBLOCK)
+            {
+                // Socket buffer is full, keep pending bytes and wait for next EPOLLOUT.
+                break;
+            }
+            else
+            {
+                closeClientFd(fd, "send_error");
+                return;
+            }
+        }
+
+        touchOnSend(conn_id, static_cast<size_t>(n));
+        consumePendingSend(fd, static_cast<size_t>(n));
+    }
+}
+
+bool TcpServer::appendPendingSend(int fd, const std::string &data)
+{
+    std::lock_guard<std::mutex> lock(pending_send_mutex);
+    pending_send_[fd] += data;
+    return true;
+}
+
+bool TcpServer::popPendingChunk(int fd, const char *&data, size_t &len)
+{
+    std::lock_guard<std::mutex> lock(pending_send_mutex);
+    auto it = pending_send_.find(fd);
+    if (it == pending_send_.end() || it->second.empty())
+    {
+        data = nullptr;
+        len = 0;
+        return false;
+    }
+
+    data = it->second.data();
+    len = it->second.size();
+    return true;
+}
+
+bool TcpServer::hasPendingSend(int fd)
+{
+    std::lock_guard<std::mutex> lock(pending_send_mutex);
+    auto it = pending_send_.find(fd);
+    return it != pending_send_.end() && !it->second.empty();
+}
+
+void TcpServer::consumePendingSend(int fd, size_t sent)
+{
+    if (sent == 0)
+    {
+        return;
+    }
+
+    std::lock_guard<std::mutex> lock(pending_send_mutex);
+    auto it = pending_send_.find(fd);
+    if (it == pending_send_.end())
+    {
+        return;
+    }
+
+    if (sent >= it->second.size())
+    {
+        pending_send_.erase(it);
+        return;
+    }
+
+    it->second.erase(0, sent);
+}
+
+bool TcpServer::enableWritableEvent(int fd)
+{
+    if (epoll_fd_ == -1)
+    {
+        return false;
+    }
+
+    struct epoll_event ev;
+    ev.events = EPOLLIN | EPOLLET | EPOLLRDHUP | EPOLLOUT;
+    ev.data.fd = fd;
+    if (epoll_ctl(epoll_fd_, EPOLL_CTL_MOD, fd, &ev) < 0)
+    {
+        perror("epoll_ctl mod enable EPOLLOUT failed");
+        return false;
+    }
+    return true;
+}
+
+bool TcpServer::disableWritableEvent(int fd)
+{
+    if (epoll_fd_ == -1)
+    {
+        return false;
+    }
+
+    struct epoll_event ev;
+    ev.events = EPOLLIN | EPOLLET | EPOLLRDHUP;
+    ev.data.fd = fd;
+    if (epoll_ctl(epoll_fd_, EPOLL_CTL_MOD, fd, &ev) < 0)
+    {
+        perror("epoll_ctl mod disable EPOLLOUT failed");
+        return false;
+    }
+    return true;
 }
