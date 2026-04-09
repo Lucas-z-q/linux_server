@@ -134,4 +134,8 @@ private:
      * @param reason Human-readable close reason used in connection logs.
      */
     void closeClientFd(int fd, const std::string &reason);
+
+    void onReadable(int fd); // 负责读事件主流程
+
+    bool getConnIdByFd(int fd, uint64_t &conn_id); // 统一封装映射查询和加锁
 };

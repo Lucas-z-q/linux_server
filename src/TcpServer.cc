@@ -184,6 +184,11 @@ void TcpServer::acceptLoop(int epoll_fd)
                 if (event_mask & (EPOLLERR | EPOLLHUP | EPOLLRDHUP))
                 {
                     closeClientFd(fd, "peer_hup_or_error");
+                    continue;
+                }
+                if (event_mask & EPOLLIN)
+                {
+                    onReadable(fd);
                 }
                 continue;
             }
@@ -375,4 +380,83 @@ void TcpServer::closeClientFd(int fd, const std::string &reason)
     {
         unregisterConnection(conn_id, reason);
     }
+}
+
+void TcpServer::onReadable(int fd)
+{
+    uint64_t conn_id = 0;
+    if (!getConnIdByFd(fd, conn_id))
+    {
+        std::cerr << "can't find conn_id for fd=" << fd << std::endl;
+        return;
+    }
+
+    char buff[1024];
+    while (true)
+    {
+        memset(buff, 0, sizeof(buff));
+        ssize_t n = recv(fd, buff, sizeof(buff) - 1, 0);
+        if (n < 0)
+        {
+            if (errno == EAGAIN || errno == EWOULDBLOCK)
+                break;
+            else
+            {
+                closeClientFd(fd, "recv_error");
+                return;
+            }
+        }
+        if (n == 0)
+        {
+            closeClientFd(fd, "peer_closed");
+            return;
+        }
+
+        touchOnRecv(conn_id, static_cast<size_t>(n));
+        std::string request(buff, static_cast<size_t>(n));
+        std::string response = handler_.handle(request);
+
+        size_t total_sent = 0;
+        while (total_sent < response.size())
+        {
+            ssize_t sent =
+                send(fd, response.data() + total_sent, response.size() - total_sent, 0);
+            if (sent > 0)
+            {
+                total_sent += static_cast<size_t>(sent);
+                continue;
+            }
+
+            if (sent < 0)
+            {
+                if (errno == EAGAIN || errno == EWOULDBLOCK)
+                {
+                    // commit3: stop now and leave robust backpressure handling to commit4.
+                    break;
+                }
+                else
+                {
+                    closeClientFd(fd, "send_error");
+                    return;
+                }
+            }
+        }
+
+        if (total_sent > 0)
+        {
+            touchOnSend(conn_id, total_sent);
+        }
+    }
+}
+
+bool TcpServer::getConnIdByFd(int fd, uint64_t &conn_id)
+{
+    std::lock_guard<std::mutex> lock(fd_to_conn_id_mutex);
+    auto it = fd_to_conn_id.find(fd);
+    if (it != fd_to_conn_id.end())
+    {
+        conn_id = it->second;
+        return true;
+    }
+    return false;
 }
