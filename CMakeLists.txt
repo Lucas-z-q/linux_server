@@ -11,9 +11,16 @@ add_executable(server
     src/TcpConnection.cc
     src/EchoHandler.cc
     src/TcpServer.cc
+    src/codec/json_codec.cc
+    src/codec/packet_codec.cc
+    src/db/db_pool.cc
+    src/db/user_repository.cc
+    src/handler/message_handler.cc
+    src/protocol/protocol_helper.cc
+    src/service/user_service.cc
 )
 
-target_include_directories(server PRIVATE include)
+target_include_directories(server PRIVATE include third_party)
 
 add_executable(client
     client/client.cc

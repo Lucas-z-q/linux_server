@@ -1,22 +1,22 @@
-#pragma once
+#ifndef LINUX_SERVER_INCLUDE_ECHO_HANDLER_H_
+#define LINUX_SERVER_INCLUDE_ECHO_HANDLER_H_
 
 #include <string>
-#include "IMessageHandler.h"
 
-/**
- * @file EchoHandler.h
- * @brief Declares an echo message handler implementation.
- */
+#include "net/IMessageHandler.h"
 
-/**
- * @brief Message handler that returns the original request unchanged.
- */
+// 本文件声明一个最简单的回显示例处理器。
+// 它适合在引入注册、登录协议之前用于验证网络收发链路是否打通。
+//
+// TODO(lzq): 用新的业务 MessageHandler 替换当前 EchoHandler。
+// TODO(lzq): 为示例处理器补充简单的连通性测试用例。
+// TODO(lzq): 统一顶层 include 路径，避免后续 net 目录迁移时产生歧义。
+
+// 一个将请求原样返回的消息处理器实现。
 class EchoHandler : public IMessageHandler {
-public:
-    /**
-     * @brief Returns the request payload as the response payload.
-     * @param request Request data received from the client.
-     * @return Same content as @p request.
-     */
-    std::string handle(const std::string& request) override;
+ public:
+  // 处理一条请求，并直接返回相同内容作为响应。
+  std::string handle(const std::string& request) override;
 };
+
+#endif  // LINUX_SERVER_INCLUDE_ECHO_HANDLER_H_

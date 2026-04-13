@@ -1,0 +1,41 @@
+#ifndef LINUX_SERVER_INCLUDE_COMMON_ERROR_CODE_H_
+#define LINUX_SERVER_INCLUDE_COMMON_ERROR_CODE_H_
+
+// 本文件集中定义服务器对外暴露的业务错误码。
+// 错误码按功能区间划分，便于客户端处理和服务端排障。
+//
+// TODO(lzq): 在 README 中补齐错误码与场景的对应关系。
+// TODO(lzq): 为每个错误码补充统一的人类可读错误信息映射。
+// TODO(lzq): 后续按认证、聊天、存储等模块拆分错误码段。
+
+namespace chat {
+
+// 表示协议处理与业务执行过程中可能出现的结果状态。
+enum class ErrorCode {
+  // 请求成功。
+  OK = 0,
+
+  // 通用协议与参数错误。
+  INVALID_PARAM = 1,
+  INVALID_JSON = 2,
+  INVALID_PACKET = 3,
+  UNKNOWN_MESSAGE_TYPE = 4,
+
+  // 用户与认证相关错误。
+  USER_ALREADY_EXISTS = 1001,
+  USER_NOT_FOUND = 1002,
+  WRONG_PASSWORD = 1003,
+  USER_ALREADY_ONLINE = 1004,
+
+  // 数据库相关错误。
+  DB_INIT_FAILED = 2001,
+  DB_QUERY_FAILED = 2002,
+  DB_INSERT_FAILED = 2003,
+
+  // 兜底内部错误。
+  INTERNAL_ERROR = 9001,
+};
+
+}  // namespace chat
+
+#endif  // LINUX_SERVER_INCLUDE_COMMON_ERROR_CODE_H_
