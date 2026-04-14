@@ -3,7 +3,7 @@
 #include <sys/socket.h>
 #include <unistd.h>
 #include <cstring>
-#include "EchoHandler.h"
+#include "handler/message_handler.h"
 #include "net/TcpServer.h"
 
 #include "app/main_runner.h"
@@ -19,7 +19,8 @@
  */
 int main()
 {
-    EchoHandler tmp;
+    chat::MessageHandler tmp;
     TcpServer server("127.0.0.1", 8080, tmp);
-    return RunMain([&]() { return server.start(); });
+    return RunMain([&]()
+                   { return server.start(); });
 }

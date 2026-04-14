@@ -5,101 +5,154 @@
 
 #include "common/error_code.h"
 #include "protocol/protocol_helper.h"
+#include "protocol/auth_messages.h"
 
-namespace chat {
+namespace chat
+{
 
-namespace {
+  namespace
+  {
 
-Response MakeInvalidParamResponse(const Message& msg,
-                                  const std::string& message) {
-  return protocol::makeErrorResponse(msg, ErrorCode::INVALID_PARAM, message);
-}
+    Response MakeInvalidParamResponse(const Message &msg,
+                                      const std::string &message)
+    {
+      Response resp;
+      resp.msg_type = msg.msg_type + "_resp";
+      resp.seq = msg.seq;
+      resp.code = ErrorCode::INVALID_PARAM;
+      resp.message = message;
+      return resp;
+    }
 
-}  // namespace
+  } // namespace
 
-std::string MessageHandler::handle(const std::string& raw_request) {
-  Message msg;
-  std::string err;
-  if (!codec_.decodeMessage(raw_request, msg, err)) {
+  std::string MessageHandler::handle(const std::string &raw_request)
+  {
+    Message msg;
+    std::string err;
+    if (!codec_.decodeMessage(raw_request, msg, err))
+    {
+      Response resp = MakeInvalidParamResponse(msg, err);
+      return codec_.encodeResponse(resp);
+    }
+
+    if (msg.msg_type == "register")
+    {
+      Response resp = handleRegister(msg);
+      return codec_.encodeResponse(resp);
+    }
+    else if (msg.msg_type == "login")
+    {
+      Response resp = handleLogin(msg);
+      return codec_.encodeResponse(resp);
+    }
+    else if (msg.msg_type == "logout")
+    {
+      Response resp = handleLogout(msg);
+      return codec_.encodeResponse(resp);
+    }
+    else if (msg.msg_type == "heartbeat")
+    {
+      Response resp = handleHeartbeat(msg);
+      return codec_.encodeResponse(resp);
+    }
+    else
+    {
+      Response resp = handleUnknown(msg);
+      return codec_.encodeResponse(resp);
+    }
+  }
+
+  Response MessageHandler::handleRegister(const Message &msg)
+  {
+    RegisterRequest req;
+    std::string err;
+    if (!codec_.parseRegisterRequest(msg, req, err))
+    {
+      return MakeInvalidParamResponse(msg, err);
+    }
+
+    RegisterResult result = user_service_.registerUser(req);
+
     Response resp;
-    resp.msg_type = "error_resp";
-    resp.code = ErrorCode::INVALID_JSON;
-    resp.message = err.empty() ? "invalid json" : err;
-    resp.data = nlohmann::json::object();
-    return codec_.encodeResponse(resp);
-  }
-
-  Response resp;
-  if (msg.msg_type == "register") {
-    resp = handleRegister(msg);
-  } else if (msg.msg_type == "login") {
-    resp = handleLogin(msg);
-  } else if (msg.msg_type == "logout") {
-    resp = handleLogout(msg);
-  } else if (msg.msg_type == "heartbeat") {
-    resp = handleHeartbeat(msg);
-  } else {
-    resp = protocol::makeErrorResponse(msg, ErrorCode::UNKNOWN_MESSAGE_TYPE,
-                                       "unknown message type");
-  }
-
-  return codec_.encodeResponse(resp);
-}
-
-Response MessageHandler::handleRegister(const Message& msg) {
-  RegisterRequest req;
-  std::string err;
-  if (!codec_.parseRegisterRequest(msg, req, err)) {
-    return MakeInvalidParamResponse(msg, err);
-  }
-
-  const RegisterResult result = user_service_.registerUser(req);
-  Response resp = protocol::makeErrorResponse(msg, result.code, result.message);
-  if (result.code == ErrorCode::OK) {
-    resp = protocol::makeSuccessResponse(msg);
+    resp.msg_type = msg.msg_type + "_resp";
+    resp.seq = msg.seq;
+    resp.code = result.code;
     resp.message = result.message;
-    codec_.fillRegisterResponse(resp, result.data);
-  }
-  return resp;
-}
 
-Response MessageHandler::handleLogin(const Message& msg) {
-  LoginRequest req;
-  std::string err;
-  if (!codec_.parseLoginRequest(msg, req, err)) {
-    return MakeInvalidParamResponse(msg, err);
+    if (result.code == ErrorCode::OK)
+    {
+      RegisterResponseData data;
+      data.user_id = result.data.user_id;
+      codec_.fillRegisterResponse(resp, data);
+    }
+    return resp;
   }
 
-  const LoginResult result = user_service_.login(req, 0);
-  Response resp = protocol::makeErrorResponse(msg, result.code, result.message);
-  if (result.code == ErrorCode::OK) {
-    resp = protocol::makeSuccessResponse(msg);
+  Response MessageHandler::handleLogin(const Message &msg)
+  {
+    LoginRequest req;
+    std::string err;
+    if (!codec_.parseLoginRequest(msg, req, err))
+    {
+      return MakeInvalidParamResponse(msg, err);
+    }
+
+    // TODO(lzq): 从连接上下文中获取实际的 conn_id。
+    LoginResult result = user_service_.login(req, 0);
+
+    Response resp;
+    resp.msg_type = msg.msg_type + "_resp";
+    resp.seq = msg.seq;
+    resp.code = result.code;
     resp.message = result.message;
-    codec_.fillLoginResponse(resp, result.data);
-  }
-  return resp;
-}
 
-Response MessageHandler::handleLogout(const Message& msg) {
-  const LogoutResult result = user_service_.logout(0);
-  Response resp = protocol::makeErrorResponse(msg, result.code, result.message);
-  if (result.code == ErrorCode::OK) {
-    resp = protocol::makeSuccessResponse(msg);
+    if (result.code == ErrorCode::OK)
+
+    {
+      LoginResponseData data;
+      data.user_id = result.data.user_id;
+      data.nickname = result.data.nickname;
+      data.token = result.data.token;
+      codec_.fillLoginResponse(resp, data);
+    }
+    return resp;
+  }
+
+  Response MessageHandler::handleLogout(const Message &msg)
+  {
+    // TODO(lzq): 从连接上下文中获取实际的 conn_id。
+    LogoutResult result = user_service_.logout(0);
+
+    Response resp;
+    resp.msg_type = msg.msg_type + "_resp";
+    resp.seq = msg.seq;
+    resp.code = result.code;
     resp.message = result.message;
-    resp.data = nlohmann::json::object();
+    return resp;
   }
-  return resp;
-}
 
-Response MessageHandler::handleHeartbeat(const Message& msg) {
-  Response resp = protocol::makeSuccessResponse(msg);
-  resp.message = "pong";
+  Response MessageHandler::handleHeartbeat(const Message &msg)
+  {
+    Response resp;
+    resp.msg_type = msg.msg_type + "_resp";
+    resp.seq = msg.seq;
+    resp.code = ErrorCode::OK;
+    resp.message = "Heartbeat received";
 
-  HeartbeatResponseData data;
-  data.server_time = static_cast<Timestamp>(
-      std::chrono::system_clock::to_time_t(std::chrono::system_clock::now()));
-  codec_.fillHeartbeatResponse(resp, data);
-  return resp;
-}
+    chat::HeartbeatResponseData data;
+    data.server_time = std::chrono::system_clock::to_time_t(std::chrono::system_clock::now());
+    codec_.fillHeartbeatResponse(resp, data);
+    return resp;
+  }
 
-}  // namespace chat
+  Response MessageHandler::handleUnknown(const Message &msg)
+  {
+    Response resp;
+    resp.msg_type = msg.msg_type + "_resp";
+    resp.seq = msg.seq;
+    resp.code = ErrorCode::UNKNOWN_MESSAGE_TYPE;
+    resp.message = "Unknown message type: " + msg.msg_type;
+    return resp;
+  }
+} // namespace chat

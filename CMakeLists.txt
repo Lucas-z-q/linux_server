@@ -6,6 +6,8 @@ set(CMAKE_CXX_STANDARD 17)
 set(CMAKE_CXX_STANDARD_REQUIRED ON)
 set(CMAKE_CXX_EXTENSIONS OFF)
 
+enable_testing()
+
 add_executable(server
     src/app/main_runner.cc
     src/main.cc
@@ -33,6 +35,7 @@ add_executable(main_test
 )
 
 target_include_directories(main_test PRIVATE include third_party)
+add_test(NAME main_test COMMAND main_test)
 
 add_executable(json_codec_test
     tests/json_codec_test.cc
@@ -40,3 +43,24 @@ add_executable(json_codec_test
 )
 
 target_include_directories(json_codec_test PRIVATE include third_party)
+add_test(NAME json_codec_test COMMAND json_codec_test)
+
+add_executable(message_handler_test
+    tests/message_handler_test.cc
+    src/codec/json_codec.cc
+    src/handler/message_handler.cc
+    src/service/user_service.cc
+)
+
+target_include_directories(message_handler_test PRIVATE include third_party)
+add_test(NAME message_handler_test COMMAND message_handler_test)
+
+add_executable(server_integration_test
+    tests/server_integration_test.cc
+)
+
+target_include_directories(server_integration_test PRIVATE include third_party)
+target_compile_definitions(server_integration_test PRIVATE
+    SERVER_BINARY_PATH="$<TARGET_FILE:server>"
+)
+add_test(NAME server_integration_test COMMAND server_integration_test)
