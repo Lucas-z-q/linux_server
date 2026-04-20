@@ -5,6 +5,7 @@
 #include <string>
 
 #include "common/types.h"
+#include "config/db_config.h"
 #include "model/user_record.h"
 
 // 本文件声明用户数据访问层接口。
@@ -19,7 +20,8 @@ namespace chat {
 // 封装用户表相关的数据库访问操作。
 class UserRepository {
  public:
-  UserRepository() = default;
+  UserRepository();
+  explicit UserRepository(const DbConfig& config);
 
   // 按用户名查询用户记录；若不存在则返回空。
   std::optional<UserRecord> findByUsername(const std::string& username);
@@ -30,6 +32,9 @@ class UserRepository {
   // 创建新用户，并在成功时回填生成的用户 ID。
   bool createUser(const std::string& username, const std::string& password_hash,
                   const std::string& nickname, UserId& user_id);
+
+ private:
+  DbConfig config_;
 };
 
 }  // namespace chat

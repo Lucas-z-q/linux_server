@@ -8,6 +8,8 @@ set(CMAKE_CXX_EXTENSIONS OFF)
 
 enable_testing()
 
+set(MYSQLCLIENT_LIB "/usr/lib/x86_64-linux-gnu/libmysqlclient.so.21")
+
 add_executable(server
     src/app/main_runner.cc
     src/main.cc
@@ -24,6 +26,7 @@ add_executable(server
 )
 
 target_include_directories(server PRIVATE include third_party)
+target_link_libraries(server PRIVATE ${MYSQLCLIENT_LIB})
 
 add_executable(client
     client/client.cc
@@ -64,3 +67,12 @@ target_compile_definitions(server_integration_test PRIVATE
     SERVER_BINARY_PATH="$<TARGET_FILE:server>"
 )
 add_test(NAME server_integration_test COMMAND server_integration_test)
+
+add_executable(user_repository_test
+    tests/user_repository_test.cc
+    src/db/user_repository.cc
+)
+
+target_include_directories(user_repository_test PRIVATE include third_party)
+target_link_libraries(user_repository_test PRIVATE ${MYSQLCLIENT_LIB})
+add_test(NAME user_repository_test COMMAND user_repository_test)
