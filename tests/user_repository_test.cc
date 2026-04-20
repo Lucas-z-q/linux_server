@@ -10,7 +10,7 @@ void TestFindReturnsEmptyWhenConfigIncomplete()
 {
   chat::DbConfig config;
   config.host = "127.0.0.1";
-  config.port = 3306;
+  config.port = 3307;
   config.username = "";
   config.password = "";
   config.database = "";
@@ -27,7 +27,7 @@ void TestCreateReturnsFalseWhenConfigIncomplete()
 {
   chat::DbConfig config;
   config.host = "127.0.0.1";
-  config.port = 3306;
+  config.port = 3307;
   config.username = "";
   config.password = "";
   config.database = "";

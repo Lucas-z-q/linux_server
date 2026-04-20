@@ -8,7 +8,16 @@ set(CMAKE_CXX_EXTENSIONS OFF)
 
 enable_testing()
 
-set(MYSQLCLIENT_LIB "/usr/lib/x86_64-linux-gnu/libmysqlclient.so.21")
+find_library(MYSQLCLIENT_LIB
+    NAMES mysqlclient
+    PATHS /usr/lib/x86_64-linux-gnu /lib/x86_64-linux-gnu
+)
+if(NOT MYSQLCLIENT_LIB AND EXISTS "/usr/lib/x86_64-linux-gnu/libmysqlclient.so.21")
+    set(MYSQLCLIENT_LIB "/usr/lib/x86_64-linux-gnu/libmysqlclient.so.21")
+endif()
+if(NOT MYSQLCLIENT_LIB)
+    message(FATAL_ERROR "mysqlclient library not found")
+endif()
 
 add_executable(server
     src/app/main_runner.cc
@@ -53,9 +62,11 @@ add_executable(message_handler_test
     src/codec/json_codec.cc
     src/handler/message_handler.cc
     src/service/user_service.cc
+    src/db/user_repository.cc
 )
 
 target_include_directories(message_handler_test PRIVATE include third_party)
+target_link_libraries(message_handler_test PRIVATE ${MYSQLCLIENT_LIB})
 add_test(NAME message_handler_test COMMAND message_handler_test)
 
 add_executable(server_integration_test
