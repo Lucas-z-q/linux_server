@@ -58,14 +58,14 @@ void TestHandleLoginNotImplemented() {
   assert(resp["message"].get<std::string>() == "login not implemented");
 }
 
-void TestHandleRegisterDbInsertFailedWithoutDbConfig() {
+void TestHandleRegisterDbQueryFailedWithoutDbConfig() {
   MessageHandler handler;
   const std::string request =
       R"({"msg_type":"register","seq":3,"token":"","data":{"username":"alice","password":"123456","nickname":"Alice"}})";
 
   const nlohmann::json resp = ParseResponse(handler.handle(request));
-  ExpectCommonEnvelope(resp, "register_resp", 3, ErrorCode::DB_INSERT_FAILED);
-  assert(resp["message"].get<std::string>() == "create user failed.");
+  ExpectCommonEnvelope(resp, "register_resp", 3, ErrorCode::DB_QUERY_FAILED);
+  assert(resp["message"].get<std::string>() == "query user failed");
 }
 
 void TestHandleLogoutNotImplemented() {
@@ -142,7 +142,7 @@ void TestHandleInvalidJson() {
 int main() {
   TestHandleHeartbeatSuccess();
   TestHandleLoginNotImplemented();
-  TestHandleRegisterDbInsertFailedWithoutDbConfig();
+  TestHandleRegisterDbQueryFailedWithoutDbConfig();
   TestHandleLogoutNotImplemented();
   TestHandleUnknownMessageType();
   TestHandleLoginMissingPassword();

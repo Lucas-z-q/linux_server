@@ -16,11 +16,13 @@ void TestFindReturnsEmptyWhenConfigIncomplete()
   config.database = "";
 
   chat::UserRepository repo(config);
-  const auto by_name = repo.findByUsername("alice");
-  const auto by_id = repo.findById(1);
+  const chat::FindUserResult by_name = repo.findByUsername("alice");
+  const chat::FindUserResult by_id = repo.findById(1);
 
-  assert(!by_name.has_value());
-  assert(!by_id.has_value());
+  assert(by_name.status == chat::RepositoryStatus::kQueryFailed);
+  assert(!by_name.user.has_value());
+  assert(by_id.status == chat::RepositoryStatus::kQueryFailed);
+  assert(!by_id.user.has_value());
 }
 
 void TestCreateReturnsFalseWhenConfigIncomplete()
@@ -33,12 +35,11 @@ void TestCreateReturnsFalseWhenConfigIncomplete()
   config.database = "";
 
   chat::UserRepository repo(config);
-  chat::UserId user_id = 42;
-  const bool ok =
-      repo.createUser("alice", "hash_xxx", "Alice", user_id);
+  const chat::CreateUserResult result =
+      repo.createUser("alice", "hash_xxx", "Alice");
 
-  assert(!ok);
-  assert(user_id == 0);
+  assert(result.status == chat::RepositoryStatus::kInsertFailed);
+  assert(result.user_id == 0);
 }
 
 } // namespace

@@ -43,6 +43,8 @@ namespace
     unsigned long long mysql_insert_id(MYSQL *mysql);
   }
 
+  constexpr unsigned int kMysqlDuplicateEntryError = 1062;
+
   // 为 unique_ptr 提供 MySQL 连接释放逻辑，避免每个返回路径都手动 close。
   struct MysqlDeleter
   {
@@ -173,33 +175,35 @@ namespace
     return std::string(buffer.data(), escaped_len);
   }
 
-  // 执行一条预期只返回单行用户记录的查询，并把结果映射为 UserRecord。
-  // 查不到记录时返回 nullopt；查询失败时同样返回 nullopt，并由日志区分原因。
-  std::optional<chat::UserRecord> ReadSingleUser(MYSQL *conn,
-                                                 const std::string &query)
+  // 执行一条预期只返回单行用户记录的查询，并把结果映射为 FindUserResult。
+  // 这样 Service 可以区分“确实没查到”和“查询本身失败”。
+  chat::FindUserResult ReadSingleUser(MYSQL *conn,
+                                      const std::string &query)
   {
     if (mysql_query(conn, query.c_str()) != 0)
     {
       LogMysqlError(conn, "mysql_query");
-      return std::nullopt;
+      return {.status = chat::RepositoryStatus::kQueryFailed};
     }
 
     MysqlResultPtr result(mysql_store_result(conn));
     if (result == nullptr)
     {
-      return std::nullopt;
+      LogMysqlError(conn, "mysql_store_result");
+      return {.status = chat::RepositoryStatus::kQueryFailed};
     }
 
     MYSQL_ROW row = mysql_fetch_row(result.get());
     if (row == nullptr)
     {
-      return std::nullopt;
+      return {.status = chat::RepositoryStatus::kNotFound};
     }
 
     const unsigned long *lengths = mysql_fetch_lengths(result.get());
     if (lengths == nullptr)
     {
-      return std::nullopt;
+      LogMysqlError(conn, "mysql_fetch_lengths");
+      return {.status = chat::RepositoryStatus::kQueryFailed};
     }
 
     chat::UserRecord record;
@@ -210,7 +214,7 @@ namespace
     record.status = std::atoi(row[4]);
     record.created_at.assign(row[5], lengths[5]);
     record.updated_at.assign(row[6], lengths[6]);
-    return record;
+    return {.status = chat::RepositoryStatus::kOk, .user = record};
   }
 
 } // namespace
@@ -222,13 +226,13 @@ namespace chat
 
   UserRepository::UserRepository(const DbConfig &config) : config_(config) {}
 
-  std::optional<UserRecord> UserRepository::findByUsername(
+  FindUserResult UserRepository::findByUsername(
       const std::string &username)
   {
     MysqlPtr conn = Connect(config_);
     if (conn == nullptr)
     {
-      return std::nullopt;
+      return {.status = RepositoryStatus::kQueryFailed};
     }
 
     // 用户名来自外部输入，查询前必须先转义。
@@ -240,12 +244,12 @@ namespace chat
     return ReadSingleUser(conn.get(), query);
   }
 
-  std::optional<UserRecord> UserRepository::findById(UserId user_id)
+  FindUserResult UserRepository::findById(UserId user_id)
   {
     MysqlPtr conn = Connect(config_);
     if (conn == nullptr)
     {
-      return std::nullopt;
+      return {.status = RepositoryStatus::kQueryFailed};
     }
 
     const std::string query =
@@ -255,15 +259,14 @@ namespace chat
     return ReadSingleUser(conn.get(), query);
   }
 
-  bool UserRepository::createUser(const std::string &username,
-                                  const std::string &password_hash,
-                                  const std::string &nickname, UserId &user_id)
+  CreateUserResult UserRepository::createUser(const std::string &username,
+                                              const std::string &password_hash,
+                                              const std::string &nickname)
   {
     MysqlPtr conn = Connect(config_);
     if (conn == nullptr)
     {
-      user_id = 0;
-      return false;
+      return {.status = RepositoryStatus::kInsertFailed};
     }
 
     // 插入语句涉及多个外部字符串字段，都需要分别转义。
@@ -278,14 +281,21 @@ namespace chat
 
     if (mysql_query(conn.get(), query.c_str()) != 0)
     {
+      if (mysql_errno(conn.get()) == kMysqlDuplicateEntryError)
+      {
+        return {.status = RepositoryStatus::kDuplicate};
+      }
       LogMysqlError(conn.get(), "insert user");
-      user_id = 0;
-      return false;
+      return {.status = RepositoryStatus::kInsertFailed};
     }
 
     // users.id 使用自增主键，因此成功插入后直接读取 insert_id 作为 user_id。
-    user_id = static_cast<UserId>(mysql_insert_id(conn.get()));
-    return user_id > 0;
+    const UserId user_id = static_cast<UserId>(mysql_insert_id(conn.get()));
+    if (user_id <= 0)
+    {
+      return {.status = RepositoryStatus::kInsertFailed};
+    }
+    return {.status = RepositoryStatus::kOk, .user_id = user_id};
   }
 
 } // namespace chat

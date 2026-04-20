@@ -1,10 +1,14 @@
 #include "service/user_service.h"
 
-#include <functional>
-#include <optional>
-
 namespace chat
 {
+
+  UserService::UserService() = default;
+
+  UserService::UserService(IUserRepository &user_repository)
+      : user_repository_(&user_repository)
+  {
+  }
 
   RegisterResult UserService::registerUser(const RegisterRequest &req)
   {
@@ -17,26 +21,55 @@ namespace chat
       return result;
     }
 
-    // use UserRepository::findByUsername
-    std::optional<UserRecord> query_res = ur.findByUsername(req.username);
-    if (query_res != std::nullopt)
+    // 注册流程的第一步是查重；这里必须区分“没找到用户”和“查询失败”，
+    // 否则 Service 会把数据库故障误判成“可以继续注册”。
+    const FindUserResult find_result = user_repository_->findByUsername(req.username);
+    if (find_result.status == RepositoryStatus::kOk)
     {
       result.code = ErrorCode::USER_ALREADY_EXISTS;
       result.message = "username already exists";
       return result;
     }
-
-    std::string password_hash = hashPassword(req.password);
-
-    if (!ur.createUser(req.username, password_hash, req.nickname, result.data.user_id))
+    if (find_result.status == RepositoryStatus::kQueryFailed)
     {
-      result.code = ErrorCode::DB_INSERT_FAILED;
-      result.message = "create user failed.";
+      result.code = ErrorCode::DB_QUERY_FAILED;
+      result.message = "query user failed";
+      return result;
+    }
+    if (find_result.status != RepositoryStatus::kNotFound)
+    {
+      result.code = ErrorCode::INTERNAL_ERROR;
+      result.message = "unexpected repository status";
       return result;
     }
 
+    const std::string password_hash = hashPassword(req.password);
+
+    // 插入阶段仍要处理重复键，避免并发注册时把唯一键冲突误报成普通插入失败。
+    const CreateUserResult create_result =
+        user_repository_->createUser(req.username, password_hash, req.nickname);
+    if (create_result.status == RepositoryStatus::kDuplicate)
+    {
+      result.code = ErrorCode::USER_ALREADY_EXISTS;
+      result.message = "username already exists";
+      return result;
+    }
+    if (create_result.status == RepositoryStatus::kInsertFailed)
+    {
+      result.code = ErrorCode::DB_INSERT_FAILED;
+      result.message = "create user failed";
+      return result;
+    }
+    if (create_result.status != RepositoryStatus::kOk)
+    {
+      result.code = ErrorCode::INTERNAL_ERROR;
+      result.message = "unexpected repository status";
+      return result;
+    }
+
+    result.data.user_id = create_result.user_id;
     result.code = ErrorCode::OK;
-    result.message = "register success.";
+    result.message = "register success";
 
     return result;
   }

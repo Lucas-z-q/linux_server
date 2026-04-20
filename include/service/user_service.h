@@ -5,8 +5,8 @@
 
 #include "common/error_code.h"
 #include "common/types.h"
-#include "protocol/auth_messages.h"
 #include "db/user_repository.h"
+#include "protocol/auth_messages.h"
 
 // 本文件声明用户服务层接口。
 // Service 层负责编排注册、登录和登出流程，并协调 Repository 与会话状态。
@@ -58,7 +58,11 @@ namespace chat
   class UserService
   {
   public:
-    UserService() {};
+    // 使用默认 Repository 构造业务服务。
+    UserService();
+
+    // 使用外部注入的 Repository 构造，便于单元测试或替换实现。
+    explicit UserService(IUserRepository &user_repository);
 
     // 执行用户注册流程。
     RegisterResult registerUser(const RegisterRequest &req);
@@ -70,7 +74,11 @@ namespace chat
     LogoutResult logout(ConnectionId conn_id);
 
   private:
-    UserRepository ur;
+    // 当调用方未注入仓储时，服务内部持有一个默认实现。
+    UserRepository default_user_repository_;
+
+    // Service 通过抽象接口访问仓储，避免业务逻辑绑定具体实现。
+    IUserRepository *user_repository_ = &default_user_repository_;
 
     // 校验注册请求的字段完整性与基本合法性。
     bool validateRegisterRequest(const RegisterRequest &req,

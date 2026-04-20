@@ -169,6 +169,15 @@ void TestLoginPlaceholderOverTcp() {
   assert(resp["message"].get<std::string>() == "login not implemented");
 }
 
+void TestRegisterDbQueryFailureOverTcp() {
+  const nlohmann::json resp = SendAndReceive(
+      R"({"msg_type":"register","seq":5,"token":"","data":{"username":"alice","password":"123456","nickname":"Alice"}})");
+
+  ExpectCommonEnvelope(resp, "register_resp", 5,
+                       chat::ErrorCode::DB_QUERY_FAILED);
+  assert(resp["message"].get<std::string>() == "query user failed");
+}
+
 }  // namespace
 
 int main() {
@@ -179,6 +188,7 @@ int main() {
   TestUnknownRouteOverTcp();
   TestLoginValidationOverTcp();
   TestLoginPlaceholderOverTcp();
+  TestRegisterDbQueryFailureOverTcp();
 
   std::cout << "[PASS] server integration tests passed\n";
   return 0;
