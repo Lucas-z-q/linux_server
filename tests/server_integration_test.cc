@@ -160,13 +160,13 @@ void TestLoginValidationOverTcp() {
          std::string::npos);
 }
 
-void TestLoginPlaceholderOverTcp() {
+void TestLoginDbQueryFailureOverTcp() {
   const nlohmann::json resp = SendAndReceive(
       R"({"msg_type":"login","seq":4,"token":"","data":{"username":"alice","password":"123456"}})");
 
   ExpectCommonEnvelope(resp, "login_resp", 4,
-                       chat::ErrorCode::INTERNAL_ERROR);
-  assert(resp["message"].get<std::string>() == "login not implemented");
+                       chat::ErrorCode::DB_QUERY_FAILED);
+  assert(resp["message"].get<std::string>() == "query user failed");
 }
 
 void TestRegisterDbQueryFailureOverTcp() {
@@ -187,7 +187,7 @@ int main() {
   TestHeartbeatRouteOverTcp();
   TestUnknownRouteOverTcp();
   TestLoginValidationOverTcp();
-  TestLoginPlaceholderOverTcp();
+  TestLoginDbQueryFailureOverTcp();
   TestRegisterDbQueryFailureOverTcp();
 
   std::cout << "[PASS] server integration tests passed\n";

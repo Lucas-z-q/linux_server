@@ -1,6 +1,7 @@
 #include "service/user_service.h"
 
 #include <cassert>
+#include <functional>
 #include <iostream>
 #include <optional>
 #include <string>
@@ -49,6 +50,19 @@ chat::RegisterRequest MakeRegisterRequest()
   req.password = "123456";
   req.nickname = "Alice";
   return req;
+}
+
+chat::LoginRequest MakeLoginRequest()
+{
+  chat::LoginRequest req;
+  req.username = "alice";
+  req.password = "123456";
+  return req;
+}
+
+std::string HashPasswordForTest(const std::string &password)
+{
+  return std::to_string(std::hash<std::string>{}(password));
 }
 
 void TestRegisterReturnsInvalidParamForEmptyUsername()
@@ -134,6 +148,104 @@ void TestRegisterSuccessReturnsUserIdAndHashesPassword()
   assert(!repo.last_password_hash.empty());
 }
 
+void TestLoginReturnsInvalidParamForEmptyUsername()
+{
+  FakeUserRepository repo;
+  chat::UserService service(repo);
+
+  chat::LoginRequest req = MakeLoginRequest();
+  req.username.clear();
+
+  const chat::LoginResult result = service.login(req, 0);
+  assert(result.code == chat::ErrorCode::INVALID_PARAM);
+  assert(result.message == "username is empty");
+}
+
+void TestLoginReturnsInvalidParamForEmptyPassword()
+{
+  FakeUserRepository repo;
+  chat::UserService service(repo);
+
+  chat::LoginRequest req = MakeLoginRequest();
+  req.password.clear();
+
+  const chat::LoginResult result = service.login(req, 0);
+  assert(result.code == chat::ErrorCode::INVALID_PARAM);
+  assert(result.message == "password is empty");
+}
+
+void TestLoginReturnsDbQueryFailedWhenLookupFails()
+{
+  FakeUserRepository repo;
+  repo.find_by_username_result.status = chat::RepositoryStatus::kQueryFailed;
+  chat::UserService service(repo);
+
+  const chat::LoginResult result = service.login(MakeLoginRequest(), 0);
+  assert(result.code == chat::ErrorCode::DB_QUERY_FAILED);
+  assert(result.message == "query user failed");
+}
+
+void TestLoginReturnsUserNotFoundWhenUserDoesNotExist()
+{
+  FakeUserRepository repo;
+  repo.find_by_username_result.status = chat::RepositoryStatus::kNotFound;
+  chat::UserService service(repo);
+
+  const chat::LoginResult result = service.login(MakeLoginRequest(), 0);
+  assert(result.code == chat::ErrorCode::INVALID_CREDENTIALS);
+  assert(result.message == "invalid username or password");
+}
+
+void TestLoginReturnsInternalErrorWhenRepositoryResultIsIncomplete()
+{
+  FakeUserRepository repo;
+  repo.find_by_username_result.status = chat::RepositoryStatus::kOk;
+  repo.find_by_username_result.user.reset();
+  chat::UserService service(repo);
+
+  const chat::LoginResult result = service.login(MakeLoginRequest(), 0);
+  assert(result.code == chat::ErrorCode::INTERNAL_ERROR);
+  assert(result.message == "unexpected repository result");
+}
+
+void TestLoginReturnsWrongPasswordWhenHashDoesNotMatch()
+{
+  FakeUserRepository repo;
+  repo.find_by_username_result.status = chat::RepositoryStatus::kOk;
+  chat::UserRecord record;
+  record.id = 10001;
+  record.username = "alice";
+  record.nickname = "Alice";
+  record.password_hash = HashPasswordForTest("654321");
+  repo.find_by_username_result.user = record;
+  chat::UserService service(repo);
+
+  const chat::LoginResult result = service.login(MakeLoginRequest(), 0);
+  assert(result.code == chat::ErrorCode::INVALID_CREDENTIALS);
+  assert(result.message == "invalid username or password");
+}
+
+void TestLoginSuccessReturnsUserDataAndToken()
+{
+  FakeUserRepository repo;
+  repo.find_by_username_result.status = chat::RepositoryStatus::kOk;
+  chat::UserRecord record;
+  record.id = 10001;
+  record.username = "alice";
+  record.nickname = "Alice";
+  record.password_hash = HashPasswordForTest("123456");
+  repo.find_by_username_result.user = record;
+  chat::UserService service(repo);
+
+  const chat::LoginResult result = service.login(MakeLoginRequest(), 0);
+  assert(result.code == chat::ErrorCode::OK);
+  assert(result.message == "login success");
+  assert(result.data.user_id == 10001);
+  assert(result.data.nickname == "Alice");
+  assert(result.data.token == "token_10001");
+  assert(repo.last_username == "alice");
+}
+
 } // namespace
 
 int main()
@@ -144,6 +256,13 @@ int main()
   TestRegisterReturnsDbInsertFailedWhenCreateFails();
   TestRegisterReturnsUserAlreadyExistsWhenCreateSeesDuplicate();
   TestRegisterSuccessReturnsUserIdAndHashesPassword();
+  TestLoginReturnsInvalidParamForEmptyUsername();
+  TestLoginReturnsInvalidParamForEmptyPassword();
+  TestLoginReturnsDbQueryFailedWhenLookupFails();
+  TestLoginReturnsUserNotFoundWhenUserDoesNotExist();
+  TestLoginReturnsInternalErrorWhenRepositoryResultIsIncomplete();
+  TestLoginReturnsWrongPasswordWhenHashDoesNotMatch();
+  TestLoginSuccessReturnsUserDataAndToken();
   std::cout << "[PASS] user service tests passed\n";
   return 0;
 }

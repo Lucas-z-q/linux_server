@@ -87,8 +87,39 @@ namespace chat
       return result;
     }
 
-    result.code = ErrorCode::INTERNAL_ERROR;
-    result.message = "login not implemented";
+    const FindUserResult find_result = user_repository_->findByUsername(req.username);
+    if (find_result.status == RepositoryStatus::kQueryFailed)
+    {
+      result.code = ErrorCode::DB_QUERY_FAILED;
+      result.message = "query user failed";
+      return result;
+    }
+    if (find_result.status == RepositoryStatus::kNotFound)
+    {
+      result.code = ErrorCode::INVALID_CREDENTIALS;
+      result.message = "invalid username or password";
+      return result;
+    }
+    if (find_result.status != RepositoryStatus::kOk || !find_result.user)
+    {
+      result.code = ErrorCode::INTERNAL_ERROR;
+      result.message = "unexpected repository result";
+      return result;
+    }
+    const UserRecord &user = find_result.user.value();
+
+    const std::string password_hash = hashPassword(req.password);
+    if (password_hash != user.password_hash)
+    {
+      result.code = ErrorCode::INVALID_CREDENTIALS;
+      result.message = "invalid username or password";
+      return result;
+    }
+    result.data.user_id = user.id;
+    result.data.nickname = user.nickname;
+    result.data.token = generateToken(user.id);
+    result.code = ErrorCode::OK;
+    result.message = "login success";
     return result;
   }
 
