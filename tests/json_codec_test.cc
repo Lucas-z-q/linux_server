@@ -4,6 +4,8 @@
 #include <iostream>
 #include <string>
 
+#include <nlohmann/json.hpp>
+
 #include "common/message.h"
 #include "common/response.h"
 
@@ -60,7 +62,7 @@ void TestRejectMissingRequiredField()
     assert(!parse_ok);
 }
 
-void TestEncodeResponseAppendsNewline()
+void TestEncodeResponseReturnsPureJson()
 {
     JsonCodec codec;
     Response resp;
@@ -78,7 +80,15 @@ void TestEncodeResponseAppendsNewline()
 
     const std::string out_json = codec.encodeResponse(resp);
     assert(!out_json.empty());
-    assert(out_json.back() == '\n');
+    assert(out_json.back() != '\n');
+
+    const nlohmann::json encoded = nlohmann::json::parse(out_json);
+    assert(encoded["msg_type"].get<std::string>() == "login_resp");
+    assert(encoded["seq"].get<int>() == 2);
+    assert(encoded["code"].get<int>() == static_cast<int>(ErrorCode::OK));
+    assert(encoded["data"]["user_id"].get<int>() == 10001);
+    assert(encoded["data"]["nickname"].get<std::string>() == "Alice");
+    assert(encoded["data"]["token"].get<std::string>() == "token_xxx");
 }
 
 }  // namespace
@@ -88,7 +98,7 @@ int main()
     TestDecodeAndParseLoginRequest();
     TestRejectInvalidJson();
     TestRejectMissingRequiredField();
-    TestEncodeResponseAppendsNewline();
+    TestEncodeResponseReturnsPureJson();
     std::cout << "[PASS] json codec tests passed\n";
     return 0;
 }

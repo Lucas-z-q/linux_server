@@ -75,7 +75,7 @@ namespace chat
             json_obj["data"] = resp.data;
         }
 
-        return json_obj.dump() + "\n";
+        return json_obj.dump();
     }
 
     bool JsonCodec::parseRegisterRequest(const Message &msg, RegisterRequest &req,

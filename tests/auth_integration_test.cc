@@ -12,13 +12,13 @@
 
 #include <nlohmann/json.hpp>
 
-#include "common/error_code.h"
 #include "codec/packet_codec.h"
+#include "common/error_code.h"
 
 namespace {
 
 constexpr const char* kServerIp = "127.0.0.1";
-constexpr uint16_t kServerPort = 8080;
+constexpr uint16_t kAuthTestPort = 18080;
 
 class ServerProcess {
  public:
@@ -33,7 +33,8 @@ class ServerProcess {
     assert(pid_ >= 0);
 
     if (pid_ == 0) {
-      execl(SERVER_BINARY_PATH, SERVER_BINARY_PATH, static_cast<char*>(nullptr));
+      execl(AUTH_TEST_SERVER_BINARY_PATH, AUTH_TEST_SERVER_BINARY_PATH,
+            static_cast<char*>(nullptr));
       _exit(127);
     }
 
@@ -59,7 +60,7 @@ class ServerProcess {
 
       sockaddr_in server_addr{};
       server_addr.sin_family = AF_INET;
-      server_addr.sin_port = htons(kServerPort);
+      server_addr.sin_port = htons(kAuthTestPort);
       const int pton_ok = inet_pton(AF_INET, kServerIp, &server_addr.sin_addr);
       assert(pton_ok == 1);
 
@@ -74,7 +75,7 @@ class ServerProcess {
       usleep(100 * 1000);
     }
 
-    assert(false && "server did not become ready in time");
+    assert(false && "auth test server did not become ready in time");
   }
 
   pid_t pid_ = -1;
@@ -92,7 +93,7 @@ int ConnectToServer() {
 
   sockaddr_in server_addr{};
   server_addr.sin_family = AF_INET;
-  server_addr.sin_port = htons(kServerPort);
+  server_addr.sin_port = htons(kAuthTestPort);
   const int pton_ok = inet_pton(AF_INET, kServerIp, &server_addr.sin_addr);
   assert(pton_ok == 1);
 
@@ -141,73 +142,70 @@ void ExpectCommonEnvelope(const nlohmann::json& resp, const std::string& msg_typ
   assert(resp["data"].is_object());
 }
 
-void TestHeartbeatRouteOverTcp() {
-  const nlohmann::json resp =
-      SendAndReceive(R"({"msg_type":"heartbeat","seq":1,"token":"","data":{}})");
-
-  ExpectCommonEnvelope(resp, "heartbeat_resp", 1, chat::ErrorCode::OK);
-  assert(resp["data"].contains("server_time"));
-  assert(resp["data"]["server_time"].is_number_integer());
-}
-
-void TestUnknownRouteOverTcp() {
-  const nlohmann::json resp =
-      SendAndReceive(R"({"msg_type":"chat","seq":2,"token":"","data":{}})");
-
-  ExpectCommonEnvelope(resp, "chat_resp", 2,
-                       chat::ErrorCode::UNKNOWN_MESSAGE_TYPE);
-}
-
-void TestLoginValidationOverTcp() {
-  const nlohmann::json resp =
-      SendAndReceive(R"({"msg_type":"login","seq":3,"token":"","data":{"username":"alice"}})");
-
-  ExpectCommonEnvelope(resp, "login_resp", 3,
-                       chat::ErrorCode::INVALID_PARAM);
-  assert(resp["message"].get<std::string>().find("password") !=
-         std::string::npos);
-}
-
-void TestLoginDbQueryFailureOverTcp() {
+void TestRegisterSuccessOverTcp() {
   const nlohmann::json resp = SendAndReceive(
-      R"({"msg_type":"login","seq":4,"token":"","data":{"username":"alice","password":"123456"}})");
+      R"({"msg_type":"register","seq":1,"token":"","data":{"username":"bob","password":"123456","nickname":"Bob"}})");
+
+  ExpectCommonEnvelope(resp, "register_resp", 1, chat::ErrorCode::OK);
+  assert(resp["message"].get<std::string>() == "register success");
+  assert(resp["data"]["user_id"].is_number_integer());
+  assert(resp["data"]["user_id"].get<int>() > 0);
+}
+
+void TestRegisterDuplicateUsernameOverTcp() {
+  const nlohmann::json resp = SendAndReceive(
+      R"({"msg_type":"register","seq":2,"token":"","data":{"username":"alice","password":"123456","nickname":"AliceAgain"}})");
+
+  ExpectCommonEnvelope(resp, "register_resp", 2,
+                       chat::ErrorCode::USER_ALREADY_EXISTS);
+  assert(resp["message"].get<std::string>() == "username already exists");
+}
+
+void TestLoginSuccessOverTcp() {
+  const nlohmann::json resp = SendAndReceive(
+      R"({"msg_type":"login","seq":3,"token":"","data":{"username":"alice","password":"123456"}})");
+
+  ExpectCommonEnvelope(resp, "login_resp", 3, chat::ErrorCode::OK);
+  assert(resp["message"].get<std::string>() == "login success");
+  assert(resp["data"]["user_id"].get<int>() == 10001);
+  assert(resp["data"]["nickname"].get<std::string>() == "Alice");
+  assert(resp["data"]["token"].get<std::string>() == "token_10001");
+}
+
+void TestLoginWrongPasswordOverTcp() {
+  const nlohmann::json resp = SendAndReceive(
+      R"({"msg_type":"login","seq":4,"token":"","data":{"username":"alice","password":"wrong"}})");
 
   ExpectCommonEnvelope(resp, "login_resp", 4,
-                       chat::ErrorCode::DB_QUERY_FAILED);
-  assert(resp["message"].get<std::string>() == "query user failed");
+                       chat::ErrorCode::INVALID_CREDENTIALS);
+  assert(resp["message"].get<std::string>() == "invalid username or password");
 }
 
-void TestRegisterDbQueryFailureOverTcp() {
-  const nlohmann::json resp = SendAndReceive(
-      R"({"msg_type":"register","seq":5,"token":"","data":{"username":"alice","password":"123456","nickname":"Alice"}})");
-
-  ExpectCommonEnvelope(resp, "register_resp", 5,
-                       chat::ErrorCode::DB_QUERY_FAILED);
-  assert(resp["message"].get<std::string>() == "query user failed");
-}
-
-void TestInvalidJsonOverTcp() {
-  const nlohmann::json resp =
-      SendAndReceive(R"({"msg_type":"login","seq":8,"data":)");
-
-  ExpectCommonEnvelope(resp, "_resp", 0, chat::ErrorCode::INVALID_PARAM);
-  assert(resp["message"].get<std::string>().find("JSON") != std::string::npos);
-}
-
-void TestWhoAmIAndLogoutRequireLoginOnSameConnection() {
+void TestWhoAmIAfterLoginAndLogoutOnSameConnection() {
   const int fd = ConnectToServer();
+
+  const nlohmann::json login_resp = SendAndReceiveOnSocket(
+      fd, R"({"msg_type":"login","seq":5,"token":"","data":{"username":"alice","password":"123456"}})");
+  ExpectCommonEnvelope(login_resp, "login_resp", 5, chat::ErrorCode::OK);
 
   const nlohmann::json whoami_resp = SendAndReceiveOnSocket(
       fd, R"({"msg_type":"whoami","seq":6,"token":"","data":{}})");
-  ExpectCommonEnvelope(whoami_resp, "whoami_resp", 6,
-                       chat::ErrorCode::USER_NOT_FOUND);
-  assert(whoami_resp["message"].get<std::string>() == "user not logged in");
+  ExpectCommonEnvelope(whoami_resp, "whoami_resp", 6, chat::ErrorCode::OK);
+  assert(whoami_resp["data"]["user_id"].get<int>() == 10001);
+  assert(whoami_resp["data"]["username"].get<std::string>() == "alice");
+  assert(whoami_resp["data"]["token"].get<std::string>() == "token_10001");
 
   const nlohmann::json logout_resp = SendAndReceiveOnSocket(
       fd, R"({"msg_type":"logout","seq":7,"token":"","data":{}})");
-  ExpectCommonEnvelope(logout_resp, "logout_resp", 7,
+  ExpectCommonEnvelope(logout_resp, "logout_resp", 7, chat::ErrorCode::OK);
+  assert(logout_resp["message"].get<std::string>() == "logout success");
+
+  const nlohmann::json whoami_after_logout = SendAndReceiveOnSocket(
+      fd, R"({"msg_type":"whoami","seq":8,"token":"","data":{}})");
+  ExpectCommonEnvelope(whoami_after_logout, "whoami_resp", 8,
                        chat::ErrorCode::USER_NOT_FOUND);
-  assert(logout_resp["message"].get<std::string>() == "user not logged in");
+  assert(whoami_after_logout["message"].get<std::string>() ==
+         "user not logged in");
 
   close(fd);
 }
@@ -218,14 +216,12 @@ int main() {
   ServerProcess server;
   server.Start();
 
-  TestHeartbeatRouteOverTcp();
-  TestUnknownRouteOverTcp();
-  TestLoginValidationOverTcp();
-  TestLoginDbQueryFailureOverTcp();
-  TestRegisterDbQueryFailureOverTcp();
-  TestInvalidJsonOverTcp();
-  TestWhoAmIAndLogoutRequireLoginOnSameConnection();
+  TestRegisterSuccessOverTcp();
+  TestRegisterDuplicateUsernameOverTcp();
+  TestLoginSuccessOverTcp();
+  TestLoginWrongPasswordOverTcp();
+  TestWhoAmIAfterLoginAndLogoutOnSameConnection();
 
-  std::cout << "[PASS] server integration tests passed\n";
+  std::cout << "[PASS] auth integration tests passed\n";
   return 0;
 }

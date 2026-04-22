@@ -40,7 +40,10 @@ target_link_libraries(server PRIVATE ${MYSQLCLIENT_LIB})
 
 add_executable(client
     client/client.cc
+    src/codec/packet_codec.cc
 )
+
+target_include_directories(client PRIVATE include third_party)
 
 add_executable(main_test
     tests/main_test.cc
@@ -57,6 +60,14 @@ add_executable(json_codec_test
 
 target_include_directories(json_codec_test PRIVATE include third_party)
 add_test(NAME json_codec_test COMMAND json_codec_test)
+
+add_executable(packet_codec_test
+    tests/packet_codec_test.cc
+    src/codec/packet_codec.cc
+)
+
+target_include_directories(packet_codec_test PRIVATE include third_party)
+add_test(NAME packet_codec_test COMMAND packet_codec_test)
 
 add_executable(message_handler_test
     tests/message_handler_test.cc
@@ -84,6 +95,7 @@ add_test(NAME user_service_test COMMAND user_service_test)
 
 add_executable(server_integration_test
     tests/server_integration_test.cc
+    src/codec/packet_codec.cc
 )
 
 target_include_directories(server_integration_test PRIVATE include third_party)
@@ -91,6 +103,32 @@ target_compile_definitions(server_integration_test PRIVATE
     SERVER_BINARY_PATH="$<TARGET_FILE:server>"
 )
 add_test(NAME server_integration_test COMMAND server_integration_test)
+
+add_executable(auth_test_server
+    tests/fake_auth_server.cc
+    src/app/main_runner.cc
+    src/TcpServer.cc
+    src/codec/json_codec.cc
+    src/codec/packet_codec.cc
+    src/db/user_repository.cc
+    src/handler/message_handler.cc
+    src/server/session_manager.cc
+    src/service/user_service.cc
+)
+
+target_include_directories(auth_test_server PRIVATE include third_party)
+target_link_libraries(auth_test_server PRIVATE ${MYSQLCLIENT_LIB})
+
+add_executable(auth_integration_test
+    tests/auth_integration_test.cc
+    src/codec/packet_codec.cc
+)
+
+target_include_directories(auth_integration_test PRIVATE include third_party)
+target_compile_definitions(auth_integration_test PRIVATE
+    AUTH_TEST_SERVER_BINARY_PATH="$<TARGET_FILE:auth_test_server>"
+)
+add_test(NAME auth_integration_test COMMAND auth_integration_test)
 
 add_executable(session_manager_test
     tests/session_manager_test.cc
