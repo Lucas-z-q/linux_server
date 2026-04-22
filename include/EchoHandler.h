@@ -16,7 +16,8 @@
 class EchoHandler : public IMessageHandler {
  public:
   // 处理一条请求，并直接返回相同内容作为响应。
-  std::string handle(const std::string& request) override;
+  std::string handle(const std::string& request,
+                     chat::ConnectionId conn_id) override;
 };
 
 #endif  // LINUX_SERVER_INCLUDE_ECHO_HANDLER_H_

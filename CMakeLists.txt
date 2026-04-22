@@ -31,6 +31,7 @@ add_executable(server
     src/db/user_repository.cc
     src/handler/message_handler.cc
     src/protocol/protocol_helper.cc
+    src/server/session_manager.cc
     src/service/user_service.cc
 )
 
@@ -61,6 +62,7 @@ add_executable(message_handler_test
     tests/message_handler_test.cc
     src/codec/json_codec.cc
     src/handler/message_handler.cc
+    src/server/session_manager.cc
     src/service/user_service.cc
     src/db/user_repository.cc
 )
@@ -71,6 +73,7 @@ add_test(NAME message_handler_test COMMAND message_handler_test)
 
 add_executable(user_service_test
     tests/user_service_test.cc
+    src/server/session_manager.cc
     src/service/user_service.cc
     src/db/user_repository.cc
 )
@@ -88,6 +91,14 @@ target_compile_definitions(server_integration_test PRIVATE
     SERVER_BINARY_PATH="$<TARGET_FILE:server>"
 )
 add_test(NAME server_integration_test COMMAND server_integration_test)
+
+add_executable(session_manager_test
+    tests/session_manager_test.cc
+    src/server/session_manager.cc
+)
+
+target_include_directories(session_manager_test PRIVATE include third_party)
+add_test(NAME session_manager_test COMMAND session_manager_test)
 
 add_executable(user_repository_test
     tests/user_repository_test.cc

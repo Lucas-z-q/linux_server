@@ -101,9 +101,7 @@ int ConnectToServer() {
   return fd;
 }
 
-nlohmann::json SendAndReceive(const std::string& request) {
-  const int fd = ConnectToServer();
-
+nlohmann::json SendAndReceiveOnSocket(int fd, const std::string& request) {
   const ssize_t written = send(fd, request.data(), request.size(), 0);
   assert(written == static_cast<ssize_t>(request.size()));
 
@@ -115,8 +113,14 @@ nlohmann::json SendAndReceive(const std::string& request) {
     response.append(buffer, static_cast<size_t>(n));
   }
 
-  close(fd);
   return nlohmann::json::parse(response);
+}
+
+nlohmann::json SendAndReceive(const std::string& request) {
+  const int fd = ConnectToServer();
+  const nlohmann::json response = SendAndReceiveOnSocket(fd, request);
+  close(fd);
+  return response;
 }
 
 void ExpectCommonEnvelope(const nlohmann::json& resp, const std::string& msg_type,
@@ -178,6 +182,24 @@ void TestRegisterDbQueryFailureOverTcp() {
   assert(resp["message"].get<std::string>() == "query user failed");
 }
 
+void TestWhoAmIAndLogoutRequireLoginOnSameConnection() {
+  const int fd = ConnectToServer();
+
+  const nlohmann::json whoami_resp = SendAndReceiveOnSocket(
+      fd, R"({"msg_type":"whoami","seq":6,"token":"","data":{}})");
+  ExpectCommonEnvelope(whoami_resp, "whoami_resp", 6,
+                       chat::ErrorCode::USER_NOT_FOUND);
+  assert(whoami_resp["message"].get<std::string>() == "user not logged in");
+
+  const nlohmann::json logout_resp = SendAndReceiveOnSocket(
+      fd, R"({"msg_type":"logout","seq":7,"token":"","data":{}})");
+  ExpectCommonEnvelope(logout_resp, "logout_resp", 7,
+                       chat::ErrorCode::USER_NOT_FOUND);
+  assert(logout_resp["message"].get<std::string>() == "user not logged in");
+
+  close(fd);
+}
+
 }  // namespace
 
 int main() {
@@ -189,6 +211,7 @@ int main() {
   TestLoginValidationOverTcp();
   TestLoginDbQueryFailureOverTcp();
   TestRegisterDbQueryFailureOverTcp();
+  TestWhoAmIAndLogoutRequireLoginOnSameConnection();
 
   std::cout << "[PASS] server integration tests passed\n";
   return 0;

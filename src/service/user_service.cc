@@ -10,6 +10,16 @@ namespace chat
   {
   }
 
+  UserService::UserService(IUserRepository &user_repository, ISessionManager &session_manager)
+      : user_repository_(&user_repository), session_manager_(&session_manager)
+  {
+  }
+
+  UserService::UserService(ISessionManager &session_manager)
+      : session_manager_(&session_manager)
+  {
+  }
+
   RegisterResult UserService::registerUser(const RegisterRequest &req)
   {
     RegisterResult result;
@@ -76,8 +86,6 @@ namespace chat
 
   LoginResult UserService::login(const LoginRequest &req, ConnectionId conn_id)
   {
-    (void)conn_id;
-
     LoginResult result;
     std::string err;
     if (!validateLoginRequest(req, err))
@@ -115,9 +123,23 @@ namespace chat
       result.message = "invalid username or password";
       return result;
     }
+
+    const std::string token = generateToken(user.id);
+    ConnectionSession session;
+    session.authenticated = true;
+    session.user_id = user.id;
+    session.username = user.username;
+    session.token = token;
+
+    if (!session_manager_->BindSession(conn_id, session))
+    {
+      result.code = ErrorCode::INTERNAL_ERROR;
+      result.message = "failed to bind session";
+      return result;
+    }
     result.data.user_id = user.id;
     result.data.nickname = user.nickname;
-    result.data.token = generateToken(user.id);
+    result.data.token = token;
     result.code = ErrorCode::OK;
     result.message = "login success";
     return result;
@@ -125,12 +147,42 @@ namespace chat
 
   LogoutResult UserService::logout(ConnectionId conn_id)
   {
-    (void)conn_id;
-
     LogoutResult result;
-    result.code = ErrorCode::INTERNAL_ERROR;
-    result.message = "logout not implemented";
+
+    if (!session_manager_->GetSession(conn_id).has_value())
+    {
+      result.code = ErrorCode::USER_NOT_FOUND;
+      result.message = "user not logged in";
+      return result;
+    }
+
+    session_manager_->ClearSession(conn_id);
+    result.code = ErrorCode::OK;
+    result.message = "logout success";
     return result;
+  }
+
+  WhoAmIResult UserService::whoami(ConnectionId conn_id)
+  {
+    WhoAmIResult result;
+    const std::optional<ConnectionSession> session =
+        session_manager_->GetSession(conn_id);
+    if (!session.has_value() || !session->authenticated)
+    {
+      result.code = ErrorCode::USER_NOT_FOUND;
+      result.message = "user not logged in";
+      return result;
+    }
+
+    result.code = ErrorCode::OK;
+    result.message = "ok";
+    result.data = *session;
+    return result;
+  }
+
+  void UserService::clearSession(ConnectionId conn_id)
+  {
+    session_manager_->ClearSession(conn_id);
   }
 
   bool UserService::validateRegisterRequest(const RegisterRequest &req,

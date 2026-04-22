@@ -26,7 +26,7 @@ namespace chat
 
   } // namespace
 
-  std::string MessageHandler::handle(const std::string &raw_request)
+  std::string MessageHandler::handle(const std::string &raw_request, chat::ConnectionId conn_id)
   {
     Message msg;
     std::string err;
@@ -43,12 +43,12 @@ namespace chat
     }
     else if (msg.msg_type == "login")
     {
-      Response resp = handleLogin(msg);
+      Response resp = handleLogin(msg, conn_id);
       return codec_.encodeResponse(resp);
     }
     else if (msg.msg_type == "logout")
     {
-      Response resp = handleLogout(msg);
+      Response resp = handleLogout(msg, conn_id);
       return codec_.encodeResponse(resp);
     }
     else if (msg.msg_type == "heartbeat")
@@ -56,11 +56,21 @@ namespace chat
       Response resp = handleHeartbeat(msg);
       return codec_.encodeResponse(resp);
     }
+    else if (msg.msg_type == "whoami")
+    {
+      Response resp = handleWhoAmI(msg, conn_id);
+      return codec_.encodeResponse(resp);
+    }
     else
     {
       Response resp = handleUnknown(msg);
       return codec_.encodeResponse(resp);
     }
+  }
+
+  void MessageHandler::onConnectionClosed(chat::ConnectionId conn_id)
+  {
+    user_service_->clearSession(conn_id);
   }
 
   Response MessageHandler::handleRegister(const Message &msg)
@@ -72,7 +82,7 @@ namespace chat
       return MakeInvalidParamResponse(msg, err);
     }
 
-    RegisterResult result = user_service_.registerUser(req);
+    RegisterResult result = user_service_->registerUser(req);
 
     Response resp;
     resp.msg_type = msg.msg_type + "_resp";
@@ -89,7 +99,7 @@ namespace chat
     return resp;
   }
 
-  Response MessageHandler::handleLogin(const Message &msg)
+  Response MessageHandler::handleLogin(const Message &msg, chat::ConnectionId conn_id)
   {
     LoginRequest req;
     std::string err;
@@ -98,8 +108,7 @@ namespace chat
       return MakeInvalidParamResponse(msg, err);
     }
 
-    // TODO(lzq): 从连接上下文中获取实际的 conn_id。
-    LoginResult result = user_service_.login(req, 0);
+    LoginResult result = user_service_->login(req, conn_id);
 
     Response resp;
     resp.msg_type = msg.msg_type + "_resp";
@@ -119,10 +128,9 @@ namespace chat
     return resp;
   }
 
-  Response MessageHandler::handleLogout(const Message &msg)
+  Response MessageHandler::handleLogout(const Message &msg, chat::ConnectionId conn_id)
   {
-    // TODO(lzq): 从连接上下文中获取实际的 conn_id。
-    LogoutResult result = user_service_.logout(0);
+    LogoutResult result = user_service_->logout(conn_id);
 
     Response resp;
     resp.msg_type = msg.msg_type + "_resp";
@@ -143,6 +151,24 @@ namespace chat
     chat::HeartbeatResponseData data;
     data.server_time = std::chrono::system_clock::to_time_t(std::chrono::system_clock::now());
     codec_.fillHeartbeatResponse(resp, data);
+    return resp;
+  }
+
+  Response MessageHandler::handleWhoAmI(const Message &msg, chat::ConnectionId conn_id)
+  {
+    const WhoAmIResult result = user_service_->whoami(conn_id);
+
+    Response resp;
+    resp.msg_type = msg.msg_type + "_resp";
+    resp.seq = msg.seq;
+    resp.code = result.code;
+    resp.message = result.message;
+    if (result.code == ErrorCode::OK)
+    {
+      resp.data["user_id"] = result.data.user_id;
+      resp.data["username"] = result.data.username;
+      resp.data["token"] = result.data.token;
+    }
     return resp;
   }
 

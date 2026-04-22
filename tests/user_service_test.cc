@@ -43,6 +43,59 @@ class FakeUserRepository : public chat::IUserRepository
   }
 };
 
+class FakeSessionManager : public chat::ISessionManager
+{
+ public:
+  bool bind_result = true;
+  bool bind_called = false;
+  bool clear_called = false;
+  chat::ConnectionId last_connection_id = 0;
+  chat::ConnectionSession last_session;
+  std::optional<chat::ConnectionSession> session_for_connection;
+
+  bool BindSession(chat::ConnectionId connection_id,
+                   const chat::ConnectionSession &session) override
+  {
+    bind_called = true;
+    last_connection_id = connection_id;
+    last_session = session;
+    if (bind_result)
+    {
+      session_for_connection = session;
+    }
+    return bind_result;
+  }
+
+  std::optional<chat::ConnectionId> GetConnectionId(chat::UserId user_id) override
+  {
+    if (session_for_connection.has_value() &&
+        session_for_connection->user_id == user_id)
+    {
+      return last_connection_id;
+    }
+    return std::nullopt;
+  }
+
+  std::optional<chat::ConnectionSession> GetSession(
+      chat::ConnectionId connection_id) override
+  {
+    if (session_for_connection.has_value() && connection_id == last_connection_id)
+    {
+      return session_for_connection;
+    }
+    return std::nullopt;
+  }
+
+  void ClearSession(chat::ConnectionId connection_id) override
+  {
+    if (session_for_connection.has_value() && connection_id == last_connection_id)
+    {
+      clear_called = true;
+      session_for_connection.reset();
+    }
+  }
+};
+
 chat::RegisterRequest MakeRegisterRequest()
 {
   chat::RegisterRequest req;
@@ -225,9 +278,10 @@ void TestLoginReturnsWrongPasswordWhenHashDoesNotMatch()
   assert(result.message == "invalid username or password");
 }
 
-void TestLoginSuccessReturnsUserDataAndToken()
+void TestLoginSuccessReturnsUserDataTokenAndBindsSession()
 {
   FakeUserRepository repo;
+  FakeSessionManager session_manager;
   repo.find_by_username_result.status = chat::RepositoryStatus::kOk;
   chat::UserRecord record;
   record.id = 10001;
@@ -235,15 +289,116 @@ void TestLoginSuccessReturnsUserDataAndToken()
   record.nickname = "Alice";
   record.password_hash = HashPasswordForTest("123456");
   repo.find_by_username_result.user = record;
-  chat::UserService service(repo);
+  chat::UserService service(repo, session_manager);
 
-  const chat::LoginResult result = service.login(MakeLoginRequest(), 0);
+  const chat::LoginResult result = service.login(MakeLoginRequest(), 42);
   assert(result.code == chat::ErrorCode::OK);
   assert(result.message == "login success");
   assert(result.data.user_id == 10001);
   assert(result.data.nickname == "Alice");
   assert(result.data.token == "token_10001");
   assert(repo.last_username == "alice");
+  assert(session_manager.bind_called);
+  assert(session_manager.last_connection_id == 42);
+  assert(session_manager.last_session.authenticated);
+  assert(session_manager.last_session.user_id == 10001);
+  assert(session_manager.last_session.username == "alice");
+  assert(session_manager.last_session.token == "token_10001");
+}
+
+void TestLoginReturnsInternalErrorWhenBindSessionFails()
+{
+  FakeUserRepository repo;
+  FakeSessionManager session_manager;
+  session_manager.bind_result = false;
+  repo.find_by_username_result.status = chat::RepositoryStatus::kOk;
+  chat::UserRecord record;
+  record.id = 10001;
+  record.username = "alice";
+  record.nickname = "Alice";
+  record.password_hash = HashPasswordForTest("123456");
+  repo.find_by_username_result.user = record;
+  chat::UserService service(repo, session_manager);
+
+  const chat::LoginResult result = service.login(MakeLoginRequest(), 42);
+  assert(result.code == chat::ErrorCode::INTERNAL_ERROR);
+  assert(result.message == "failed to bind session");
+}
+
+void TestWhoAmIReturnsUserNotLoggedInWhenSessionMissing()
+{
+  FakeSessionManager session_manager;
+  chat::UserService service(session_manager);
+
+  const chat::WhoAmIResult result = service.whoami(42);
+  assert(result.code == chat::ErrorCode::USER_NOT_FOUND);
+  assert(result.message == "user not logged in");
+}
+
+void TestWhoAmIReturnsSessionDataWhenLoggedIn()
+{
+  FakeSessionManager session_manager;
+  chat::ConnectionSession session;
+  session.authenticated = true;
+  session.user_id = 10001;
+  session.username = "alice";
+  session.token = "token_10001";
+  session_manager.last_connection_id = 42;
+  session_manager.session_for_connection = session;
+  chat::UserService service(session_manager);
+
+  const chat::WhoAmIResult result = service.whoami(42);
+  assert(result.code == chat::ErrorCode::OK);
+  assert(result.message == "ok");
+  assert(result.data.user_id == 10001);
+  assert(result.data.username == "alice");
+  assert(result.data.token == "token_10001");
+}
+
+void TestLogoutReturnsUserNotLoggedInWhenSessionMissing()
+{
+  FakeSessionManager session_manager;
+  chat::UserService service(session_manager);
+
+  const chat::LogoutResult result = service.logout(42);
+  assert(result.code == chat::ErrorCode::USER_NOT_FOUND);
+  assert(result.message == "user not logged in");
+}
+
+void TestLogoutClearsSessionWhenLoggedIn()
+{
+  FakeSessionManager session_manager;
+  chat::ConnectionSession session;
+  session.authenticated = true;
+  session.user_id = 10001;
+  session.username = "alice";
+  session.token = "token_10001";
+  session_manager.last_connection_id = 42;
+  session_manager.session_for_connection = session;
+  chat::UserService service(session_manager);
+
+  const chat::LogoutResult result = service.logout(42);
+  assert(result.code == chat::ErrorCode::OK);
+  assert(result.message == "logout success");
+  assert(session_manager.clear_called);
+  assert(!session_manager.session_for_connection.has_value());
+}
+
+void TestClearSessionSilentlyRemovesLoggedInSession()
+{
+  FakeSessionManager session_manager;
+  chat::ConnectionSession session;
+  session.authenticated = true;
+  session.user_id = 10001;
+  session.username = "alice";
+  session.token = "token_10001";
+  session_manager.last_connection_id = 42;
+  session_manager.session_for_connection = session;
+  chat::UserService service(session_manager);
+
+  service.clearSession(42);
+  assert(session_manager.clear_called);
+  assert(!session_manager.session_for_connection.has_value());
 }
 
 } // namespace
@@ -262,7 +417,13 @@ int main()
   TestLoginReturnsUserNotFoundWhenUserDoesNotExist();
   TestLoginReturnsInternalErrorWhenRepositoryResultIsIncomplete();
   TestLoginReturnsWrongPasswordWhenHashDoesNotMatch();
-  TestLoginSuccessReturnsUserDataAndToken();
+  TestLoginSuccessReturnsUserDataTokenAndBindsSession();
+  TestLoginReturnsInternalErrorWhenBindSessionFails();
+  TestWhoAmIReturnsUserNotLoggedInWhenSessionMissing();
+  TestWhoAmIReturnsSessionDataWhenLoggedIn();
+  TestLogoutReturnsUserNotLoggedInWhenSessionMissing();
+  TestLogoutClearsSessionWhenLoggedIn();
+  TestClearSessionSilentlyRemovesLoggedInSession();
   std::cout << "[PASS] user service tests passed\n";
   return 0;
 }

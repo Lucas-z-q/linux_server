@@ -24,20 +24,27 @@ namespace chat
   {
   public:
     MessageHandler() = default;
+    explicit MessageHandler(UserService &user_service) : user_service_(&user_service) {}
     ~MessageHandler() override = default;
 
     // 处理客户端发送的原始请求字符串，并返回编码后的响应字符串。
-    std::string handle(const std::string &raw_request) override;
+    std::string handle(const std::string &raw_request, chat::ConnectionId conn_id) override;
+
+    // 连接关闭后清理该连接绑定的登录态。
+    void onConnectionClosed(chat::ConnectionId conn_id) override;
 
   private:
     // 处理注册请求。
     Response handleRegister(const Message &msg);
 
     // 处理登录请求。
-    Response handleLogin(const Message &msg);
+    Response handleLogin(const Message &msg, chat::ConnectionId conn_id);
 
     // 处理登出请求。
-    Response handleLogout(const Message &msg);
+    Response handleLogout(const Message &msg, chat::ConnectionId conn_id);
+
+    // 查询当前连接绑定的登录态。
+    Response handleWhoAmI(const Message &msg, chat::ConnectionId conn_id);
 
     // 处理心跳请求。
     Response handleHeartbeat(const Message &msg);
@@ -48,8 +55,11 @@ namespace chat
     // 负责 JSON 编解码的组件。
     JsonCodec codec_;
 
+    // 默认使用的业务服务实现。
+    UserService default_user_service_;
+
     // 负责用户注册、登录等业务逻辑的组件。
-    UserService user_service_;
+    UserService *user_service_ = &default_user_service_;
   };
 
 } // namespace chat

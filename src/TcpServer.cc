@@ -399,6 +399,7 @@ void TcpServer::closeClientFd(int fd, const std::string &reason)
 
     if (found)
     {
+        handler_.onConnectionClosed(conn_id);
         unregisterConnection(conn_id, reason);
     }
 }
@@ -435,7 +436,7 @@ void TcpServer::onReadable(int fd)
 
         touchOnRecv(conn_id, static_cast<size_t>(n));
         std::string request(buff, static_cast<size_t>(n));
-        std::string response = handler_.handle(request);
+        std::string response = handler_.handle(request, conn_id);
 
         if (response.empty())
         {
