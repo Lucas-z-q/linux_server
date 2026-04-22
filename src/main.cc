@@ -3,8 +3,10 @@
 #include <sys/socket.h>
 #include <unistd.h>
 #include <cstring>
-#include "EchoHandler.h"
-#include "TcpServer.h"
+#include "handler/message_handler.h"
+#include "net/TcpServer.h"
+
+#include "app/main_runner.h"
 
 /**
  * @file main.cc
@@ -15,12 +17,10 @@
  * @brief Creates and runs the TCP server.
  * @return 0 on success, non-zero on startup failure.
  */
-int main() {
-    EchoHandler tmp;
+int main()
+{
+    chat::MessageHandler tmp;
     TcpServer server("127.0.0.1", 8080, tmp);
-    if (!server.start()) {
-        perror("server start failed");
-        return 1;
-    }
-    return 0;
+    return RunMain([&]()
+                   { return server.start(); });
 }

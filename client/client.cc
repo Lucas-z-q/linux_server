@@ -4,6 +4,9 @@
 #include <unistd.h>
 #include <cstring>
 #include <iostream>
+#include <string>
+
+#include "codec/packet_codec.h"
 
 /**
  * @file client.cc
@@ -15,6 +18,8 @@
  * @return 0 on success, non-zero on failure.
  */
 int main() {
+    chat::PacketCodec codec;
+
     int client_fd = socket(AF_INET, SOCK_STREAM, 0);
     if (client_fd == -1) {
         perror("Socket creation failed");
@@ -45,18 +50,39 @@ int main() {
         std::cout << "没有正确输入内容，请重新输入\n";
         std::cin.getline(buffer, sizeof(buffer));
     }
-    write(client_fd, buffer, strlen(buffer));
-
-    char recv_buf[1024];
-    memset(recv_buf, 0, sizeof(recv_buf));
-    ssize_t n = read(client_fd, recv_buf, sizeof(recv_buf) - 1);
-    if (n == -1) {
-        perror("Read failed");
-        close(client_fd);
-        return 1;
+    const std::string request = codec.encode(buffer);
+    size_t total_sent = 0;
+    while (total_sent < request.size()) {
+        const ssize_t n = write(client_fd, request.data() + total_sent,
+                                request.size() - total_sent);
+        if (n <= 0) {
+            perror("Write failed");
+            close(client_fd);
+            return 1;
+        }
+        total_sent += static_cast<size_t>(n);
     }
 
-    std::cout << "server says: " << recv_buf << std::endl;
+    std::string response;
+    char recv_buf[1024];
+    while (response.find('\n') == std::string::npos) {
+        memset(recv_buf, 0, sizeof(recv_buf));
+        const ssize_t n = read(client_fd, recv_buf, sizeof(recv_buf) - 1);
+        if (n == -1) {
+            perror("Read failed");
+            close(client_fd);
+            return 1;
+        }
+        if (n == 0) {
+            std::cerr << "server closed connection before sending full response\n";
+            close(client_fd);
+            return 1;
+        }
+        response.append(recv_buf, static_cast<size_t>(n));
+    }
+
+    const std::size_t line_end = response.find('\n');
+    std::cout << "server says: " << response.substr(0, line_end) << std::endl;
 
     close(client_fd);
     return 0;

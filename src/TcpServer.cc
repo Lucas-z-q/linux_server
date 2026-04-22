@@ -1,4 +1,4 @@
-#include "TcpServer.h"
+#include "net/TcpServer.h"
 #include <arpa/inet.h>
 #include <cerrno>
 #include <fcntl.h>
@@ -247,6 +247,10 @@ void TcpServer::acceptLoop(int epoll_fd)
                     std::lock_guard<std::mutex> lock(fd_to_conn_id_mutex);
                     fd_to_conn_id[client_fd] = conn_id;
                 }
+                {
+                    std::lock_guard<std::mutex> lock(packet_codecs_mutex);
+                    packet_codecs_.emplace(client_fd, chat::PacketCodec());
+                }
                 std::cout
                     << "Client accept! "
                     << "IP: " << inet_ntoa(client_addr.sin_addr)
@@ -396,9 +400,15 @@ void TcpServer::closeClientFd(int fd, const std::string &reason)
         std::lock_guard<std::mutex> lock(pending_send_mutex);
         pending_send_.erase(fd);
     }
+    // Drop packet codec state for this fd to avoid stale buffer growth.
+    {
+        std::lock_guard<std::mutex> lock(packet_codecs_mutex);
+        packet_codecs_.erase(fd);
+    }
 
     if (found)
     {
+        handler_.onConnectionClosed(conn_id);
         unregisterConnection(conn_id, reason);
     }
 }
@@ -434,18 +444,62 @@ void TcpServer::onReadable(int fd)
         }
 
         touchOnRecv(conn_id, static_cast<size_t>(n));
-        std::string request(buff, static_cast<size_t>(n));
-        std::string response = handler_.handle(request);
+        std::string chunk(buff, static_cast<size_t>(n));
 
-        if (response.empty())
+        std::vector<std::string> packets;
+        bool missing_packet_codec = false;
+        bool invalid_packet = false;
         {
-            continue;
+            std::lock_guard<std::mutex> lock(packet_codecs_mutex);
+            auto it = packet_codecs_.find(fd);
+            if (it == packet_codecs_.end())
+            {
+                missing_packet_codec = true;
+            }
+            else
+            {
+                invalid_packet = !it->second.feed(chunk, packets);
+            }
         }
 
-        appendPendingSend(fd, response);
-        if (!enableWritableEvent(fd))
+        if (missing_packet_codec)
         {
-            closeClientFd(fd, "enable_write_event_failed");
+            closeClientFd(fd, "missing_packet_codec");
+            return;
+        }
+        if (invalid_packet)
+        {
+            closeClientFd(fd, "packet_too_large");
+            return;
+        }
+
+        bool queued_response = false;
+
+        for (const std::string &packet : packets)
+        {
+            if (packet.empty())
+            {
+                continue;
+            }
+
+            std::string response = handler_.handle(packet, conn_id);
+            if (response.empty())
+            {
+                continue;
+            }
+
+            chat::PacketCodec codec;
+            appendPendingSend(fd, codec.encode(response));
+            queued_response = true;
+        }
+
+        if (queued_response)
+        {
+            if (!enableWritableEvent(fd))
+            {
+                closeClientFd(fd, "enable_write_event_failed");
+                return;
+            }
         }
     }
 }
@@ -473,9 +527,8 @@ void TcpServer::onWritable(int fd)
 
     while (true)
     {
-        const char *data = nullptr;
-        size_t len = 0;
-        if (!popPendingChunk(fd, data, len))
+        std::string data;
+        if (!peekPendingChunkCopy(fd, data))
         {
             // No more pending data to send, disable writable event.
             if (!disableWritableEvent(fd))
@@ -485,7 +538,7 @@ void TcpServer::onWritable(int fd)
             break;
         }
 
-        ssize_t n = send(fd, data, len, 0);
+        ssize_t n = send(fd, data.c_str(), data.size(), 0);
         if (n == 0)
         {
             // send() returning 0 on stream sockets is treated as a closed peer path.
@@ -518,19 +571,16 @@ bool TcpServer::appendPendingSend(int fd, const std::string &data)
     return true;
 }
 
-bool TcpServer::popPendingChunk(int fd, const char *&data, size_t &len)
+bool TcpServer::peekPendingChunkCopy(int fd, std::string &out)
 {
     std::lock_guard<std::mutex> lock(pending_send_mutex);
     auto it = pending_send_.find(fd);
     if (it == pending_send_.end() || it->second.empty())
     {
-        data = nullptr;
-        len = 0;
+        out.clear();
         return false;
     }
-
-    data = it->second.data();
-    len = it->second.size();
+    out = it->second;
     return true;
 }
 
