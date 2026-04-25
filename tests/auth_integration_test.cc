@@ -1,6 +1,7 @@
 #include <arpa/inet.h>
 #include <netinet/in.h>
 #include <sys/socket.h>
+#include <sys/prctl.h>
 #include <sys/wait.h>
 #include <unistd.h>
 
@@ -33,6 +34,7 @@ class ServerProcess {
     assert(pid_ >= 0);
 
     if (pid_ == 0) {
+      prctl(PR_SET_PDEATHSIG, SIGTERM);
       execl(AUTH_TEST_SERVER_BINARY_PATH, AUTH_TEST_SERVER_BINARY_PATH,
             static_cast<char*>(nullptr));
       _exit(127);
