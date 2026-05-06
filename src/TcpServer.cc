@@ -10,9 +10,11 @@
 #include <cerrno>
 #include <chrono>
 #include <cstring>
+#include <exception>
 #include <iomanip>
 #include <iostream>
 #include <sstream>
+#include <utility>
 #include <vector>
 
 /**
@@ -21,7 +23,12 @@
  */
 
 TcpServer::TcpServer(const std::string &ip, uint16_t port, IMessageHandler &handler)
-    : listen_fd_(-1), epoll_fd_(-1), ip_(ip), port_(port), handler_(handler) {}
+    : listen_fd_(-1),
+      epoll_fd_(-1),
+      ip_(ip),
+      port_(port),
+      handler_(handler),
+      worker_pool_(kDefaultWorkerThreads) {}
 
 TcpServer::~TcpServer() { stop(); }
 
@@ -342,30 +349,36 @@ void TcpServer::onReadable(int fd) {
             return;
         }
 
-        bool queued_response = false;
-
         for (const std::string &packet : packets) {
             if (packet.empty()) {
                 continue;
             }
 
-            std::string response = handler_.handle(packet, conn_id);
-            if (response.empty()) {
-                continue;
-            }
-
-            chat::PacketCodec codec;
-            appendPendingSend(fd, codec.encode(response));
-            queued_response = true;
-        }
-
-        if (queued_response) {
-            if (!enableWritableEvent(fd)) {
-                closeClientFd(fd, "enable_write_event_failed");
+            RequestTask task{std::weak_ptr<ConnectionContext>(context), conn_id, packet};
+            if (!submitRequestTask(std::move(task))) {
+                closeClientFd(fd, "submit_request_task_failed");
                 return;
             }
         }
     }
+}
+
+bool TcpServer::submitRequestTask(RequestTask task) {
+    try {
+        worker_pool_.submit([this, task = std::move(task)]() mutable {
+            auto context = task.context.lock();
+            if (!context) {
+                return;
+            }
+
+            std::string response = handler_.handle(task.request, task.conn_id);
+            (void)response;
+        });
+    } catch (const std::exception &ex) {
+        std::cerr << "submit request task failed: " << ex.what() << std::endl;
+        return false;
+    }
+    return true;
 }
 
 bool TcpServer::getConnIdByFd(int fd, uint64_t &conn_id) {

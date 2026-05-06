@@ -2,6 +2,7 @@
 #define LINUX_SERVER_INCLUDE_NET_TCP_SERVER_H_
 
 #include <atomic>
+#include <cstddef>
 #include <cstdint>
 #include <memory>
 #include <mutex>
@@ -11,6 +12,7 @@
 #include "ConnectionMeta.h"
 #include "IMessageHandler.h"
 #include "codec/packet_codec.h"
+#include "concurrency/thread_pool.h"
 #include "net/ConnectionContext.h"
 
 // 本文件声明基于 epoll 的 TCP 服务器。
@@ -37,6 +39,20 @@ class TcpServer {
     void stop();
 
    private:
+    static constexpr size_t kDefaultWorkerThreads = 4;
+
+    struct RequestTask {
+        std::weak_ptr<ConnectionContext> context;
+        uint64_t conn_id;
+        std::string request;
+    };
+
+    struct ResponseTask {
+        std::weak_ptr<ConnectionContext> context;
+        chat::ConnectionId conn_id;
+        std::string response;
+    };
+
     // 创建监听 socket。
     bool createListenSocket();
 
@@ -72,6 +88,9 @@ class TcpServer {
 
     // 处理可读事件。
     void onReadable(int fd);
+
+    // 将请求任务投递到工作线程池。
+    bool submitRequestTask(RequestTask task);
 
     // 根据文件描述符查找对应的连接编号。
     bool getConnIdByFd(int fd, uint64_t &conn_id);
@@ -111,6 +130,9 @@ class TcpServer {
 
     // 业务消息处理器引用。
     IMessageHandler &handler_;
+
+    // 用于后续投递业务请求处理任务的工作线程池。
+    ThreadPool worker_pool_;
 
     // 生成自增连接编号。
     std::atomic<uint64_t> next_conn_id_{1};
