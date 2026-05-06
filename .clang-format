@@ -1,0 +1,25 @@
+BasedOnStyle: Google
+IndentWidth: 4
+ColumnLimit: 120
+Language: Cpp
+
+# 强制使用 C++17 标准进行解析和格式化
+Standard: c++17
+
+# 指针和引用的对齐方式 (Left: int* a; Right: int *a; Middle: int * a)
+PointerAlignment: Left
+
+# 是否允许短的 if 语句保持在同一行
+AllowShortIfStatementsOnASingleLine: false
+
+# switch 语句中 case 标签是否缩进
+IndentCaseLabels: true
+
+# 自动对 #include 进行排序
+SortIncludes: true
+
+# 命名空间内部的代码不缩进，避免嵌套过深
+NamespaceIndentation: None
+
+# 允许在宏定义中换行
+AlignEscapedNewlines: Left

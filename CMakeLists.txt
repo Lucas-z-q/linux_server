@@ -35,6 +35,7 @@ add_executable(server
     src/app/main_runner.cc
     src/main.cc
     src/TcpConnection.cc
+    src/ConnectionContext.cc
     src/EchoHandler.cc
     src/TcpServer.cc
     src/codec/json_codec.cc
@@ -129,6 +130,7 @@ add_executable(auth_test_server
     tests/fake_auth_server.cc
     src/app/main_runner.cc
     src/TcpServer.cc
+    src/ConnectionContext.cc
     src/codec/json_codec.cc
     src/codec/packet_codec.cc
     src/db/user_repository.cc
