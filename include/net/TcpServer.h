@@ -6,6 +6,7 @@
 #include <cstdint>
 #include <memory>
 #include <mutex>
+#include <queue>
 #include <string>
 #include <unordered_map>
 
@@ -14,6 +15,7 @@
 #include "codec/packet_codec.h"
 #include "concurrency/thread_pool.h"
 #include "net/ConnectionContext.h"
+#include "net/ResponseTask.h"
 
 // 本文件声明基于 epoll 的 TCP 服务器。
 // 该类负责连接生命周期管理、事件循环以及收发缓冲协调。
@@ -47,12 +49,6 @@ class TcpServer {
         std::string request;
     };
 
-    struct ResponseTask {
-        std::weak_ptr<ConnectionContext> context;
-        chat::ConnectionId conn_id;
-        std::string response;
-    };
-
     // 创建监听 socket。
     bool createListenSocket();
 
@@ -67,12 +63,6 @@ class TcpServer {
 
     // 注册新连接并返回其连接上下文。
     std::shared_ptr<ConnectionContext> registerConnection(int conn_fd, const std::string &peer_ip, uint16_t peer_port);
-
-    // 在收到数据后更新连接活跃时间与接收统计。
-    void touchOnRecv(uint64_t conn_id, size_t bytes);
-
-    // 在发送数据后更新连接活跃时间与发送统计。
-    void touchOnSend(uint64_t conn_id, size_t bytes);
 
     // 从连接表中注销连接并记录关闭原因。
     void unregisterConnection(uint64_t conn_id, const std::string &reason);
@@ -92,8 +82,21 @@ class TcpServer {
     // 将请求任务投递到工作线程池。
     bool submitRequestTask(RequestTask task);
 
-    // 根据文件描述符查找对应的连接编号。
-    bool getConnIdByFd(int fd, uint64_t &conn_id);
+    // 完成当前请求，并按同连接顺序尝试投递下一个请求。
+    // 该函数可在 worker 失败补偿路径调用，只能操作连接请求队列和线程池投递，不能做网络 I/O。
+    bool finishCurrentRequestAndSubmitNext(const std::shared_ptr<ConnectionContext> &context, uint64_t conn_id);
+
+    // 将 worker 完成的响应任务放入 I/O 线程消费队列。
+    bool enqueueResponseTask(ResponseTask task);
+
+    // 处理 worker 结果唤醒事件。
+    void onWorkerResultReadable();
+
+    // 创建 worker 结果通知 eventfd。
+    bool createWorkerEventFd();
+
+    // 将 worker 结果通知 eventfd 注册到 epoll。
+    bool registerWorkerEventFd();
 
     // 处理可写事件。
     void onWritable(int fd);
@@ -122,6 +125,9 @@ class TcpServer {
     // epoll 实例文件描述符。
     int epoll_fd_;
 
+    // worker 完成任务后唤醒 I/O 线程的 eventfd。
+    int worker_event_fd_;
+
     // 配置中的监听 IP。
     std::string ip_;
 
@@ -133,6 +139,14 @@ class TcpServer {
 
     // 用于后续投递业务请求处理任务的工作线程池。
     ThreadPool worker_pool_;
+
+    // worker 已完成响应任务队列，由 I/O 线程消费。
+    std::mutex completed_tasks_mutex_;
+    std::queue<ResponseTask> completed_tasks_;
+    std::atomic<uint64_t> next_response_task_id_{1};
+
+    // 标记服务器正在停止，停止后拒绝新的请求任务投递。
+    std::atomic<bool> stopping_{false};
 
     // 生成自增连接编号。
     std::atomic<uint64_t> next_conn_id_{1};

@@ -3,6 +3,8 @@
 
 #include <cstddef>
 #include <cstdint>
+#include <mutex>
+#include <queue>
 #include <string>
 #include <vector>
 
@@ -21,6 +23,10 @@ class ConnectionContext {
 
     chat::PacketCodec packet_codec_;  // 用于将连续字节流解析为独立数据包的编解码器。
     ConnectionMeta meta_;             // 连接的元数据和统计信息。
+
+    std::mutex request_mutex_;              // 保护同连接请求串行化状态。
+    bool request_in_flight_;                // 是否已有请求正在 worker 中处理。
+    std::queue<std::string> pending_requests_;  // 等待按连接顺序处理的请求队列。
 
    public:
     // 构造一个新的 ConnectionContext。
@@ -59,6 +65,15 @@ class ConnectionContext {
 
     // 清空待发送缓冲区中的所有数据。
     void clearPendingSend();
+
+    // 如果当前连接没有正在处理的请求，则立即占用执行权并返回 true；否则将请求排队。
+    bool startRequestOrQueue(const std::string& request);
+
+    // 标记当前请求完成，并取出同连接的下一个待处理请求。
+    bool finishRequestAndPopNext(std::string& next_request);
+
+    // 清空当前连接尚未处理的请求。
+    void clearPendingRequests();
 
     // 在接收到数据后更新元数据。
     // 递增接收次数，并将 `bytes` 累加到接收总字节数中。

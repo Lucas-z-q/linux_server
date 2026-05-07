@@ -4,9 +4,10 @@
 #include "net/ConnectionContext.h"
 
 #include <chrono>
+#include <utility>
 
 ConnectionContext::ConnectionContext(int fd, chat::ConnectionId conn_id, const std::string& peer_ip, uint16_t peer_port)
-    : fd_(fd), conn_id_(conn_id) {
+    : fd_(fd), conn_id_(conn_id), request_in_flight_(false) {
     // 使用默认值初始化连接元数据。
     meta_.conn_id = conn_id;
     meta_.fd = fd;
@@ -57,6 +58,38 @@ void ConnectionContext::consumePendingSend(size_t bytes) {
 }
 
 void ConnectionContext::clearPendingSend() { pending_send_.clear(); }
+
+bool ConnectionContext::startRequestOrQueue(const std::string& request) {
+    std::lock_guard<std::mutex> lock(request_mutex_);
+    if (!request_in_flight_) {
+        request_in_flight_ = true;
+        return true;
+    }
+
+    pending_requests_.push(request);
+    return false;
+}
+
+bool ConnectionContext::finishRequestAndPopNext(std::string& next_request) {
+    std::lock_guard<std::mutex> lock(request_mutex_);
+    if (pending_requests_.empty()) {
+        request_in_flight_ = false;
+        next_request.clear();
+        return false;
+    }
+
+    next_request = std::move(pending_requests_.front());
+    pending_requests_.pop();
+    request_in_flight_ = true;
+    return true;
+}
+
+void ConnectionContext::clearPendingRequests() {
+    std::lock_guard<std::mutex> lock(request_mutex_);
+    request_in_flight_ = false;
+    std::queue<std::string> empty;
+    pending_requests_.swap(empty);
+}
 
 void ConnectionContext::touchOnRecv(size_t bytes) {
     meta_.last_active_at = std::chrono::steady_clock::now();

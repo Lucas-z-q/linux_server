@@ -4,6 +4,7 @@
 #include <fcntl.h>
 #include <netinet/in.h>
 #include <sys/epoll.h>
+#include <sys/eventfd.h>
 #include <sys/socket.h>
 #include <unistd.h>
 
@@ -13,6 +14,7 @@
 #include <exception>
 #include <iomanip>
 #include <iostream>
+#include <queue>
 #include <sstream>
 #include <utility>
 #include <vector>
@@ -25,10 +27,12 @@
 TcpServer::TcpServer(const std::string &ip, uint16_t port, IMessageHandler &handler)
     : listen_fd_(-1),
       epoll_fd_(-1),
+      worker_event_fd_(-1),
       ip_(ip),
       port_(port),
       handler_(handler),
-      worker_pool_(kDefaultWorkerThreads) {}
+      worker_pool_(kDefaultWorkerThreads),
+      stopping_(false) {}
 
 TcpServer::~TcpServer() { stop(); }
 
@@ -65,6 +69,8 @@ bool TcpServer::startListen() {
 }
 
 void TcpServer::stop() {
+    stopping_.store(true);
+
     // Snapshot first, then close each client via the unified close path.
     std::vector<int> client_fds;
     {
@@ -78,7 +84,20 @@ void TcpServer::stop() {
         closeClientFd(fd, "server_stop");
     }
 
+    worker_pool_.stop();
+
+    {
+        std::lock_guard<std::mutex> lock(completed_tasks_mutex_);
+        std::queue<ResponseTask> empty;
+        completed_tasks_.swap(empty);
+    }
+
     // Close epoll after clients are removed from it.
+    if (epoll_fd_ != -1 && worker_event_fd_ != -1 &&
+        epoll_ctl(epoll_fd_, EPOLL_CTL_DEL, worker_event_fd_, nullptr) < 0 && errno != ENOENT && errno != EBADF) {
+        perror("epoll_ctl del worker_event_fd failed");
+    }
+
     if (epoll_fd_ != -1) {
         close(epoll_fd_);
         epoll_fd_ = -1;
@@ -87,6 +106,11 @@ void TcpServer::stop() {
     if (listen_fd_ != -1) {
         close(listen_fd_);
         listen_fd_ = -1;
+    }
+
+    if (worker_event_fd_ != -1) {
+        close(worker_event_fd_);
+        worker_event_fd_ = -1;
     }
 }
 
@@ -127,6 +151,11 @@ bool TcpServer::start() {
         return false;
     }
 
+    if (!createWorkerEventFd() || !registerWorkerEventFd()) {
+        stop();
+        return false;
+    }
+
     // Register the listen fd to receive incoming-connection notifications.
     struct epoll_event event;
     event.events = EPOLLIN | EPOLLET | EPOLLRDHUP;
@@ -160,6 +189,11 @@ void TcpServer::acceptLoop(int epoll_fd) {
         for (int i = 0; i < n; ++i) {
             const int fd = events[i].data.fd;
             const uint32_t event_mask = events[i].events;
+
+            if (fd == worker_event_fd_) {
+                onWorkerResultReadable();
+                continue;
+            }
 
             // For connected sockets, handle close/error/read/write events.
             if (fd != listen_fd_) {
@@ -234,29 +268,6 @@ std::shared_ptr<ConnectionContext> TcpServer::registerConnection(int conn_fd, co
     return context;
 }
 
-void TcpServer::touchOnRecv(uint64_t conn_id, size_t bytes) {
-    {
-        std::lock_guard<std::mutex> lock(connections_mutex_);
-        auto it = connections_.find(conn_id);
-        if (it == connections_.end())
-            return;
-        it->second->touchOnRecv(bytes);
-    }
-
-    // Lightweight per-message receive log.
-    std::cout << "[message_received] conn_id=" << conn_id << " bytes=" << bytes << std::endl;
-}
-
-void TcpServer::touchOnSend(uint64_t conn_id, size_t bytes) {
-    {
-        std::lock_guard<std::mutex> lock(connections_mutex_);
-        auto it = connections_.find(conn_id);
-        if (it == connections_.end())
-            return;
-        it->second->touchOnSend(bytes);
-    }
-}
-
 void TcpServer::unregisterConnection(uint64_t conn_id, const std::string &reason) {
     ConnectionMeta snapshot{};
     std::shared_ptr<ConnectionContext> context;
@@ -306,16 +317,18 @@ void TcpServer::closeClientFd(int fd, const std::string &reason) {
     }
 
     context->clearPendingSend();
+    context->clearPendingRequests();
     handler_.onConnectionClosed(conn_id);
     unregisterConnection(conn_id, reason);
 }
 
 void TcpServer::onReadable(int fd) {
-    uint64_t conn_id = 0;
-    if (!getConnIdByFd(fd, conn_id)) {
-        std::cerr << "can't find conn_id for fd=" << fd << std::endl;
+    auto context = getConnectionContextByFd(fd);
+    if (!context) {
+        std::cerr << "can't find connection context for fd=" << fd << std::endl;
         return;
     }
+    const uint64_t conn_id = context->conn_id();
 
     char buff[1024];
     while (true) {
@@ -334,14 +347,9 @@ void TcpServer::onReadable(int fd) {
             break;
         }
 
-        touchOnRecv(conn_id, static_cast<size_t>(n));
+        context->touchOnRecv(static_cast<size_t>(n));
+        std::cout << "[message_received] conn_id=" << conn_id << " bytes=" << n << std::endl;
         std::string chunk(buff, static_cast<size_t>(n));
-
-        auto context = getConnectionContextByFd(fd);
-        if (!context) {
-            closeClientFd(fd, "missing_connection_context");
-            return;
-        }
 
         std::vector<std::string> packets;
         if (!context->feedPacketData(chunk, packets)) {
@@ -355,7 +363,7 @@ void TcpServer::onReadable(int fd) {
             }
 
             RequestTask task{std::weak_ptr<ConnectionContext>(context), conn_id, packet};
-            if (!submitRequestTask(std::move(task))) {
+            if (context->startRequestOrQueue(packet) && !submitRequestTask(std::move(task))) {
                 closeClientFd(fd, "submit_request_task_failed");
                 return;
             }
@@ -364,15 +372,56 @@ void TcpServer::onReadable(int fd) {
 }
 
 bool TcpServer::submitRequestTask(RequestTask task) {
+    if (stopping_.load()) {
+        return false;
+    }
+
     try {
         worker_pool_.submit([this, task = std::move(task)]() mutable {
-            auto context = task.context.lock();
-            if (!context) {
-                return;
-            }
+            try {
+                {
+                    auto context = task.context.lock();
+                    if (!context) {
+                        return;
+                    }
+                }
 
-            std::string response = handler_.handle(task.request, task.conn_id);
-            (void)response;
+                // TODO(lzq): Some handlers, such as login, mutate session state before
+                // the I/O thread can revalidate that the connection is still alive.
+                // A stricter phase should move those side effects behind I/O-thread validation.
+                std::string response = handler_.handle(task.request, task.conn_id);
+
+                auto context = task.context.lock();
+                if (!context) {
+                    return;
+                }
+
+                ResponseTask response_task{std::weak_ptr<ConnectionContext>(context), task.conn_id, std::move(response),
+                                           next_response_task_id_.fetch_add(1), false};
+                if (!enqueueResponseTask(std::move(response_task))) {
+                    finishCurrentRequestAndSubmitNext(context, task.conn_id);
+                }
+            } catch (const std::exception &ex) {
+                std::cerr << "worker request failed: " << ex.what() << std::endl;
+                auto context = task.context.lock();
+                if (context) {
+                    ResponseTask close_task{std::weak_ptr<ConnectionContext>(context), task.conn_id, "",
+                                            next_response_task_id_.fetch_add(1), true};
+                    if (!enqueueResponseTask(std::move(close_task))) {
+                        context->clearPendingRequests();
+                    }
+                }
+            } catch (...) {
+                std::cerr << "worker request failed: unknown exception" << std::endl;
+                auto context = task.context.lock();
+                if (context) {
+                    ResponseTask close_task{std::weak_ptr<ConnectionContext>(context), task.conn_id, "",
+                                            next_response_task_id_.fetch_add(1), true};
+                    if (!enqueueResponseTask(std::move(close_task))) {
+                        context->clearPendingRequests();
+                    }
+                }
+            }
         });
     } catch (const std::exception &ex) {
         std::cerr << "submit request task failed: " << ex.what() << std::endl;
@@ -381,25 +430,154 @@ bool TcpServer::submitRequestTask(RequestTask task) {
     return true;
 }
 
-bool TcpServer::getConnIdByFd(int fd, uint64_t &conn_id) {
-    auto context = getConnectionContextByFd(fd);
-    if (context) {
-        conn_id = context->conn_id();
+bool TcpServer::finishCurrentRequestAndSubmitNext(const std::shared_ptr<ConnectionContext> &context, uint64_t conn_id) {
+    std::string next_request;
+    if (!context->finishRequestAndPopNext(next_request)) {
         return true;
     }
+
+    RequestTask next_task{std::weak_ptr<ConnectionContext>(context), conn_id, std::move(next_request)};
+    if (submitRequestTask(std::move(next_task))) {
+        return true;
+    }
+
+    context->clearPendingRequests();
     return false;
 }
 
+bool TcpServer::enqueueResponseTask(ResponseTask task) {
+    if (stopping_.load() || worker_event_fd_ == -1) {
+        return false;
+    }
+
+    const uint64_t sequence = task.sequence;
+    {
+        std::lock_guard<std::mutex> lock(completed_tasks_mutex_);
+        completed_tasks_.push(std::move(task));
+    }
+
+    while (true) {
+        const uint64_t notify_value = 1;
+        ssize_t n = write(worker_event_fd_, &notify_value, sizeof(notify_value));
+        if (n == sizeof(notify_value)) {
+            return true;
+        }
+        if (n < 0 && errno == EINTR) {
+            continue;
+        }
+        if (n < 0 && (errno == EAGAIN || errno == EWOULDBLOCK)) {
+            return true;
+        }
+        if (n < 0) {
+            perror("write worker_event_fd failed");
+        }
+
+        bool removed = false;
+        std::lock_guard<std::mutex> lock(completed_tasks_mutex_);
+        std::queue<ResponseTask> kept_tasks;
+        while (!completed_tasks_.empty()) {
+            if (completed_tasks_.front().sequence == sequence) {
+                removed = true;
+            } else {
+                kept_tasks.push(std::move(completed_tasks_.front()));
+            }
+            completed_tasks_.pop();
+        }
+        completed_tasks_.swap(kept_tasks);
+        return !removed;
+    }
+}
+
+void TcpServer::onWorkerResultReadable() {
+    uint64_t event_count = 0;
+    while (true) {
+        ssize_t n = read(worker_event_fd_, &event_count, sizeof(event_count));
+        if (n == sizeof(event_count)) {
+            continue;
+        }
+        if (n < 0 && (errno == EAGAIN || errno == EWOULDBLOCK)) {
+            break;
+        }
+        if (n < 0) {
+            perror("read worker_event_fd failed");
+        }
+        break;
+    }
+
+    std::queue<ResponseTask> ready_tasks;
+    {
+        std::lock_guard<std::mutex> lock(completed_tasks_mutex_);
+        ready_tasks.swap(completed_tasks_);
+    }
+
+    while (!ready_tasks.empty()) {
+        ResponseTask task = std::move(ready_tasks.front());
+        ready_tasks.pop();
+
+        auto context = task.context.lock();
+        if (!context) {
+            continue;
+        }
+
+        if (task.close_after) {
+            // closeClientFd clears both the current in-flight request and queued pending requests.
+            closeClientFd(context->fd(), "worker_request_exception");
+            continue;
+        }
+
+        if (!task.response.empty()) {
+            chat::PacketCodec codec;
+            context->appendPendingSend(codec.encode(task.response));
+            if (!enableWritableEvent(context->fd())) {
+                closeClientFd(context->fd(), "enable_write_event_failed");
+                continue;
+            }
+        }
+
+        if (!finishCurrentRequestAndSubmitNext(context, task.conn_id)) {
+            closeClientFd(context->fd(), "submit_request_task_failed");
+        }
+    }
+}
+
+bool TcpServer::createWorkerEventFd() {
+    if (worker_event_fd_ != -1) {
+        return true;
+    }
+
+    worker_event_fd_ = eventfd(0, EFD_NONBLOCK | EFD_CLOEXEC);
+    if (worker_event_fd_ == -1) {
+        perror("eventfd create failed");
+        return false;
+    }
+    return true;
+}
+
+bool TcpServer::registerWorkerEventFd() {
+    if (epoll_fd_ == -1 || worker_event_fd_ == -1) {
+        return false;
+    }
+
+    struct epoll_event ev;
+    ev.events = EPOLLIN | EPOLLET;
+    ev.data.fd = worker_event_fd_;
+    if (epoll_ctl(epoll_fd_, EPOLL_CTL_ADD, worker_event_fd_, &ev) < 0) {
+        perror("epoll_ctl add worker_event_fd failed");
+        return false;
+    }
+    return true;
+}
+
 void TcpServer::onWritable(int fd) {
-    uint64_t conn_id = 0;
-    if (!getConnIdByFd(fd, conn_id)) {
-        std::cerr << "can't find conn_id for fd=" << fd << std::endl;
+    auto context = getConnectionContextByFd(fd);
+    if (!context) {
+        std::cerr << "can't find connection context for fd=" << fd << std::endl;
         return;
     }
 
     while (true) {
         std::string data;
-        if (!peekPendingChunkCopy(fd, data)) {
+        if (!context->peekPendingSend(data)) {
             // No more pending data to send, disable writable event.
             if (!disableWritableEvent(fd)) {
                 closeClientFd(fd, "disable_write_event_failed");
@@ -423,8 +601,8 @@ void TcpServer::onWritable(int fd) {
             }
         }
 
-        touchOnSend(conn_id, static_cast<size_t>(n));
-        consumePendingSend(fd, static_cast<size_t>(n));
+        context->touchOnSend(static_cast<size_t>(n));
+        context->consumePendingSend(static_cast<size_t>(n));
     }
 }
 
