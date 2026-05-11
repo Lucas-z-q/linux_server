@@ -16,41 +16,45 @@
 // TODO(lzq): 为每种消息类型补充结构化日志与耗时统计。
 // TODO(lzq): 当引入业务线程池后，评估是否改成异步处理模型。
 
-namespace chat
-{
+namespace chat {
 
-  // 负责处理一条原始请求并输出一条原始响应。
-  class MessageHandler : public IMessageHandler
-  {
-  public:
+// 负责处理一条原始请求并输出一条原始响应。
+class MessageHandler : public IMessageHandler {
+   public:
     MessageHandler() = default;
     explicit MessageHandler(UserService &user_service) : user_service_(&user_service) {}
     ~MessageHandler() override = default;
 
-    // 处理客户端发送的原始请求字符串，并返回编码后的响应字符串。
-    std::string handle(const std::string &raw_request, chat::ConnectionId conn_id) override;
+    // 处理客户端发送的原始请求字符串，并返回HandleResult结构体。
+    HandleResult handle(const std::string &raw_request, chat::ConnectionId conn_id) override;
 
     // 连接关闭后清理该连接绑定的登录态。
     void onConnectionClosed(chat::ConnectionId conn_id) override;
 
-  private:
+    void applyBindSession(chat::ConnectionId conn_id, const chat::ConnectionSession &session) override {
+        user_service_->bindSession(conn_id, session);
+    }
+
+    void applyUnbindSession(chat::ConnectionId conn_id) override { user_service_->clearSession(conn_id); }
+
+   private:
     // 处理注册请求。
-    Response handleRegister(const Message &msg);
+    HandleResult handleRegister(const Message &msg);
 
     // 处理登录请求。
-    Response handleLogin(const Message &msg, chat::ConnectionId conn_id);
+    HandleResult handleLogin(const Message &msg, chat::ConnectionId conn_id);
 
     // 处理登出请求。
-    Response handleLogout(const Message &msg, chat::ConnectionId conn_id);
+    HandleResult handleLogout(const Message &msg, chat::ConnectionId conn_id);
 
     // 查询当前连接绑定的登录态。
-    Response handleWhoAmI(const Message &msg, chat::ConnectionId conn_id);
+    HandleResult handleWhoAmI(const Message &msg, chat::ConnectionId conn_id);
 
     // 处理心跳请求。
-    Response handleHeartbeat(const Message &msg);
+    HandleResult handleHeartbeat(const Message &msg);
 
     // 处理未知消息类型的请求。
-    Response handleUnknown(const Message &msg);
+    HandleResult handleUnknown(const Message &msg);
 
     // 负责 JSON 编解码的组件。
     JsonCodec codec_;
@@ -60,8 +64,8 @@ namespace chat
 
     // 负责用户注册、登录等业务逻辑的组件。
     UserService *user_service_ = &default_user_service_;
-  };
+};
 
-} // namespace chat
+}  // namespace chat
 
-#endif // LINUX_SERVER_INCLUDE_HANDLER_MESSAGE_HANDLER_H_
+#endif  // LINUX_SERVER_INCLUDE_HANDLER_MESSAGE_HANDLER_H_

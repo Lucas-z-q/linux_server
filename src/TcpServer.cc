@@ -379,28 +379,21 @@ bool TcpServer::submitRequestTask(RequestTask task) {
     try {
         worker_pool_.submit([this, task = std::move(task)]() mutable {
             try {
-                {
-                    auto context = task.context.lock();
-                    if (!context) {
-                        return;
-                    }
-                }
-
                 // TODO(lzq): Some handlers, such as login, mutate session state before
                 // the I/O thread can revalidate that the connection is still alive.
                 // A stricter phase should move those side effects behind I/O-thread validation.
-                std::string response = handler_.handle(task.request, task.conn_id);
+                HandleResult result = handler_.handle(task.request, task.conn_id);
 
                 auto context = task.context.lock();
                 if (!context) {
                     return;
                 }
 
-                ResponseTask response_task{std::weak_ptr<ConnectionContext>(context), task.conn_id, std::move(response),
-                                           next_response_task_id_.fetch_add(1), false};
-                if (!enqueueResponseTask(std::move(response_task))) {
-                    finishCurrentRequestAndSubmitNext(context, task.conn_id);
-                }
+                ResponseTask response_task{
+                    std::weak_ptr<ConnectionContext>(context), task.conn_id, std::move(result.response),
+                    next_response_task_id_.fetch_add(1),       false,        result.session_action,
+                    std::move(result.pending_session)};
+                enqueueResponseTask(std::move(response_task));
             } catch (const std::exception &ex) {
                 std::cerr << "worker request failed: " << ex.what() << std::endl;
                 auto context = task.context.lock();
@@ -469,22 +462,12 @@ bool TcpServer::enqueueResponseTask(ResponseTask task) {
             return true;
         }
         if (n < 0) {
-            perror("write worker_event_fd failed");
+            perror("write worker_event_fd failed (critical)");
+            // 即使 write 失败，任务已经在队列里了。
+            // I/O 线程最终会在下一次 eventfd 触发或轮询时排空队列。
+            // 不要去扫描并删除任务！
         }
-
-        bool removed = false;
-        std::lock_guard<std::mutex> lock(completed_tasks_mutex_);
-        std::queue<ResponseTask> kept_tasks;
-        while (!completed_tasks_.empty()) {
-            if (completed_tasks_.front().sequence == sequence) {
-                removed = true;
-            } else {
-                kept_tasks.push(std::move(completed_tasks_.front()));
-            }
-            completed_tasks_.pop();
-        }
-        completed_tasks_.swap(kept_tasks);
-        return !removed;
+        return true;  // 依然返回 true，告诉调用者任务已成功交接给 I/O 队列
     }
 }
 
@@ -532,6 +515,12 @@ void TcpServer::onWorkerResultReadable() {
                 closeClientFd(context->fd(), "enable_write_event_failed");
                 continue;
             }
+        }
+
+        if (task.session_action == SessionAction::BIND) {
+            handler_.applyBindSession(task.conn_id, task.pending_session);
+        } else if (task.session_action == SessionAction::UNBIND) {
+            handler_.applyUnbindSession(task.conn_id);
         }
 
         if (!finishCurrentRequestAndSubmitNext(context, task.conn_id)) {

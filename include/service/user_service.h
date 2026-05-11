@@ -6,20 +6,18 @@
 #include "common/error_code.h"
 #include "common/types.h"
 #include "db/user_repository.h"
-#include "server/session_manager.h"
 #include "protocol/auth_messages.h"
+#include "server/session_manager.h"
 
 // 本文件声明用户服务层接口。
 // Service 层负责编排注册、登录和登出流程，并协调 Repository 与会话状态。
 // TODO(lzq): 将密码哈希逻辑迁移到独立 PasswordHasher 组件。
 // TODO(lzq): 为登录限流、重复登录策略和审计日志预留扩展点。
 
-namespace chat
-{
+namespace chat {
 
-  // 表示注册流程的执行结果。
-  struct RegisterResult
-  {
+// 表示注册流程的执行结果。
+struct RegisterResult {
     // 业务状态码。
     ErrorCode code = ErrorCode::OK;
 
@@ -28,11 +26,10 @@ namespace chat
 
     // 注册成功时返回的业务数据。
     RegisterResponseData data;
-  };
+};
 
-  // 表示登录流程的执行结果。
-  struct LoginResult
-  {
+// 表示登录流程的执行结果。
+struct LoginResult {
     // 业务状态码。
     ErrorCode code = ErrorCode::OK;
 
@@ -41,21 +38,22 @@ namespace chat
 
     // 登录成功时返回的业务数据。
     LoginResponseData data;
-  };
 
-  // 表示登出流程的执行结果。
-  struct LogoutResult
-  {
+    // 登录成功时生成的会话状态，需交由网络层（I/O线程）完成绑定。
+    ConnectionSession session;
+};
+
+// 表示登出流程的执行结果。
+struct LogoutResult {
     // 业务状态码。
     ErrorCode code = ErrorCode::OK;
 
     // 结果说明文本。
     std::string message;
-  };
+};
 
-  // 表示查询当前连接登录态的结果。
-  struct WhoAmIResult
-  {
+// 表示查询当前连接登录态的结果。
+struct WhoAmIResult {
     // 业务状态码。
     ErrorCode code = ErrorCode::OK;
 
@@ -64,12 +62,11 @@ namespace chat
 
     // 查询成功时返回当前连接对应的会话信息。
     ConnectionSession data;
-  };
+};
 
-  // 提供用户注册、登录和登出的业务能力。
-  class UserService
-  {
-  public:
+// 提供用户注册、登录和登出的业务能力。
+class UserService {
+   public:
     // 使用默认 Repository 构造业务服务。
     UserService();
 
@@ -93,10 +90,13 @@ namespace chat
     // 查询当前连接绑定的登录态信息。
     WhoAmIResult whoami(ConnectionId conn_id);
 
+    // 供I/O线程调用的Session绑定方法
+    void bindSession(ConnectionId conn_id, const ConnectionSession &session);
+
     // 在连接断开时静默清理会话，不向客户端返回业务结果。
     void clearSession(ConnectionId conn_id);
 
-  private:
+   private:
     // 当调用方未注入仓储时，服务内部持有一个默认实现。
     UserRepository default_user_repository_;
 
@@ -110,20 +110,18 @@ namespace chat
     ISessionManager *session_manager_ = &default_session_manager_;
 
     // 校验注册请求的字段完整性与基本合法性。
-    bool validateRegisterRequest(const RegisterRequest &req,
-                                 std::string &err) const;
+    bool validateRegisterRequest(const RegisterRequest &req, std::string &err) const;
 
     // 校验登录请求的字段完整性与基本合法性。
-    bool validateLoginRequest(const LoginRequest &req,
-                              std::string &err) const;
+    bool validateLoginRequest(const LoginRequest &req, std::string &err) const;
 
     // 对用户输入密码进行哈希计算。
     std::string hashPassword(const std::string &password) const;
 
     // 为指定用户生成认证令牌。
     std::string generateToken(UserId user_id) const;
-  };
+};
 
-} // namespace chat
+}  // namespace chat
 
-#endif // LINUX_SERVER_INCLUDE_SERVICE_USER_SERVICE_H_
+#endif  // LINUX_SERVER_INCLUDE_SERVICE_USER_SERVICE_H_

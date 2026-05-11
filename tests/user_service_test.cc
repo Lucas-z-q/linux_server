@@ -278,7 +278,7 @@ void TestLoginReturnsWrongPasswordWhenHashDoesNotMatch()
   assert(result.message == "invalid username or password");
 }
 
-void TestLoginSuccessReturnsUserDataTokenAndBindsSession()
+void TestLoginSuccessReturnsUserDataTokenAndPendingSession()
 {
   FakeUserRepository repo;
   FakeSessionManager session_manager;
@@ -298,31 +298,31 @@ void TestLoginSuccessReturnsUserDataTokenAndBindsSession()
   assert(result.data.nickname == "Alice");
   assert(result.data.token == "token_10001");
   assert(repo.last_username == "alice");
+  assert(!session_manager.bind_called);
+  assert(result.session.authenticated);
+  assert(result.session.user_id == 10001);
+  assert(result.session.username == "alice");
+  assert(result.session.token == "token_10001");
+}
+
+void TestBindSessionAppliesPendingSession()
+{
+  FakeSessionManager session_manager;
+  chat::UserService service(session_manager);
+  chat::ConnectionSession session;
+  session.authenticated = true;
+  session.user_id = 10001;
+  session.username = "alice";
+  session.token = "token_10001";
+
+  service.bindSession(42, session);
+
   assert(session_manager.bind_called);
   assert(session_manager.last_connection_id == 42);
   assert(session_manager.last_session.authenticated);
   assert(session_manager.last_session.user_id == 10001);
   assert(session_manager.last_session.username == "alice");
   assert(session_manager.last_session.token == "token_10001");
-}
-
-void TestLoginReturnsInternalErrorWhenBindSessionFails()
-{
-  FakeUserRepository repo;
-  FakeSessionManager session_manager;
-  session_manager.bind_result = false;
-  repo.find_by_username_result.status = chat::RepositoryStatus::kOk;
-  chat::UserRecord record;
-  record.id = 10001;
-  record.username = "alice";
-  record.nickname = "Alice";
-  record.password_hash = HashPasswordForTest("123456");
-  repo.find_by_username_result.user = record;
-  chat::UserService service(repo, session_manager);
-
-  const chat::LoginResult result = service.login(MakeLoginRequest(), 42);
-  assert(result.code == chat::ErrorCode::INTERNAL_ERROR);
-  assert(result.message == "failed to bind session");
 }
 
 void TestWhoAmIReturnsUserNotLoggedInWhenSessionMissing()
@@ -380,8 +380,8 @@ void TestLogoutClearsSessionWhenLoggedIn()
   const chat::LogoutResult result = service.logout(42);
   assert(result.code == chat::ErrorCode::OK);
   assert(result.message == "logout success");
-  assert(session_manager.clear_called);
-  assert(!session_manager.session_for_connection.has_value());
+  assert(!session_manager.clear_called);
+  assert(session_manager.session_for_connection.has_value());
 }
 
 void TestClearSessionSilentlyRemovesLoggedInSession()
@@ -417,8 +417,8 @@ int main()
   TestLoginReturnsUserNotFoundWhenUserDoesNotExist();
   TestLoginReturnsInternalErrorWhenRepositoryResultIsIncomplete();
   TestLoginReturnsWrongPasswordWhenHashDoesNotMatch();
-  TestLoginSuccessReturnsUserDataTokenAndBindsSession();
-  TestLoginReturnsInternalErrorWhenBindSessionFails();
+  TestLoginSuccessReturnsUserDataTokenAndPendingSession();
+  TestBindSessionAppliesPendingSession();
   TestWhoAmIReturnsUserNotLoggedInWhenSessionMissing();
   TestWhoAmIReturnsSessionDataWhenLoggedIn();
   TestLogoutReturnsUserNotLoggedInWhenSessionMissing();
