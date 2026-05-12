@@ -49,12 +49,19 @@ bool TcpServer::bindAddress() {
     memset(&server_addr, 0, sizeof(server_addr));
     server_addr.sin_family = AF_INET;
     server_addr.sin_addr.s_addr = INADDR_ANY;
-    server_addr.sin_port = htons(port_);
+    const uint16_t requested_port = port_.load();
+    server_addr.sin_port = htons(requested_port);
 
     if (bind(listen_fd_, (struct sockaddr *)&server_addr, sizeof(server_addr)) < 0) {
         perror("Bind failed.");
-        stop();
         return false;
+    }
+
+    if (requested_port == 0) {
+        socklen_t len = sizeof(server_addr);
+        if (getsockname(listen_fd_, (struct sockaddr *)&server_addr, &len) == 0) {
+            port_.store(ntohs(server_addr.sin_port));
+        }
     }
     return true;
 }
@@ -62,55 +69,26 @@ bool TcpServer::bindAddress() {
 bool TcpServer::startListen() {
     if (listen(listen_fd_, 5) < 0) {
         perror("Listen failed.");
-        stop();
         return false;
     }
     return true;
 }
 
 void TcpServer::stop() {
-    stopping_.store(true);
+    bool expected = false;
+    if (!stopping_.compare_exchange_strong(expected, true)) {
+        return;
+    }
 
-    // Snapshot first, then close each client via the unified close path.
-    std::vector<int> client_fds;
+    // 主动写入 eventfd，安全唤醒 acceptLoop 中的 epoll_wait。
     {
-        std::lock_guard<std::mutex> lock(fd_to_context_mutex_);
-        client_fds.reserve(fd_to_context_.size());
-        for (const auto &entry : fd_to_context_) {
-            client_fds.push_back(entry.first);
+        std::lock_guard<std::mutex> lock(worker_event_fd_mutex_);
+        if (worker_event_fd_ != -1) {
+            const uint64_t notify_value = 1;
+            if (write(worker_event_fd_, &notify_value, sizeof(notify_value)) < 0 && errno != EAGAIN) {
+                // 忽略错误，因为服务即将关停
+            }
         }
-    }
-    for (int fd : client_fds) {
-        closeClientFd(fd, "server_stop");
-    }
-
-    worker_pool_.stop();
-
-    {
-        std::lock_guard<std::mutex> lock(completed_tasks_mutex_);
-        std::queue<ResponseTask> empty;
-        completed_tasks_.swap(empty);
-    }
-
-    // Close epoll after clients are removed from it.
-    if (epoll_fd_ != -1 && worker_event_fd_ != -1 &&
-        epoll_ctl(epoll_fd_, EPOLL_CTL_DEL, worker_event_fd_, nullptr) < 0 && errno != ENOENT && errno != EBADF) {
-        perror("epoll_ctl del worker_event_fd failed");
-    }
-
-    if (epoll_fd_ != -1) {
-        close(epoll_fd_);
-        epoll_fd_ = -1;
-    }
-
-    if (listen_fd_ != -1) {
-        close(listen_fd_);
-        listen_fd_ = -1;
-    }
-
-    if (worker_event_fd_ != -1) {
-        close(worker_event_fd_);
-        worker_event_fd_ = -1;
     }
 }
 
@@ -129,30 +107,64 @@ bool TcpServer::set_nonblocking(int fd) {
 }
 
 bool TcpServer::start() {
-    if (!createListenSocket())
-        return false;
+    if (stopping_.load()) return false;
 
-    if (!bindAddress())
-        return false;
+    auto cleanup_resources = [this]() {
+        stop(); // 确保安全设置了停止标志
+        worker_pool_.stop(); // 阻塞等待业务线程安全降落
 
-    if (!startListen())
-        return false;
+        if (listen_fd_ != -1) {
+            close(listen_fd_);
+            listen_fd_ = -1;
+        }
+
+        std::vector<int> client_fds;
+        {
+            std::lock_guard<std::mutex> lock(fd_to_context_mutex_);
+            client_fds.reserve(fd_to_context_.size());
+            for (const auto &entry : fd_to_context_) {
+                client_fds.push_back(entry.first);
+            }
+        }
+        for (int fd : client_fds) {
+            closeClientFd(fd, "server_stop");
+        }
+
+        {
+            std::lock_guard<std::mutex> lock(completed_tasks_mutex_);
+            std::queue<ResponseTask> empty;
+            completed_tasks_.swap(empty);
+        }
+
+        {
+            std::lock_guard<std::mutex> lock(worker_event_fd_mutex_);
+            if (worker_event_fd_ != -1) {
+                close(worker_event_fd_);
+                worker_event_fd_ = -1;
+            }
+        }
+        if (epoll_fd_ != -1) {
+            close(epoll_fd_);
+            epoll_fd_ = -1;
+        }
+    };
+
+    if (!createListenSocket()) { cleanup_resources(); return false; }
+    if (!bindAddress()) { cleanup_resources(); return false; }
+    if (!startListen()) { cleanup_resources(); return false; }
 
     // EPOLLET requires non-blocking sockets, otherwise edge-trigger behavior is unsafe.
-    if (!set_nonblocking(listen_fd_)) {
-        stop();
-        return false;
-    }
+    if (!set_nonblocking(listen_fd_)) { cleanup_resources(); return false; }
 
     epoll_fd_ = epoll_create1(0);
     if (epoll_fd_ < 0) {
         perror("epoll_create failed.");
-        stop();
+        cleanup_resources();
         return false;
     }
 
     if (!createWorkerEventFd() || !registerWorkerEventFd()) {
-        stop();
+        cleanup_resources();
         return false;
     }
 
@@ -162,11 +174,12 @@ bool TcpServer::start() {
     event.data.fd = listen_fd_;
     if (epoll_ctl(epoll_fd_, EPOLL_CTL_ADD, listen_fd_, &event) < 0) {
         perror("epoll_ctl add listen_fd failed");
-        stop();
+        cleanup_resources();
         return false;
     }
 
     acceptLoop(epoll_fd_);
+    cleanup_resources();
     return true;
 }
 
@@ -175,8 +188,11 @@ void TcpServer::acceptLoop(int epoll_fd) {
     struct epoll_event events[kMaxEvents];
     struct sockaddr_in client_addr;
 
-    while (true) {
+    while (!stopping_.load()) {
         int n = epoll_wait(epoll_fd, events, kMaxEvents, -1);
+        if (stopping_.load()) {
+            break;  // 被唤醒后发现已停机，直接跳出循环避免处理后续事件
+        }
         if (n < 0) {
             // Signal interruption is transient.
             if (errno == EINTR) {
@@ -439,11 +455,17 @@ bool TcpServer::finishCurrentRequestAndSubmitNext(const std::shared_ptr<Connecti
 }
 
 bool TcpServer::enqueueResponseTask(ResponseTask task) {
-    if (stopping_.load() || worker_event_fd_ == -1) {
+    if (stopping_.load()) {
         return false;
     }
 
     const uint64_t sequence = task.sequence;
+
+    std::lock_guard<std::mutex> fd_lock(worker_event_fd_mutex_);
+    if (worker_event_fd_ == -1) {
+        return false;
+    }
+
     {
         std::lock_guard<std::mutex> lock(completed_tasks_mutex_);
         completed_tasks_.push(std::move(task));
@@ -473,18 +495,23 @@ bool TcpServer::enqueueResponseTask(ResponseTask task) {
 
 void TcpServer::onWorkerResultReadable() {
     uint64_t event_count = 0;
-    while (true) {
-        ssize_t n = read(worker_event_fd_, &event_count, sizeof(event_count));
-        if (n == sizeof(event_count)) {
-            continue;
+    {
+        std::lock_guard<std::mutex> lock(worker_event_fd_mutex_);
+        if (worker_event_fd_ != -1) {
+            while (true) {
+                ssize_t n = read(worker_event_fd_, &event_count, sizeof(event_count));
+                if (n == sizeof(event_count)) {
+                    continue;
+                }
+                if (n < 0 && (errno == EAGAIN || errno == EWOULDBLOCK)) {
+                    break;
+                }
+                if (n < 0) {
+                    perror("read worker_event_fd failed");
+                }
+                break;
+            }
         }
-        if (n < 0 && (errno == EAGAIN || errno == EWOULDBLOCK)) {
-            break;
-        }
-        if (n < 0) {
-            perror("read worker_event_fd failed");
-        }
-        break;
     }
 
     std::queue<ResponseTask> ready_tasks;

@@ -186,3 +186,20 @@ target_link_libraries(thread_pool_test PRIVATE
 )
 
 add_test(NAME thread_pool_test COMMAND thread_pool_test)
+
+add_executable(server_shutdown_test
+    tests/server_shutdown_test.cc
+    src/TcpServer.cc
+    src/ConnectionContext.cc
+    src/concurrency/thread_pool.cc
+    src/codec/packet_codec.cc
+)
+
+target_include_directories(server_shutdown_test PRIVATE include third_party)
+target_link_libraries(server_shutdown_test PRIVATE
+    GTest::gtest
+    GTest::gtest_main
+    Threads::Threads
+)
+
+add_test(NAME server_shutdown_test COMMAND server_shutdown_test)

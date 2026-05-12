@@ -37,8 +37,11 @@ class TcpServer {
     // 启动服务器并进入事件循环。
     bool start();
 
-    // 停止服务器并关闭相关资源。
+    // 请求停止服务器并唤醒事件循环，资源由事件循环退出后的清理路径释放。
     void stop();
+
+    // 获取实际绑定的端口（如果配置了 0 端口，可通过此方法获取分配的端口）。
+    uint16_t getPort() const { return port_.load(); }
 
    private:
     static constexpr size_t kDefaultWorkerThreads = 4;
@@ -127,12 +130,13 @@ class TcpServer {
 
     // worker 完成任务后唤醒 I/O 线程的 eventfd。
     int worker_event_fd_;
+    std::mutex worker_event_fd_mutex_;
 
     // 配置中的监听 IP。
     std::string ip_;
 
-    // 配置中的监听端口。
-    uint16_t port_;
+    // 配置中的监听端口；传入 0 时，绑定后保存系统分配的真实端口。
+    std::atomic<uint16_t> port_;
 
     // 业务消息处理器引用。
     IMessageHandler &handler_;
