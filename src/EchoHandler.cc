@@ -5,8 +5,9 @@
  * @brief Implements echo message handling logic.
  */
 
-std::string EchoHandler::handle(const std::string& request,
-                                chat::ConnectionId conn_id) {
+HandleResult EchoHandler::handle(const std::string& request, chat::ConnectionId conn_id) {
     (void)conn_id;
-    return request;
+    HandleResult result;
+    result.response = request;
+    return result;
 }

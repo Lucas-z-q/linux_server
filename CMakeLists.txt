@@ -8,6 +8,18 @@ set(CMAKE_CXX_EXTENSIONS OFF)
 
 enable_testing()
 
+include(FetchContent)
+
+find_package(Threads REQUIRED)
+find_package(GTest QUIET)
+if(NOT GTest_FOUND)
+    FetchContent_Declare(
+        googletest
+        URL https://github.com/google/googletest/archive/refs/tags/v1.14.0.zip
+    )
+    FetchContent_MakeAvailable(googletest)
+endif()
+
 find_library(MYSQLCLIENT_LIB
     NAMES mysqlclient
     PATHS /usr/lib/x86_64-linux-gnu /lib/x86_64-linux-gnu
@@ -23,6 +35,7 @@ add_executable(server
     src/app/main_runner.cc
     src/main.cc
     src/TcpConnection.cc
+    src/ConnectionContext.cc
     src/EchoHandler.cc
     src/TcpServer.cc
     src/codec/json_codec.cc
@@ -33,10 +46,11 @@ add_executable(server
     src/protocol/protocol_helper.cc
     src/server/session_manager.cc
     src/service/user_service.cc
+    src/concurrency/thread_pool.cc
 )
 
 target_include_directories(server PRIVATE include third_party)
-target_link_libraries(server PRIVATE ${MYSQLCLIENT_LIB})
+target_link_libraries(server PRIVATE ${MYSQLCLIENT_LIB} Threads::Threads)
 
 add_executable(client
     client/client.cc
@@ -81,6 +95,9 @@ add_executable(message_handler_test
 target_include_directories(message_handler_test PRIVATE include third_party)
 target_link_libraries(message_handler_test PRIVATE ${MYSQLCLIENT_LIB})
 add_test(NAME message_handler_test COMMAND message_handler_test)
+set_tests_properties(message_handler_test PROPERTIES ENVIRONMENT
+    "CHAT_DB_HOST=;CHAT_DB_PORT=;CHAT_DB_USER=;CHAT_DB_PASSWORD=;CHAT_DB_NAME="
+)
 
 add_executable(user_service_test
     tests/user_service_test.cc
@@ -102,22 +119,29 @@ target_include_directories(server_integration_test PRIVATE include third_party)
 target_compile_definitions(server_integration_test PRIVATE
     SERVER_BINARY_PATH="$<TARGET_FILE:server>"
 )
+add_dependencies(server_integration_test server)
 add_test(NAME server_integration_test COMMAND server_integration_test)
+set_tests_properties(server_integration_test PROPERTIES
+    TIMEOUT 15
+    ENVIRONMENT "CHAT_DB_HOST=;CHAT_DB_PORT=;CHAT_DB_USER=;CHAT_DB_PASSWORD=;CHAT_DB_NAME="
+)
 
 add_executable(auth_test_server
     tests/fake_auth_server.cc
     src/app/main_runner.cc
     src/TcpServer.cc
+    src/ConnectionContext.cc
     src/codec/json_codec.cc
     src/codec/packet_codec.cc
     src/db/user_repository.cc
     src/handler/message_handler.cc
     src/server/session_manager.cc
     src/service/user_service.cc
+    src/concurrency/thread_pool.cc
 )
 
 target_include_directories(auth_test_server PRIVATE include third_party)
-target_link_libraries(auth_test_server PRIVATE ${MYSQLCLIENT_LIB})
+target_link_libraries(auth_test_server PRIVATE ${MYSQLCLIENT_LIB} Threads::Threads)
 
 add_executable(auth_integration_test
     tests/auth_integration_test.cc
@@ -128,7 +152,9 @@ target_include_directories(auth_integration_test PRIVATE include third_party)
 target_compile_definitions(auth_integration_test PRIVATE
     AUTH_TEST_SERVER_BINARY_PATH="$<TARGET_FILE:auth_test_server>"
 )
+add_dependencies(auth_integration_test auth_test_server)
 add_test(NAME auth_integration_test COMMAND auth_integration_test)
+set_tests_properties(auth_integration_test PROPERTIES TIMEOUT 15)
 
 add_executable(session_manager_test
     tests/session_manager_test.cc
@@ -146,3 +172,34 @@ add_executable(user_repository_test
 target_include_directories(user_repository_test PRIVATE include third_party)
 target_link_libraries(user_repository_test PRIVATE ${MYSQLCLIENT_LIB})
 add_test(NAME user_repository_test COMMAND user_repository_test)
+
+add_executable(thread_pool_test
+    tests/thread_pool_test.cc
+    src/concurrency/thread_pool.cc
+)
+
+target_include_directories(thread_pool_test PRIVATE include third_party)
+target_link_libraries(thread_pool_test PRIVATE
+    GTest::gtest
+    GTest::gtest_main
+    Threads::Threads
+)
+
+add_test(NAME thread_pool_test COMMAND thread_pool_test)
+
+add_executable(server_shutdown_test
+    tests/server_shutdown_test.cc
+    src/TcpServer.cc
+    src/ConnectionContext.cc
+    src/concurrency/thread_pool.cc
+    src/codec/packet_codec.cc
+)
+
+target_include_directories(server_shutdown_test PRIVATE include third_party)
+target_link_libraries(server_shutdown_test PRIVATE
+    GTest::gtest
+    GTest::gtest_main
+    Threads::Threads
+)
+
+add_test(NAME server_shutdown_test COMMAND server_shutdown_test)

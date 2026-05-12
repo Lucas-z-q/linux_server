@@ -26,6 +26,8 @@
 *.swp
 *.swo
 .codex
+.claude
+CLAUDE.md
 
 
 # OS files

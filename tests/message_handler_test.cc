@@ -48,6 +48,22 @@ nlohmann::json ParseResponse(const std::string& raw_response) {
   return nlohmann::json::parse(raw_response);
 }
 
+nlohmann::json ParseResponse(const HandleResult& result) {
+  return ParseResponse(result.response);
+}
+
+HandleResult DispatchAndApply(MessageHandler& handler,
+                              const std::string& raw_request,
+                              ConnectionId conn_id) {
+  HandleResult result = handler.handle(raw_request, conn_id);
+  if (result.session_action == SessionAction::BIND) {
+    handler.applyBindSession(conn_id, result.pending_session);
+  } else if (result.session_action == SessionAction::UNBIND) {
+    handler.applyUnbindSession(conn_id);
+  }
+  return result;
+}
+
 void ExpectCommonEnvelope(const nlohmann::json& resp, const std::string& msg_type,
                           int seq, ErrorCode code) {
   assert(resp.contains("msg_type"));
@@ -133,32 +149,37 @@ void TestHandleLoginThenWhoAmIThenLogoutOnSameConnection() {
   UserService service(repo, session_manager);
   MessageHandler handler(service);
 
-  const nlohmann::json login_resp = ParseResponse(handler.handle(
+  const HandleResult login_result = DispatchAndApply(
+      handler,
       R"({"msg_type":"login","seq":6,"token":"","data":{"username":"alice","password":"123456"}})",
-      42));
+      42);
+  assert(login_result.session_action == SessionAction::BIND);
+  const nlohmann::json login_resp = ParseResponse(login_result);
   ExpectCommonEnvelope(login_resp, "login_resp", 6, ErrorCode::OK);
   assert(login_resp["data"]["user_id"].get<int>() == 10001);
   assert(login_resp["data"]["token"].get<std::string>() == "token_10001");
 
   const nlohmann::json whoami_resp = ParseResponse(
-      handler.handle(R"({"msg_type":"whoami","seq":7,"token":"","data":{}})", 42));
+      DispatchAndApply(handler, R"({"msg_type":"whoami","seq":7,"token":"","data":{}})", 42));
   ExpectCommonEnvelope(whoami_resp, "whoami_resp", 7, ErrorCode::OK);
   assert(whoami_resp["data"]["user_id"].get<int>() == 10001);
   assert(whoami_resp["data"]["username"].get<std::string>() == "alice");
   assert(whoami_resp["data"]["token"].get<std::string>() == "token_10001");
 
   const nlohmann::json other_conn_resp = ParseResponse(
-      handler.handle(R"({"msg_type":"whoami","seq":8,"token":"","data":{}})", 77));
+      DispatchAndApply(handler, R"({"msg_type":"whoami","seq":8,"token":"","data":{}})", 77));
   ExpectCommonEnvelope(other_conn_resp, "whoami_resp", 8,
                        ErrorCode::USER_NOT_FOUND);
 
-  const nlohmann::json logout_resp = ParseResponse(
-      handler.handle(R"({"msg_type":"logout","seq":9,"token":"","data":{}})", 42));
+  const HandleResult logout_result =
+      DispatchAndApply(handler, R"({"msg_type":"logout","seq":9,"token":"","data":{}})", 42);
+  assert(logout_result.session_action == SessionAction::UNBIND);
+  const nlohmann::json logout_resp = ParseResponse(logout_result);
   ExpectCommonEnvelope(logout_resp, "logout_resp", 9, ErrorCode::OK);
   assert(logout_resp["message"].get<std::string>() == "logout success");
 
   const nlohmann::json whoami_after_logout = ParseResponse(
-      handler.handle(R"({"msg_type":"whoami","seq":10,"token":"","data":{}})", 42));
+      DispatchAndApply(handler, R"({"msg_type":"whoami","seq":10,"token":"","data":{}})", 42));
   ExpectCommonEnvelope(whoami_after_logout, "whoami_resp", 10,
                        ErrorCode::USER_NOT_FOUND);
 }
@@ -177,7 +198,8 @@ void TestHandleConnectionClosedClearsSession() {
   UserService service(repo, session_manager);
   MessageHandler handler(service);
 
-  const nlohmann::json login_resp = ParseResponse(handler.handle(
+  const nlohmann::json login_resp = ParseResponse(DispatchAndApply(
+      handler,
       R"({"msg_type":"login","seq":17,"token":"","data":{"username":"alice","password":"123456"}})",
       42));
   ExpectCommonEnvelope(login_resp, "login_resp", 17, ErrorCode::OK);
@@ -185,7 +207,7 @@ void TestHandleConnectionClosedClearsSession() {
   handler.onConnectionClosed(42);
 
   const nlohmann::json whoami_after_close = ParseResponse(
-      handler.handle(R"({"msg_type":"whoami","seq":18,"token":"","data":{}})", 42));
+      DispatchAndApply(handler, R"({"msg_type":"whoami","seq":18,"token":"","data":{}})", 42));
   ExpectCommonEnvelope(whoami_after_close, "whoami_resp", 18,
                        ErrorCode::USER_NOT_FOUND);
 }
