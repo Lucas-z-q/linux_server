@@ -2,6 +2,7 @@ cmake_minimum_required(VERSION 3.10)
 
 project(Linux_Server LANGUAGES CXX)
 
+set(CMAKE_EXPORT_COMPILE_COMMANDS ON)
 set(CMAKE_CXX_STANDARD 17)
 set(CMAKE_CXX_STANDARD_REQUIRED ON)
 set(CMAKE_CXX_EXTENSIONS OFF)
@@ -41,6 +42,7 @@ add_executable(server
     src/codec/json_codec.cc
     src/codec/packet_codec.cc
     src/db/db_pool.cc
+    src/db/db_connection.cc
     src/db/user_repository.cc
     src/handler/message_handler.cc
     src/protocol/protocol_helper.cc
@@ -203,3 +205,31 @@ target_link_libraries(server_shutdown_test PRIVATE
 )
 
 add_test(NAME server_shutdown_test COMMAND server_shutdown_test)
+
+add_executable(db_connection_test
+    tests/db_connection_test.cc
+    src/db/db_connection.cc
+)
+
+target_include_directories(db_connection_test PRIVATE include third_party)
+target_link_libraries(db_connection_test PRIVATE
+    ${MYSQLCLIENT_LIB}
+    GTest::gtest
+    GTest::gtest_main
+)
+add_test(NAME db_connection_test COMMAND db_connection_test)
+
+add_executable(db_pool_test
+    tests/db_pool_test.cc
+    src/db/db_pool.cc
+    src/db/db_connection.cc
+)
+
+target_include_directories(db_pool_test PRIVATE include third_party)
+target_link_libraries(db_pool_test PRIVATE
+    ${MYSQLCLIENT_LIB}
+    GTest::gtest
+    GTest::gtest_main
+    Threads::Threads
+)
+add_test(NAME db_pool_test COMMAND db_pool_test)
