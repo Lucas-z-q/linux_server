@@ -15,19 +15,22 @@ namespace {
 // 与 UserRepository 中的逻辑类似。
 DbConfig GetTestDbConfig() {
     DbConfig config;
-    if (const char* host = std::getenv("CHAT_DB_HOST")) config.host = host;
-    if (const char* port = std::getenv("CHAT_DB_PORT")) config.port = std::stoi(port);
-    if (const char* user = std::getenv("CHAT_DB_USER")) config.username = user;
-    if (const char* pwd = std::getenv("CHAT_DB_PASSWORD")) config.password = pwd;
-    if (const char* db = std::getenv("CHAT_DB_NAME")) config.database = db;
+    if (const char* host = std::getenv("CHAT_DB_HOST"))
+        config.host = host;
+    if (const char* port = std::getenv("CHAT_DB_PORT"))
+        config.port = std::stoi(port);
+    if (const char* user = std::getenv("CHAT_DB_USER"))
+        config.username = user;
+    if (const char* pwd = std::getenv("CHAT_DB_PASSWORD"))
+        config.password = pwd;
+    if (const char* db = std::getenv("CHAT_DB_NAME"))
+        config.database = db;
     return config;
 }
 
 class DbPoolTest : public ::testing::Test {
    protected:
-    void SetUp() override {
-        config_ = GetTestDbConfig();
-    }
+    void SetUp() override { config_ = GetTestDbConfig(); }
 
     DbConfig config_;
 };
@@ -81,12 +84,14 @@ TEST_F(DbPoolTest, DestructorReturnsConnection) {
 
 // 语义测试 4：连续 borrow 不超过 max_connections
 TEST_F(DbPoolTest, MaxConnectionsLimitAndBlock) {
-    DbPool pool(config_);
+    DbPoolConfig pool_config;
+    pool_config.max_connections = 10;
+
+    DbPool pool(config_, pool_config);
     if (!pool.init()) {
         GTEST_SKIP() << "Database not available or config missing, skipping real connection test.";
     }
 
-    // 当前 DbPoolConfig 默认 max_connections 是 10
     const int max_conns = 10;
     std::vector<PooledConnection> conns;
 
@@ -121,7 +126,8 @@ TEST_F(DbPoolTest, MaxConnectionsLimitAndBlock) {
 // 语义测试 5：发生 move 后，原来的空壳不应该向连接池归还 nullptr
 TEST_F(DbPoolTest, MoveSemanticsDoesNotDoubleReturn) {
     DbPool pool(config_);
-    if (!pool.init()) GTEST_SKIP();
+    if (!pool.init())
+        GTEST_SKIP();
 
     auto initial_stats = pool.getStats();
 
@@ -129,7 +135,7 @@ TEST_F(DbPoolTest, MoveSemanticsDoesNotDoubleReturn) {
         auto conn1 = pool.borrow();
         PooledConnection conn2 = std::move(*conn1);  // 移动构造
         PooledConnection conn3;
-        conn3 = std::move(conn2);                    // 移动赋值
+        conn3 = std::move(conn2);  // 移动赋值
     }  // 依次析构，conn1 和 conn2 是空壳，conn3 持有真实连接
 
     EXPECT_EQ(pool.getStats().current_total, initial_stats.current_total);

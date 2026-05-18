@@ -3,6 +3,8 @@
 #include <cassert>
 #include <iostream>
 
+#include "db/db_pool.h"
+
 namespace
 {
 
@@ -15,7 +17,8 @@ void TestFindReturnsEmptyWhenConfigIncomplete()
   config.password = "";
   config.database = "";
 
-  chat::UserRepository repo(config);
+  chat::DbPool pool(config);
+  chat::UserRepository repo(&pool);
   const chat::FindUserResult by_name = repo.findByUsername("alice");
   const chat::FindUserResult by_id = repo.findById(1);
 
@@ -34,7 +37,8 @@ void TestCreateReturnsFalseWhenConfigIncomplete()
   config.password = "";
   config.database = "";
 
-  chat::UserRepository repo(config);
+  chat::DbPool pool(config);
+  chat::UserRepository repo(&pool);
   const chat::CreateUserResult result =
       repo.createUser("alice", "hash_xxx", "Alice");
 

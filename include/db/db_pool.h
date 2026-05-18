@@ -26,7 +26,8 @@ class DbPool;
 class PooledConnection {
    public:
     PooledConnection() = default;
-    PooledConnection(DbPool* pool, std::unique_ptr<DbConnection> conn);
+    PooledConnection(DbPool* pool, std::unique_ptr<DbConnection> conn,
+                     std::chrono::steady_clock::time_point create_time);
 
     ~PooledConnection();
 
@@ -39,10 +40,14 @@ class PooledConnection {
     DbConnection* operator->() noexcept;
     DbConnection& operator*() noexcept;
     explicit operator bool() const noexcept;
+    // 标记该连接已经损坏，归还时直接销毁而不放回空闲队列
+    void markBad() noexcept;
 
    private:
     DbPool* pool_ = nullptr;
     std::unique_ptr<DbConnection> conn_;
+    std::chrono::steady_clock::time_point create_time_;
+    bool reusable_ = true;
 };
 
 // 负责初始化并管理数据库连接资源。
@@ -64,8 +69,10 @@ class DbPool {
         std::size_t current_idle = 0;       // 当前空闲数
         std::size_t current_total = 0;      // 当前总连接数
         std::size_t waiting_threads = 0;    // 等待线程数
-        std::size_t total_created = 0;      // 累计创建数
-        std::size_t total_reconnected = 0;  // 累计重连数
+        std::size_t total_created = 0;      // 累计成功创建数
+        std::size_t total_ping_failed = 0;  // 累计 ping 失败次数 (借出前检查)
+        std::size_t total_invalidated = 0;  // 累计连接失效次数 (归还时或业务标记)
+        std::size_t total_expired = 0;      // 累计连接过期次数 (空闲或生命周期)
         std::size_t total_timeouts = 0;     // 累计超时数
     };
     Stats getStats();
@@ -73,14 +80,17 @@ class DbPool {
     friend class PooledConnection;
 
    private:
-    void returnConnection(std::unique_ptr<DbConnection> conn);
-
     // 连接元信息包装，用于支持 max_lifetime_ms 和 idle_timeout_ms
     struct IdleConnection {
         std::unique_ptr<DbConnection> conn;
         std::chrono::steady_clock::time_point create_time;
         std::chrono::steady_clock::time_point last_return_time;
     };
+    void returnConnection(std::unique_ptr<DbConnection> conn, std::chrono::steady_clock::time_point create_time,
+                          bool reusable);
+    std::unique_ptr<DbConnection> createConnection();
+
+    bool isExpired(const IdleConnection& idle, std::chrono::steady_clock::time_point now);
 
     DbConfig config_;
     DbPoolConfig pool_config_;

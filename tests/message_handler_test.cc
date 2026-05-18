@@ -84,7 +84,10 @@ void ExpectCommonEnvelope(const nlohmann::json& resp, const std::string& msg_typ
 }
 
 void TestHandleHeartbeatSuccess() {
-  MessageHandler handler;
+  FakeUserRepository repo;
+  SessionManager session_manager;
+  UserService service(repo, session_manager);
+  MessageHandler handler(service);
   const std::string request =
       R"({"msg_type":"heartbeat","seq":1,"token":"","data":{}})";
 
@@ -96,7 +99,11 @@ void TestHandleHeartbeatSuccess() {
 }
 
 void TestHandleLoginDbQueryFailedWithoutDbConfig() {
-  MessageHandler handler;
+  FakeUserRepository repo;
+  repo.find_by_username_result.status = RepositoryStatus::kQueryFailed;
+  SessionManager session_manager;
+  UserService service(repo, session_manager);
+  MessageHandler handler(service);
   const std::string request =
       R"({"msg_type":"login","seq":2,"token":"","data":{"username":"alice","password":"123456"}})";
 
@@ -106,7 +113,11 @@ void TestHandleLoginDbQueryFailedWithoutDbConfig() {
 }
 
 void TestHandleRegisterDbQueryFailedWithoutDbConfig() {
-  MessageHandler handler;
+  FakeUserRepository repo;
+  repo.find_by_username_result.status = RepositoryStatus::kQueryFailed;
+  SessionManager session_manager;
+  UserService service(repo, session_manager);
+  MessageHandler handler(service);
   const std::string request =
       R"({"msg_type":"register","seq":3,"token":"","data":{"username":"alice","password":"123456","nickname":"Alice"}})";
 
@@ -116,7 +127,10 @@ void TestHandleRegisterDbQueryFailedWithoutDbConfig() {
 }
 
 void TestHandleLogoutReturnsUserNotLoggedIn() {
-  MessageHandler handler;
+  FakeUserRepository repo;
+  SessionManager session_manager;
+  UserService service(repo, session_manager);
+  MessageHandler handler(service);
   const std::string request =
       R"({"msg_type":"logout","seq":4,"token":"","data":{}})";
 
@@ -126,7 +140,10 @@ void TestHandleLogoutReturnsUserNotLoggedIn() {
 }
 
 void TestHandleWhoAmIReturnsUserNotLoggedIn() {
-  MessageHandler handler;
+  FakeUserRepository repo;
+  SessionManager session_manager;
+  UserService service(repo, session_manager);
+  MessageHandler handler(service);
   const std::string request =
       R"({"msg_type":"whoami","seq":5,"token":"","data":{}})";
 
@@ -213,7 +230,10 @@ void TestHandleConnectionClosedClearsSession() {
 }
 
 void TestHandleUnknownMessageType() {
-  MessageHandler handler;
+  FakeUserRepository repo;
+  SessionManager session_manager;
+  UserService service(repo, session_manager);
+  MessageHandler handler(service);
   const std::string request =
       R"({"msg_type":"chat","seq":11,"token":"","data":{}})";
 
@@ -223,7 +243,10 @@ void TestHandleUnknownMessageType() {
 }
 
 void TestHandleLoginMissingPassword() {
-  MessageHandler handler;
+  FakeUserRepository repo;
+  SessionManager session_manager;
+  UserService service(repo, session_manager);
+  MessageHandler handler(service);
   const std::string request =
       R"({"msg_type":"login","seq":12,"token":"","data":{"username":"alice"}})";
 
@@ -234,7 +257,10 @@ void TestHandleLoginMissingPassword() {
 }
 
 void TestHandleRegisterMissingUsername() {
-  MessageHandler handler;
+  FakeUserRepository repo;
+  SessionManager session_manager;
+  UserService service(repo, session_manager);
+  MessageHandler handler(service);
   const std::string request =
       R"({"msg_type":"register","seq":13,"token":"","data":{"password":"123456"}})";
 
@@ -245,7 +271,10 @@ void TestHandleRegisterMissingUsername() {
 }
 
 void TestHandleInvalidDataFieldType() {
-  MessageHandler handler;
+  FakeUserRepository repo;
+  SessionManager session_manager;
+  UserService service(repo, session_manager);
+  MessageHandler handler(service);
   const std::string request =
       R"({"msg_type":"login","seq":14,"token":"","data":"bad"})";
 
@@ -255,7 +284,10 @@ void TestHandleInvalidDataFieldType() {
 }
 
 void TestHandleInvalidSeqType() {
-  MessageHandler handler;
+  FakeUserRepository repo;
+  SessionManager session_manager;
+  UserService service(repo, session_manager);
+  MessageHandler handler(service);
   const std::string request =
       R"({"msg_type":"login","seq":"15","token":"","data":{"username":"alice","password":"123456"}})";
 
@@ -265,7 +297,10 @@ void TestHandleInvalidSeqType() {
 }
 
 void TestHandleInvalidJson() {
-  MessageHandler handler;
+  FakeUserRepository repo;
+  SessionManager session_manager;
+  UserService service(repo, session_manager);
+  MessageHandler handler(service);
   const std::string request = R"({"msg_type":"login","seq":16,"data":)";
 
   const nlohmann::json resp = ParseResponse(handler.handle(request, 16));

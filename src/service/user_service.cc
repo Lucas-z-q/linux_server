@@ -2,14 +2,10 @@
 
 namespace chat {
 
-UserService::UserService() = default;
-
 UserService::UserService(IUserRepository &user_repository) : user_repository_(&user_repository) {}
 
 UserService::UserService(IUserRepository &user_repository, ISessionManager &session_manager)
     : user_repository_(&user_repository), session_manager_(&session_manager) {}
-
-UserService::UserService(ISessionManager &session_manager) : session_manager_(&session_manager) {}
 
 RegisterResult UserService::registerUser(const RegisterRequest &req) {
     RegisterResult result;

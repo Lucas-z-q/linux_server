@@ -308,7 +308,8 @@ void TestLoginSuccessReturnsUserDataTokenAndPendingSession()
 void TestBindSessionAppliesPendingSession()
 {
   FakeSessionManager session_manager;
-  chat::UserService service(session_manager);
+  FakeUserRepository repo;
+  chat::UserService service(repo, session_manager);
   chat::ConnectionSession session;
   session.authenticated = true;
   session.user_id = 10001;
@@ -328,7 +329,8 @@ void TestBindSessionAppliesPendingSession()
 void TestWhoAmIReturnsUserNotLoggedInWhenSessionMissing()
 {
   FakeSessionManager session_manager;
-  chat::UserService service(session_manager);
+  FakeUserRepository repo;
+  chat::UserService service(repo, session_manager);
 
   const chat::WhoAmIResult result = service.whoami(42);
   assert(result.code == chat::ErrorCode::USER_NOT_FOUND);
@@ -345,7 +347,8 @@ void TestWhoAmIReturnsSessionDataWhenLoggedIn()
   session.token = "token_10001";
   session_manager.last_connection_id = 42;
   session_manager.session_for_connection = session;
-  chat::UserService service(session_manager);
+  FakeUserRepository repo;
+  chat::UserService service(repo, session_manager);
 
   const chat::WhoAmIResult result = service.whoami(42);
   assert(result.code == chat::ErrorCode::OK);
@@ -358,7 +361,8 @@ void TestWhoAmIReturnsSessionDataWhenLoggedIn()
 void TestLogoutReturnsUserNotLoggedInWhenSessionMissing()
 {
   FakeSessionManager session_manager;
-  chat::UserService service(session_manager);
+  FakeUserRepository repo;
+  chat::UserService service(repo, session_manager);
 
   const chat::LogoutResult result = service.logout(42);
   assert(result.code == chat::ErrorCode::USER_NOT_FOUND);
@@ -375,7 +379,8 @@ void TestLogoutClearsSessionWhenLoggedIn()
   session.token = "token_10001";
   session_manager.last_connection_id = 42;
   session_manager.session_for_connection = session;
-  chat::UserService service(session_manager);
+  FakeUserRepository repo;
+  chat::UserService service(repo, session_manager);
 
   const chat::LogoutResult result = service.logout(42);
   assert(result.code == chat::ErrorCode::OK);
@@ -394,7 +399,8 @@ void TestClearSessionSilentlyRemovesLoggedInSession()
   session.token = "token_10001";
   session_manager.last_connection_id = 42;
   session_manager.session_for_connection = session;
-  chat::UserService service(session_manager);
+  FakeUserRepository repo;
+  chat::UserService service(repo, session_manager);
 
   service.clearSession(42);
   assert(session_manager.clear_called);
