@@ -21,8 +21,7 @@ namespace chat {
 // 负责处理一条原始请求并输出一条原始响应。
 class MessageHandler : public IMessageHandler {
    public:
-    MessageHandler() = default;
-    explicit MessageHandler(UserService &user_service) : user_service_(&user_service) {}
+    explicit MessageHandler(UserService &user_service) : user_service_(user_service) {}
     ~MessageHandler() override = default;
 
     // 处理客户端发送的原始请求字符串，并返回HandleResult结构体。
@@ -32,10 +31,10 @@ class MessageHandler : public IMessageHandler {
     void onConnectionClosed(chat::ConnectionId conn_id) override;
 
     void applyBindSession(chat::ConnectionId conn_id, const chat::ConnectionSession &session) override {
-        user_service_->bindSession(conn_id, session);
+        user_service_.bindSession(conn_id, session);
     }
 
-    void applyUnbindSession(chat::ConnectionId conn_id) override { user_service_->clearSession(conn_id); }
+    void applyUnbindSession(chat::ConnectionId conn_id) override { user_service_.clearSession(conn_id); }
 
    private:
     // 处理注册请求。
@@ -59,11 +58,8 @@ class MessageHandler : public IMessageHandler {
     // 负责 JSON 编解码的组件。
     JsonCodec codec_;
 
-    // 默认使用的业务服务实现。
-    UserService default_user_service_;
-
     // 负责用户注册、登录等业务逻辑的组件。
-    UserService *user_service_ = &default_user_service_;
+    UserService &user_service_;
 };
 
 }  // namespace chat

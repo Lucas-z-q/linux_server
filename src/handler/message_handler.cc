@@ -47,7 +47,7 @@ HandleResult MessageHandler::handle(const std::string &raw_request, chat::Connec
     }
 }
 
-void MessageHandler::onConnectionClosed(chat::ConnectionId conn_id) { user_service_->clearSession(conn_id); }
+void MessageHandler::onConnectionClosed(chat::ConnectionId conn_id) { user_service_.clearSession(conn_id); }
 
 HandleResult MessageHandler::handleRegister(const Message &msg) {
     RegisterRequest req;
@@ -59,7 +59,7 @@ HandleResult MessageHandler::handleRegister(const Message &msg) {
         return res;
     }
 
-    RegisterResult result = user_service_->registerUser(req);
+    RegisterResult result = user_service_.registerUser(req);
 
     Response resp;
     resp.msg_type = msg.msg_type + "_resp";
@@ -88,7 +88,7 @@ HandleResult MessageHandler::handleLogin(const Message &msg, chat::ConnectionId 
         return res;
     }
 
-    LoginResult result = user_service_->login(req, conn_id);
+    LoginResult result = user_service_.login(req, conn_id);
 
     Response resp;
     resp.msg_type = msg.msg_type + "_resp";
@@ -112,7 +112,7 @@ HandleResult MessageHandler::handleLogin(const Message &msg, chat::ConnectionId 
 }
 
 HandleResult MessageHandler::handleLogout(const Message &msg, chat::ConnectionId conn_id) {
-    LogoutResult result = user_service_->logout(conn_id);
+    LogoutResult result = user_service_.logout(conn_id);
 
     Response resp;
     resp.msg_type = msg.msg_type + "_resp";
@@ -145,7 +145,7 @@ HandleResult MessageHandler::handleHeartbeat(const Message &msg) {
 }
 
 HandleResult MessageHandler::handleWhoAmI(const Message &msg, chat::ConnectionId conn_id) {
-    const WhoAmIResult result = user_service_->whoami(conn_id);
+    const WhoAmIResult result = user_service_.whoami(conn_id);
 
     Response resp;
     resp.msg_type = msg.msg_type + "_resp";

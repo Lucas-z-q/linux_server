@@ -67,13 +67,8 @@ struct WhoAmIResult {
 // 提供用户注册、登录和登出的业务能力。
 class UserService {
    public:
-    // 使用默认 Repository 构造业务服务。
-    UserService();
-
     // 使用外部注入的 Repository 和 SessionManager 构造，便于单元测试或替换实现。
     explicit UserService(IUserRepository &user_repository, ISessionManager &session_manager);
-
-    explicit UserService(ISessionManager &session_manager);
 
     // 使用外部注入的 Repository 构造，便于单元测试或替换实现。
     explicit UserService(IUserRepository &user_repository);
@@ -97,11 +92,8 @@ class UserService {
     void clearSession(ConnectionId conn_id);
 
    private:
-    // 当调用方未注入仓储时，服务内部持有一个默认实现。
-    UserRepository default_user_repository_;
-
     // Service 通过抽象接口访问仓储，避免业务逻辑绑定具体实现。
-    IUserRepository *user_repository_ = &default_user_repository_;
+    IUserRepository *user_repository_ = nullptr;
 
     // 当调用方未注入会话管理器时，服务内部持有一个默认实现。
     SessionManager default_session_manager_;

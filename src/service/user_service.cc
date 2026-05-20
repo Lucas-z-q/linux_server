@@ -2,14 +2,10 @@
 
 namespace chat {
 
-UserService::UserService() = default;
-
 UserService::UserService(IUserRepository &user_repository) : user_repository_(&user_repository) {}
 
 UserService::UserService(IUserRepository &user_repository, ISessionManager &session_manager)
     : user_repository_(&user_repository), session_manager_(&session_manager) {}
-
-UserService::UserService(ISessionManager &session_manager) : session_manager_(&session_manager) {}
 
 RegisterResult UserService::registerUser(const RegisterRequest &req) {
     RegisterResult result;
@@ -28,7 +24,9 @@ RegisterResult UserService::registerUser(const RegisterRequest &req) {
         result.message = "username already exists";
         return result;
     }
-    if (find_result.status == RepositoryStatus::kQueryFailed) {
+    if (find_result.status == RepositoryStatus::kQueryFailed ||
+        find_result.status == RepositoryStatus::kConnectionUnavailable ||
+        find_result.status == RepositoryStatus::kBorrowTimeout) {
         result.code = ErrorCode::DB_QUERY_FAILED;
         result.message = "query user failed";
         return result;
@@ -48,7 +46,9 @@ RegisterResult UserService::registerUser(const RegisterRequest &req) {
         result.message = "username already exists";
         return result;
     }
-    if (create_result.status == RepositoryStatus::kInsertFailed) {
+    if (create_result.status == RepositoryStatus::kInsertFailed ||
+        create_result.status == RepositoryStatus::kConnectionUnavailable ||
+        create_result.status == RepositoryStatus::kBorrowTimeout) {
         result.code = ErrorCode::DB_INSERT_FAILED;
         result.message = "create user failed";
         return result;
@@ -76,7 +76,9 @@ LoginResult UserService::login(const LoginRequest &req, ConnectionId conn_id) {
     }
 
     const FindUserResult find_result = user_repository_->findByUsername(req.username);
-    if (find_result.status == RepositoryStatus::kQueryFailed) {
+    if (find_result.status == RepositoryStatus::kQueryFailed ||
+        find_result.status == RepositoryStatus::kConnectionUnavailable ||
+        find_result.status == RepositoryStatus::kBorrowTimeout) {
         result.code = ErrorCode::DB_QUERY_FAILED;
         result.message = "query user failed";
         return result;
