@@ -59,8 +59,10 @@ int main() {
     // 1. 初始化数据库配置与连接池
     chat::DbConfig db_config = LoadDbConfigFromEnv();
     chat::DbPool db_pool(db_config);
-    if (!db_pool.init()) {
-        std::cerr << "Failed to initialize DbPool. Check database configuration." << std::endl;
+    auto db_init_res = db_pool.init();
+    if (!db_init_res.success) {
+        std::cerr << "Failed to initialize DbPool: " << db_init_res.message
+                  << " (mysql_error_code=" << db_init_res.mysql_error_code << ")" << std::endl;
         return 1;
     }
 

@@ -20,7 +20,7 @@ struct DbConnectionResult {
 class DbConnection {
    public:
     explicit DbConnection(const DbConfig& config);
-    ~DbConnection() noexcept;
+    virtual ~DbConnection() noexcept;
 
     DbConnection(const DbConnection&) = delete;
     DbConnection& operator=(const DbConnection&) = delete;
@@ -28,11 +28,11 @@ class DbConnection {
     DbConnection(DbConnection&& other) noexcept;
     DbConnection& operator=(DbConnection&& other) noexcept;
 
-    DbConnectionResult connect();
-    void close() noexcept;
-    bool ping() noexcept;
+    virtual DbConnectionResult connect();
+    virtual void close() noexcept;
+    virtual bool ping() noexcept;
 
-    bool isConnected() const noexcept;
+    virtual bool isConnected() const noexcept;
 
     // 非拥有指针，调用者不得关闭或长期保存。
     MYSQL* nativeHandle() noexcept;

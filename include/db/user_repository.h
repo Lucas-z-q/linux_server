@@ -25,6 +25,8 @@ enum class RepositoryStatus {
     kQueryFailed,
     kDuplicate,
     kInsertFailed,
+    kConnectionUnavailable,
+    kBorrowTimeout,
 };
 
 // 封装一次“查询用户”操作的结果。

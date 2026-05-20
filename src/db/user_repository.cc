@@ -105,11 +105,14 @@ namespace chat {
 UserRepository::UserRepository(DbPool *pool) : pool_(pool) {}
 
 FindUserResult UserRepository::findByUsername(const std::string &username) {
-    auto conn_opt = pool_->borrow();
-    if (!conn_opt) {
-        return {.status = RepositoryStatus::kQueryFailed};
+    auto borrow_res = pool_->borrow();
+    if (!borrow_res.ok()) {
+        RepositoryStatus status = (borrow_res.error == DbPoolError::kBorrowTimeout)
+                                      ? RepositoryStatus::kBorrowTimeout
+                                      : RepositoryStatus::kConnectionUnavailable;
+        return {.status = status};
     }
-    auto &conn = *conn_opt;
+    auto &conn = *borrow_res.connection;
 
     const std::string escaped_username = EscapeSqlValue(conn->nativeHandle(), username);
     const std::string query =
@@ -120,11 +123,14 @@ FindUserResult UserRepository::findByUsername(const std::string &username) {
 }
 
 FindUserResult UserRepository::findById(UserId user_id) {
-    auto conn_opt = pool_->borrow();
-    if (!conn_opt) {
-        return {.status = RepositoryStatus::kQueryFailed};
+    auto borrow_res = pool_->borrow();
+    if (!borrow_res.ok()) {
+        RepositoryStatus status = (borrow_res.error == DbPoolError::kBorrowTimeout)
+                                      ? RepositoryStatus::kBorrowTimeout
+                                      : RepositoryStatus::kConnectionUnavailable;
+        return {.status = status};
     }
-    auto &conn = *conn_opt;
+    auto &conn = *borrow_res.connection;
 
     const std::string query =
         "SELECT id, username, password_hash, nickname, status, created_at, updated_at "
@@ -135,11 +141,14 @@ FindUserResult UserRepository::findById(UserId user_id) {
 
 CreateUserResult UserRepository::createUser(const std::string &username, const std::string &password_hash,
                                             const std::string &nickname) {
-    auto conn_opt = pool_->borrow();
-    if (!conn_opt) {
-        return {.status = RepositoryStatus::kInsertFailed};
+    auto borrow_res = pool_->borrow();
+    if (!borrow_res.ok()) {
+        RepositoryStatus status = (borrow_res.error == DbPoolError::kBorrowTimeout)
+                                      ? RepositoryStatus::kBorrowTimeout
+                                      : RepositoryStatus::kConnectionUnavailable;
+        return {.status = status};
     }
-    auto &conn = *conn_opt;
+    auto &conn = *borrow_res.connection;
 
     const std::string escaped_username = EscapeSqlValue(conn->nativeHandle(), username);
     const std::string escaped_password_hash = EscapeSqlValue(conn->nativeHandle(), password_hash);

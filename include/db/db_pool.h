@@ -10,6 +10,7 @@
 
 #include "config/db_config.h"
 #include "db/db_connection.h"
+#include "db/db_connection_factory.h"
 #include "db/db_pool_config.h"
 
 // 本文件声明数据库连接池抽象。
@@ -20,6 +21,18 @@
 // TODO(lzq): 增加连接健康检查和自动重连策略。
 
 namespace chat {
+
+enum class DbPoolError {
+    kNone = 0,
+    kInvalidConfig,
+    kNotInitialized,
+    kStopping,
+    kConnectFailed,
+    kBorrowTimeout,
+    kHealthCheckFailed,
+};
+
+const char* DbPoolErrorToString(DbPoolError error);
 
 class DbPool;
 
@@ -50,18 +63,42 @@ class PooledConnection {
     bool reusable_ = true;
 };
 
+struct BorrowConnectionResult {
+    std::optional<PooledConnection> connection;
+    DbPoolError error = DbPoolError::kNone;
+    unsigned int mysql_error_code = 0;
+    std::string message;
+
+    bool ok() const noexcept { return connection.has_value(); }
+};
+
+struct DbPoolInitResult {
+    bool success = false;
+    DbPoolError error = DbPoolError::kNone;
+    unsigned int mysql_error_code = 0;
+    std::string message;
+};
+
+struct CreateConnectionResult {
+    std::unique_ptr<DbConnection> connection;
+    DbPoolError error = DbPoolError::kNone;
+    unsigned int mysql_error_code = 0;
+    std::string message;
+};
+
 // 负责初始化并管理数据库连接资源。
 class DbPool {
    public:
     explicit DbPool(const DbConfig& config);
     DbPool(const DbConfig& config, const DbPoolConfig& pool_config);
+    DbPool(const DbConfig& config, const DbPoolConfig& pool_config, std::shared_ptr<IDbConnectionFactory> factory);
     ~DbPool();
 
     DbPool(const DbPool&) = delete;
     DbPool& operator=(const DbPool&) = delete;
 
-    bool init();
-    std::optional<PooledConnection> borrow();
+    DbPoolInitResult init();
+    BorrowConnectionResult borrow();
     void stop();
 
     // 获取当前连接池统计信息
@@ -88,9 +125,10 @@ class DbPool {
     };
     void returnConnection(std::unique_ptr<DbConnection> conn, std::chrono::steady_clock::time_point create_time,
                           bool reusable);
-    std::unique_ptr<DbConnection> createConnection();
+    CreateConnectionResult createConnection();
 
     bool isExpired(const IdleConnection& idle, std::chrono::steady_clock::time_point now);
+    void logStats(const std::string& action, DbPoolError error, const std::string& extra = "");
 
     DbConfig config_;
     DbPoolConfig pool_config_;
@@ -102,6 +140,7 @@ class DbPool {
     bool stopping_ = false;
     bool initialized_ = false;
 
+    std::shared_ptr<IDbConnectionFactory> connection_factory_;
     Stats stats_;
 };
 
