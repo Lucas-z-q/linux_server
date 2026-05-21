@@ -107,11 +107,12 @@ bool TcpServer::set_nonblocking(int fd) {
 }
 
 bool TcpServer::start() {
-    if (stopping_.load()) return false;
+    if (stopping_.load())
+        return false;
 
     auto cleanup_resources = [this]() {
-        stop(); // 确保安全设置了停止标志
-        worker_pool_.stop(); // 阻塞等待业务线程安全降落
+        stop();               // 确保安全设置了停止标志
+        worker_pool_.stop();  // 阻塞等待业务线程安全降落
 
         if (listen_fd_ != -1) {
             close(listen_fd_);
@@ -149,12 +150,24 @@ bool TcpServer::start() {
         }
     };
 
-    if (!createListenSocket()) { cleanup_resources(); return false; }
-    if (!bindAddress()) { cleanup_resources(); return false; }
-    if (!startListen()) { cleanup_resources(); return false; }
+    if (!createListenSocket()) {
+        cleanup_resources();
+        return false;
+    }
+    if (!bindAddress()) {
+        cleanup_resources();
+        return false;
+    }
+    if (!startListen()) {
+        cleanup_resources();
+        return false;
+    }
 
     // EPOLLET requires non-blocking sockets, otherwise edge-trigger behavior is unsafe.
-    if (!set_nonblocking(listen_fd_)) { cleanup_resources(); return false; }
+    if (!set_nonblocking(listen_fd_)) {
+        cleanup_resources();
+        return false;
+    }
 
     epoll_fd_ = epoll_create1(0);
     if (epoll_fd_ < 0) {
@@ -272,7 +285,9 @@ void TcpServer::acceptLoop(int epoll_fd) {
 std::shared_ptr<ConnectionContext> TcpServer::registerConnection(int conn_fd, const std::string &peer_ip,
                                                                  uint16_t peer_port) {
     const uint64_t conn_id = next_conn_id_.fetch_add(1);
-    auto context = std::make_shared<ConnectionContext>(conn_fd, conn_id, peer_ip, peer_port);
+
+    TcpConnection conn(conn_fd, peer_ip, peer_port);
+    auto context = std::make_shared<ConnectionContext>(std::move(conn), conn_id);
 
     {
         std::scoped_lock lock(connections_mutex_, fd_to_context_mutex_);
@@ -328,14 +343,11 @@ void TcpServer::closeClientFd(int fd, const std::string &reason) {
         perror("epoll_ctl del client_fd failed");
     }
 
-    if (close(fd) < 0 && errno != EBADF) {
-        perror("close client_fd failed");
-    }
-
     context->clearPendingSend();
     context->clearPendingRequests();
     handler_.onConnectionClosed(conn_id);
     unregisterConnection(conn_id, reason);
+    context->closeConnection();
 }
 
 void TcpServer::onReadable(int fd) {
@@ -349,7 +361,7 @@ void TcpServer::onReadable(int fd) {
     char buff[1024];
     while (true) {
         memset(buff, 0, sizeof(buff));
-        ssize_t n = recv(fd, buff, sizeof(buff) - 1, 0);
+        ssize_t n = context->recv(buff, sizeof(buff) - 1);
         if (n < 0) {
             if (errno == EAGAIN || errno == EWOULDBLOCK)
                 break;
@@ -601,7 +613,7 @@ void TcpServer::onWritable(int fd) {
             break;
         }
 
-        ssize_t n = send(fd, data.c_str(), data.size(), 0);
+        ssize_t n = context->sendSome(data.c_str(), data.size());
         if (n == 0) {
             // send() returning 0 on stream sockets is treated as a closed peer path.
             closeClientFd(fd, "peer_closed_on_send");

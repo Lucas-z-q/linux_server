@@ -6,13 +6,13 @@
 #include <chrono>
 #include <utility>
 
-ConnectionContext::ConnectionContext(int fd, chat::ConnectionId conn_id, const std::string& peer_ip, uint16_t peer_port)
-    : fd_(fd), conn_id_(conn_id), request_in_flight_(false) {
+ConnectionContext::ConnectionContext(TcpConnection conn, chat::ConnectionId conn_id)
+    : connection_(std::move(conn)), conn_id_(conn_id), request_in_flight_(false) {
     // 使用默认值初始化连接元数据。
     meta_.conn_id = conn_id;
-    meta_.fd = fd;
-    meta_.peer_ip = peer_ip;
-    meta_.peer_port = peer_port;
+    meta_.fd = connection_.fd();
+    meta_.peer_ip = connection_.peerIp();
+    meta_.peer_port = connection_.peerPort();
     meta_.connected_at = std::chrono::system_clock::now();
     meta_.last_active_at = std::chrono::steady_clock::now();
     meta_.recv_count = 0;
@@ -22,11 +22,17 @@ ConnectionContext::ConnectionContext(int fd, chat::ConnectionId conn_id, const s
     meta_.state = ConnectionMeta::State::CONNECTED;
 }
 
-int ConnectionContext::fd() const { return fd_; }
+int ConnectionContext::fd() const { return connection_.fd(); }
 
 chat::ConnectionId ConnectionContext::conn_id() const { return conn_id_; }
 
 const ConnectionMeta& ConnectionContext::meta() const { return meta_; }
+
+ssize_t ConnectionContext::recv(char* buffer, size_t size) { return connection_.recv(buffer, size); }
+
+ssize_t ConnectionContext::sendSome(const char* data, size_t len) { return connection_.sendSome(data, len); }
+
+void ConnectionContext::closeConnection() { connection_.close(); }
 
 bool ConnectionContext::feedPacketData(const std::string& chunk, std::vector<std::string>& packets) {
     return packet_codec_.feed(chunk, packets);

@@ -109,6 +109,7 @@ add_executable(server_test_server
     tests/fake_server.cc
     src/app/main_runner.cc
     src/TcpServer.cc
+    src/TcpConnection.cc
     src/ConnectionContext.cc
     src/codec/json_codec.cc
     src/codec/packet_codec.cc
@@ -138,6 +139,7 @@ add_executable(auth_test_server
     tests/fake_auth_server.cc
     src/app/main_runner.cc
     src/TcpServer.cc
+    src/TcpConnection.cc
     src/ConnectionContext.cc
     src/codec/json_codec.cc
     src/codec/packet_codec.cc
@@ -199,6 +201,7 @@ add_test(NAME thread_pool_test COMMAND thread_pool_test)
 add_executable(server_shutdown_test
     tests/server_shutdown_test.cc
     src/TcpServer.cc
+    src/TcpConnection.cc
     src/ConnectionContext.cc
     src/concurrency/thread_pool.cc
     src/codec/packet_codec.cc
