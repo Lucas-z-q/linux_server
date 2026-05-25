@@ -63,11 +63,8 @@ class IMessageHandler {
     virtual void applyUnbindSession(chat::ConnectionId conn_id) {}
 
     // 检查指定连接当前是否仍属于目标用户（用于推送安全性校验）。
-    virtual bool isConnectionBoundToUser(chat::ConnectionId conn_id, chat::UserId user_id) {
-        (void)conn_id;
-        (void)user_id;
-        return true;
-    }
+    // 此方法为纯虚函数，强制所有消息处理器显式声明并实现安全性校验策略。
+    virtual bool isConnectionBoundToUser(chat::ConnectionId conn_id, chat::UserId user_id) = 0;
 };
 
 #endif  // LINUX_SERVER_INCLUDE_NET_IMESSAGE_HANDLER_H_

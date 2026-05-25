@@ -11,3 +11,9 @@ HandleResult EchoHandler::handle(const std::string& request, chat::ConnectionId 
     result.response = request;
     return result;
 }
+
+bool EchoHandler::isConnectionBoundToUser(chat::ConnectionId conn_id, chat::UserId user_id) {
+    (void)conn_id;
+    (void)user_id;
+    return true;
+}
