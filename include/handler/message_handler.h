@@ -8,6 +8,7 @@
 #include "common/response.h"
 #include "net/IMessageHandler.h"
 #include "service/user_service.h"
+#include "service/chat_service.h"
 
 // 本文件声明统一消息处理器。
 // 该处理器位于网络层与业务层之间，负责请求解析、路由和响应封装。
@@ -21,7 +22,8 @@ namespace chat {
 // 负责处理一条原始请求并输出一条原始响应。
 class MessageHandler : public IMessageHandler {
    public:
-    explicit MessageHandler(UserService &user_service) : user_service_(user_service) {}
+    explicit MessageHandler(UserService &user_service, ChatService &chat_service)
+        : user_service_(user_service), chat_service_(chat_service) {}
     ~MessageHandler() override = default;
 
     // 处理客户端发送的原始请求字符串，并返回HandleResult结构体。
@@ -60,6 +62,9 @@ class MessageHandler : public IMessageHandler {
 
     // 负责用户注册、登录等业务逻辑的组件。
     UserService &user_service_;
+
+    // 负责单聊等即时通讯核心业务逻辑的组件。
+    ChatService &chat_service_;
 };
 
 }  // namespace chat

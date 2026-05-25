@@ -14,6 +14,7 @@
 #include "net/TcpServer.h"
 #include "server/session_manager.h"
 #include "service/user_service.h"
+#include "service/chat_service.h"
 
 /**
  * @file main.cc
@@ -70,7 +71,8 @@ int main() {
     chat::UserRepository user_repo(&db_pool);
     chat::SessionManager session_manager;
     chat::UserService user_service(user_repo, session_manager);
-    chat::MessageHandler handler(user_service);
+    chat::ChatService chat_service(session_manager);
+    chat::MessageHandler handler(user_service, chat_service);
 
     // 3. 启动服务器
     TcpServer server("127.0.0.1", 8080, handler);

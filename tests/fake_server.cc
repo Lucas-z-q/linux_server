@@ -4,6 +4,7 @@
 #include "net/TcpServer.h"
 #include "server/session_manager.h"
 #include "service/user_service.h"
+#include "service/chat_service.h"
 
 namespace {
 
@@ -30,7 +31,8 @@ int main() {
     FailingUserRepository repository;
     chat::SessionManager session_manager;
     chat::UserService user_service(repository, session_manager);
-    chat::MessageHandler handler(user_service);
+    chat::ChatService chat_service(session_manager);
+    chat::MessageHandler handler(user_service, chat_service);
     TcpServer server("127.0.0.1", 8080, handler);
 
     return RunMain([&]() { return server.start(); });

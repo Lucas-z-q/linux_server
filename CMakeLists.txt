@@ -92,6 +92,7 @@ add_executable(message_handler_test
     src/handler/message_handler.cc
     src/server/session_manager.cc
     src/service/user_service.cc
+    src/service/chat_service.cc
 )
 
 target_include_directories(message_handler_test PRIVATE include third_party)
@@ -126,6 +127,7 @@ add_executable(server_test_server
     src/handler/message_handler.cc
     src/server/session_manager.cc
     src/service/user_service.cc
+    src/service/chat_service.cc
     src/concurrency/thread_pool.cc
 )
 
@@ -156,6 +158,7 @@ add_executable(auth_test_server
     src/handler/message_handler.cc
     src/server/session_manager.cc
     src/service/user_service.cc
+    src/service/chat_service.cc
     src/concurrency/thread_pool.cc
 )
 
