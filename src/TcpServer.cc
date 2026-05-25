@@ -569,14 +569,7 @@ void TcpServer::onWorkerResultReadable() {
 
         // 处理主动推送消息 (pushes)
         for (const auto &push : task.pushes) {
-            std::shared_ptr<ConnectionContext> target_context;
-            {
-                std::lock_guard<std::mutex> lock(connections_mutex_);
-                auto it = connections_.find(push.target_conn_id);
-                if (it != connections_.end()) {
-                    target_context = it->second;
-                }
-            }
+            std::shared_ptr<ConnectionContext> target_context = getConnectionContextById(push.target_conn_id);
 
             if (target_context && !push.payload.empty()) {
                 chat::PacketCodec codec;
@@ -735,4 +728,13 @@ void TcpServer::logConnectionDisconnected(const ConnectionMeta &meta, const std:
               << meta.peer_port << " recv_count=" << meta.recv_count << " send_count=" << meta.send_count
               << " recv_bytes=" << meta.recv_bytes << " send_bytes=" << meta.sent_bytes << " idle_ms=" << alive_ms
               << std::endl;
+}
+
+std::shared_ptr<ConnectionContext> TcpServer::getConnectionContextById(chat::ConnectionId conn_id) {
+    std::lock_guard<std::mutex> lock(connections_mutex_);
+    auto it = connections_.find(conn_id);
+    if (it == connections_.end()) {
+        return nullptr;
+    }
+    return it->second;
 }

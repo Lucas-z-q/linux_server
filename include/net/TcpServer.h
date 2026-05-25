@@ -166,6 +166,9 @@ class TcpServer {
     // 辅助函数：通过fd查找ConnectionContext
     std::shared_ptr<ConnectionContext> getConnectionContextByFd(int fd);
 
+    // 辅助函数：通过连接ID查找ConnectionContext
+    std::shared_ptr<ConnectionContext> getConnectionContextById(chat::ConnectionId conn_id);
+
     // 辅助函数：日志记录连接断开状态
     void logConnectionDisconnected(const ConnectionMeta &meta, const std::string &reason);
 };
