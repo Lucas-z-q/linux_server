@@ -212,6 +212,55 @@ void TestWhoAmIAfterLoginAndLogoutOnSameConnection() {
   close(fd);
 }
 
+void TestSendMessageOverTcp() {
+  // Connect both Alice and Bob to the server
+  const int fd_alice = ConnectToServer();
+  const int fd_bob = ConnectToServer();
+
+  // Log Alice in
+  const nlohmann::json login_alice = SendAndReceiveOnSocket(
+      fd_alice, R"({"msg_type":"login","seq":10,"token":"","data":{"username":"alice","password":"123456"}})");
+  ExpectCommonEnvelope(login_alice, "login_resp", 10, chat::ErrorCode::OK);
+
+  // Log Bob in (Bob was registered in TestRegisterSuccessOverTcp with username bob and password 123456)
+  const nlohmann::json login_bob = SendAndReceiveOnSocket(
+      fd_bob, R"({"msg_type":"login","seq":11,"token":"","data":{"username":"bob","password":"123456"}})");
+  ExpectCommonEnvelope(login_bob, "login_resp", 11, chat::ErrorCode::OK);
+  const int bob_user_id = login_bob["data"]["user_id"].get<int>();
+
+  // Alice sends message to Bob
+  const std::string send_msg_request =
+      R"({"msg_type":"send_message","seq":12,"token":"","data":{"to_user_id":)" + std::to_string(bob_user_id) + R"(,"content":"hello bob"}})";
+  
+  const nlohmann::json ack_resp = SendAndReceiveOnSocket(fd_alice, send_msg_request);
+  
+  // Verify Alice receives the send_message_resp ACK
+  ExpectCommonEnvelope(ack_resp, "send_message_resp", 12, chat::ErrorCode::OK);
+  assert(ack_resp["data"]["to_user_id"].get<int>() == bob_user_id);
+
+  // Verify Bob receives the message_push
+  auto ReceiveOnSocket = [](int fd) {
+    std::string response;
+    char buffer[1024];
+    while (response.find('\n') == std::string::npos) {
+      const ssize_t n = recv(fd, buffer, sizeof(buffer), 0);
+      assert(n > 0);
+      response.append(buffer, static_cast<size_t>(n));
+    }
+    return nlohmann::json::parse(response);
+  };
+
+  const nlohmann::json push_resp = ReceiveOnSocket(fd_bob);
+  ExpectCommonEnvelope(push_resp, "message_push", 0, chat::ErrorCode::OK);
+  assert(push_resp["data"]["from_user_id"].get<int>() == 10001);
+  assert(push_resp["data"]["from_username"].get<std::string>() == "alice");
+  assert(push_resp["data"]["content"].get<std::string>() == "hello bob");
+  assert(push_resp["data"].contains("server_time"));
+
+  close(fd_alice);
+  close(fd_bob);
+}
+
 }  // namespace
 
 int main() {
@@ -223,6 +272,7 @@ int main() {
   TestLoginSuccessOverTcp();
   TestLoginWrongPasswordOverTcp();
   TestWhoAmIAfterLoginAndLogoutOnSameConnection();
+  TestSendMessageOverTcp();
 
   std::cout << "[PASS] auth integration tests passed\n";
   return 0;
