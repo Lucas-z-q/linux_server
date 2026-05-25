@@ -33,6 +33,12 @@ enum class ErrorCode {
   DB_QUERY_FAILED = 2002,
   DB_INSERT_FAILED = 2003,
 
+  // 消息与聊天相关错误。
+  MESSAGE_TOO_LONG = 3001,
+  USER_NOT_ONLINE = 3002,
+  CANNOT_SEND_TO_SELF = 3003,
+  NOT_LOGGED_IN = 3004,
+
   // 兜底内部错误。
   INTERNAL_ERROR = 9001,
 };

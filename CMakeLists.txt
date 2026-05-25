@@ -48,6 +48,7 @@ add_executable(server
     src/protocol/protocol_helper.cc
     src/server/session_manager.cc
     src/service/user_service.cc
+    src/service/chat_service.cc
     src/concurrency/thread_pool.cc
 )
 
@@ -104,6 +105,15 @@ add_executable(user_service_test
 
 target_include_directories(user_service_test PRIVATE include third_party)
 add_test(NAME user_service_test COMMAND user_service_test)
+
+add_executable(chat_service_test
+    tests/chat_service_test.cc
+    src/server/session_manager.cc
+    src/service/chat_service.cc
+)
+
+target_include_directories(chat_service_test PRIVATE include third_party)
+add_test(NAME chat_service_test COMMAND chat_service_test)
 
 add_executable(server_test_server
     tests/fake_server.cc

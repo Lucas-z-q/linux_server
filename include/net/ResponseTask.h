@@ -3,6 +3,7 @@
 
 #include <memory>
 #include <string>
+#include <vector>
 
 #include "common/types.h"
 #include "model/connection_session.h"
@@ -22,6 +23,9 @@ struct ResponseTask {
     // 业务/会话级副作用
     SessionAction session_action = SessionAction::NONE;
     chat::ConnectionSession pending_session;
+
+    // 待回到 I/O 线程分发的主动推送消息列表。
+    std::vector<OutboundMessage> pushes;
 };
 
 #endif  // LINUX_SERVER_INCLUDE_NET_RESPONSE_TASK_H_

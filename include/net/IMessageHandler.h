@@ -2,6 +2,7 @@
 #define LINUX_SERVER_INCLUDE_NET_IMESSAGE_HANDLER_H_
 
 #include <string>
+#include <vector>
 
 #include "common/types.h"
 #include "model/connection_session.h"
@@ -21,8 +22,22 @@
 
 enum class SessionAction { NONE, BIND, UNBIND };
 
+// 表示发往特定连接的推送消息负载。
+struct OutboundMessage {
+    // 目标客户端的连接 ID。
+    chat::ConnectionId target_conn_id = 0;
+
+    // 待推送的原始消息数据（通常为序列化后的 JSON 字符串）。
+    std::string payload;
+};
+
 struct HandleResult {
+    // 投递回发送方客户端的即时响应。
     std::string response;
+
+    // 需要推送给其他客户端的异步/主动推送消息列表。
+    std::vector<OutboundMessage> pushes;
+
     SessionAction session_action = SessionAction::NONE;
     chat::ConnectionSession pending_session;  // 仅在bind时有效
 };

@@ -418,9 +418,14 @@ bool TcpServer::submitRequestTask(RequestTask task) {
                 }
 
                 ResponseTask response_task{
-                    std::weak_ptr<ConnectionContext>(context), task.conn_id, std::move(result.response),
-                    next_response_task_id_.fetch_add(1),       false,        result.session_action,
-                    std::move(result.pending_session)};
+                    std::weak_ptr<ConnectionContext>(context),
+                    task.conn_id,
+                    std::move(result.response),
+                    next_response_task_id_.fetch_add(1),
+                    false,
+                    result.session_action,
+                    std::move(result.pending_session),
+                    std::move(result.pushes)};
                 enqueueResponseTask(std::move(response_task));
             } catch (const std::exception &ex) {
                 std::cerr << "worker request failed: " << ex.what() << std::endl;
@@ -560,6 +565,26 @@ void TcpServer::onWorkerResultReadable() {
             handler_.applyBindSession(task.conn_id, task.pending_session);
         } else if (task.session_action == SessionAction::UNBIND) {
             handler_.applyUnbindSession(task.conn_id);
+        }
+
+        // 处理主动推送消息 (pushes)
+        for (const auto &push : task.pushes) {
+            std::shared_ptr<ConnectionContext> target_context;
+            {
+                std::lock_guard<std::mutex> lock(connections_mutex_);
+                auto it = connections_.find(push.target_conn_id);
+                if (it != connections_.end()) {
+                    target_context = it->second;
+                }
+            }
+
+            if (target_context && !push.payload.empty()) {
+                chat::PacketCodec codec;
+                target_context->appendPendingSend(codec.encode(push.payload));
+                if (!enableWritableEvent(target_context->fd())) {
+                    closeClientFd(target_context->fd(), "enable_write_event_failed");
+                }
+            }
         }
 
         if (!finishCurrentRequestAndSubmitNext(context, task.conn_id)) {
