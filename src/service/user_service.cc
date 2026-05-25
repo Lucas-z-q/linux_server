@@ -153,6 +153,11 @@ void UserService::bindSession(ConnectionId conn_id, const ConnectionSession &ses
 
 void UserService::clearSession(ConnectionId conn_id) { session_manager_->ClearSession(conn_id); }
 
+bool UserService::isConnectionBoundToUser(ConnectionId conn_id, UserId user_id) const {
+    auto session_opt = session_manager_->GetSession(conn_id);
+    return session_opt.has_value() && session_opt->authenticated && session_opt->user_id == user_id;
+}
+
 bool UserService::validateRegisterRequest(const RegisterRequest &req, std::string &err) const {
     if (req.username.empty()) {
         err = "username is empty";

@@ -569,6 +569,11 @@ void TcpServer::onWorkerResultReadable() {
 
         // 处理主动推送消息 (pushes)
         for (const auto &push : task.pushes) {
+            // 校验目标连接当前仍属于原接收用户，避免在连接复用/重新登录时误投递
+            if (!handler_.isConnectionBoundToUser(push.target_conn_id, push.target_user_id)) {
+                continue;
+            }
+
             std::shared_ptr<ConnectionContext> target_context = getConnectionContextById(push.target_conn_id);
 
             if (target_context && !push.payload.empty()) {

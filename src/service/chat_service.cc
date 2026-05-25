@@ -9,6 +9,20 @@ ChatService::ChatService(ISessionManager& session_manager)
 
 SendMessageResult ChatService::sendMessage(ConnectionId from_conn_id,
                                           const SendMessageRequest& req) {
+    // 0. 校验内容合法性（安全与业务兜底）
+    if (req.content.empty()) {
+        SendMessageResult result;
+        result.code = ErrorCode::INVALID_PARAM;
+        result.message = "Message content cannot be empty";
+        return result;
+    }
+    if (req.content.length() > 4096) {
+        SendMessageResult result;
+        result.code = ErrorCode::MESSAGE_TOO_LONG;
+        result.message = "Message content exceeds limit (4096)";
+        return result;
+    }
+
     // 1. 获取发送方会话
     auto from_session_opt = session_manager_.GetSession(from_conn_id);
 

@@ -38,6 +38,10 @@ class MessageHandler : public IMessageHandler {
 
     void applyUnbindSession(chat::ConnectionId conn_id) override { user_service_.clearSession(conn_id); }
 
+    bool isConnectionBoundToUser(chat::ConnectionId conn_id, chat::UserId user_id) override {
+        return user_service_.isConnectionBoundToUser(conn_id, user_id);
+    }
+
    private:
     // 处理注册请求。
     HandleResult handleRegister(const Message &msg);

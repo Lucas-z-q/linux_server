@@ -27,6 +27,9 @@ struct OutboundMessage {
     // 目标客户端的连接 ID。
     chat::ConnectionId target_conn_id = 0;
 
+    // 目标接收方用户 ID（用于分发前的身份校验）。
+    chat::UserId target_user_id = 0;
+
     // 待推送的原始消息数据（通常为序列化后的 JSON 字符串）。
     std::string payload;
 };
@@ -58,6 +61,13 @@ class IMessageHandler {
     // 以下方法供 I/O 线程在回投任务 lock() 成功后调用，真正应用延后的副作用。
     virtual void applyBindSession(chat::ConnectionId conn_id, const chat::ConnectionSession &session) {}
     virtual void applyUnbindSession(chat::ConnectionId conn_id) {}
+
+    // 检查指定连接当前是否仍属于目标用户（用于推送安全性校验）。
+    virtual bool isConnectionBoundToUser(chat::ConnectionId conn_id, chat::UserId user_id) {
+        (void)conn_id;
+        (void)user_id;
+        return true;
+    }
 };
 
 #endif  // LINUX_SERVER_INCLUDE_NET_IMESSAGE_HANDLER_H_

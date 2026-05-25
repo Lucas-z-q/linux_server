@@ -91,6 +91,9 @@ class UserService {
     // 在连接断开时静默清理会话，不向客户端返回业务结果。
     void clearSession(ConnectionId conn_id);
 
+    // 检查指定连接当前是否仍属于目标用户。
+    bool isConnectionBoundToUser(ConnectionId conn_id, UserId user_id) const;
+
    private:
     // Service 通过抽象接口访问仓储，避免业务逻辑绑定具体实现。
     IUserRepository *user_repository_ = nullptr;

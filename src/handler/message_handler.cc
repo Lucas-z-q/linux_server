@@ -216,6 +216,7 @@ HandleResult MessageHandler::handleSendMessage(const Message &msg, chat::Connect
 
         handle_result.pushes.push_back({
             result.to_conn_id,
+            result.to_user_id,
             codec_.encodeResponse(push)
         });
     }

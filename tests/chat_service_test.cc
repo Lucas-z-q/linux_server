@@ -129,6 +129,30 @@ void TestSendMessageSuccess() {
     assert(result.server_time > 0);
 }
 
+void TestSendMessageEmptyContent() {
+    FakeSessionManager session_manager;
+    chat::ChatService chat_service(session_manager);
+
+    chat::SendMessageRequest req;
+    req.receiver_id = 2;
+    req.content = "";
+
+    auto result = chat_service.sendMessage(100, req);
+    assert(result.code == chat::ErrorCode::INVALID_PARAM);
+}
+
+void TestSendMessageTooLongContent() {
+    FakeSessionManager session_manager;
+    chat::ChatService chat_service(session_manager);
+
+    chat::SendMessageRequest req;
+    req.receiver_id = 2;
+    req.content = std::string(4097, 'x');
+
+    auto result = chat_service.sendMessage(100, req);
+    assert(result.code == chat::ErrorCode::MESSAGE_TOO_LONG);
+}
+
 }  // namespace
 
 int main() {
@@ -136,6 +160,8 @@ int main() {
     TestSendMessageToSelf();
     TestSendMessageTargetNotOnline();
     TestSendMessageSuccess();
+    TestSendMessageEmptyContent();
+    TestSendMessageTooLongContent();
     std::cout << "[PASS] chat service tests passed\n";
     return 0;
 }

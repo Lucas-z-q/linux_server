@@ -444,3 +444,57 @@
   }
 }
 ```
+
+---
+
+## 14. Messaging Protocol (Version 1)
+
+### 14.1 Send Message (send_message)
+
+**请求 (Request):**
+```json
+{
+  "msg_type": "send_message",
+  "seq": 10,
+  "token": "token_10001",
+  "data": {
+    "to_user_id": 10002,
+    "content": "hello bob"
+  }
+}
+```
+
+**响应 (Response):**
+*   **发送确认响应 (send_message_resp):**
+    表示服务器已成功接收并处理该消息请求。在第一版（即时推送）中，此响应代表消息的“接收并尽最大努力投递（Best-effort Delivery）”确认。
+    ```json
+    {
+      "msg_type": "send_message_resp",
+      "seq": 10,
+      "code": 0,
+      "message": "Success",
+      "data": {
+        "to_user_id": 10002
+      }
+    }
+    ```
+
+### 14.2 Message Push (message_push)
+
+**推送 (Server Push):**
+由服务端主动推向在线的目标接收方客户端（长连接）。
+```json
+{
+  "msg_type": "message_push",
+  "seq": 0,
+  "code": 0,
+  "message": "new message",
+  "data": {
+    "from_user_id": 10001,
+    "from_username": "alice",
+    "content": "hello bob",
+    "server_time": 1621948800
+  }
+}
+```
+
