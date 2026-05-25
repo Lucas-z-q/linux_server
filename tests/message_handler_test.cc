@@ -322,6 +322,49 @@ void TestHandleInvalidJson() {
   assert(resp["message"].get<std::string>().find("JSON") != std::string::npos);
 }
 
+void TestHandleSendMessageSuccess() {
+  FakeUserRepository repo;
+  SessionManager session_manager;
+  UserService service(repo, session_manager);
+  ChatService chat_service(session_manager);
+  MessageHandler handler(service, chat_service);
+
+  // Setup alice session on conn 42
+  ConnectionSession alice_session;
+  alice_session.authenticated = true;
+  alice_session.user_id = 10001;
+  alice_session.username = "alice";
+  session_manager.BindSession(42, alice_session);
+
+  // Setup bob session on conn 43
+  ConnectionSession bob_session;
+  bob_session.authenticated = true;
+  bob_session.user_id = 10002;
+  bob_session.username = "bob";
+  session_manager.BindSession(43, bob_session);
+
+  const std::string request =
+      R"({"msg_type":"send_message","seq":20,"token":"","data":{"to_user_id":10002,"content":"hello bob"}})";
+
+  const HandleResult result = handler.handle(request, 42);
+
+  // Verify ack to Alice
+  const nlohmann::json ack_resp = ParseResponse(result);
+  ExpectCommonEnvelope(ack_resp, "send_message_resp", 20, ErrorCode::OK);
+  assert(ack_resp["data"]["to_user_id"].get<UserId>() == 10002);
+
+  // Verify push to Bob
+  assert(result.pushes.size() == 1);
+  assert(result.pushes[0].target_conn_id == 43);
+  
+  const nlohmann::json push_resp = ParseResponse(result.pushes[0].payload);
+  ExpectCommonEnvelope(push_resp, "message_push", 0, ErrorCode::OK);
+  assert(push_resp["data"]["from_user_id"].get<UserId>() == 10001);
+  assert(push_resp["data"]["from_username"].get<std::string>() == "alice");
+  assert(push_resp["data"]["content"].get<std::string>() == "hello bob");
+  assert(push_resp["data"].contains("server_time"));
+}
+
 }  // namespace
 
 int main() {
@@ -338,6 +381,7 @@ int main() {
   TestHandleInvalidDataFieldType();
   TestHandleInvalidSeqType();
   TestHandleInvalidJson();
+  TestHandleSendMessageSuccess();
 
   std::cout << "[PASS] message handler tests passed\n";
   return 0;

@@ -42,6 +42,8 @@ HandleResult MessageHandler::handle(const std::string &raw_request, chat::Connec
         return handleHeartbeat(msg);
     } else if (msg.msg_type == "whoami") {
         return handleWhoAmI(msg, conn_id);
+    } else if (msg.msg_type == "send_message") {
+        return handleSendMessage(msg, conn_id);
     } else {
         return handleUnknown(msg);
     }
@@ -173,5 +175,52 @@ HandleResult MessageHandler::handleUnknown(const Message &msg) {
     HandleResult res;
     res.response = codec_.encodeResponse(resp);
     return res;
+}
+
+HandleResult MessageHandler::handleSendMessage(const Message &msg, chat::ConnectionId conn_id) {
+    SendMessageRequest req;
+    std::string err;
+    if (!codec_.parseSendMessageRequest(msg, req, err)) {
+        Response resp = MakeInvalidParamResponse(msg, err);
+        HandleResult res;
+        res.response = codec_.encodeResponse(resp);
+        return res;
+    }
+
+    SendMessageResult result = chat_service_.sendMessage(conn_id, req);
+
+    Response ack;
+    ack.msg_type = "send_message_resp";
+    ack.seq = msg.seq;
+    ack.code = result.code;
+    ack.message = result.message;
+
+    HandleResult handle_result;
+    if (result.code == ErrorCode::OK) {
+        SendMessageAckData ack_data;
+        ack_data.receiver_id = result.to_user_id;
+        codec_.fillSendMessageAck(ack, ack_data);
+
+        Response push;
+        push.msg_type = "message_push";
+        push.seq = 0;
+        push.code = ErrorCode::OK;
+        push.message = "new message";
+
+        MessagePushData push_data;
+        push_data.from_user_id = result.from_user_id;
+        push_data.from_username = result.from_username;
+        push_data.content = result.content;
+        push_data.server_time = result.server_time;
+        codec_.fillMessagePush(push, push_data);
+
+        handle_result.pushes.push_back({
+            result.to_conn_id,
+            codec_.encodeResponse(push)
+        });
+    }
+
+    handle_result.response = codec_.encodeResponse(ack);
+    return handle_result;
 }
 }  // namespace chat

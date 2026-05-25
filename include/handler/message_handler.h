@@ -54,6 +54,9 @@ class MessageHandler : public IMessageHandler {
     // 处理心跳请求。
     HandleResult handleHeartbeat(const Message &msg);
 
+    // 处理发送消息请求。
+    HandleResult handleSendMessage(const Message &msg, chat::ConnectionId conn_id);
+
     // 处理未知消息类型的请求。
     HandleResult handleUnknown(const Message &msg);
 
