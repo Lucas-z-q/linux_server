@@ -230,13 +230,17 @@ void TestSendMessageOverTcp() {
 
   // Alice sends message to Bob
   const std::string send_msg_request =
-      R"({"msg_type":"send_message","seq":12,"token":"","data":{"to_user_id":)" + std::to_string(bob_user_id) + R"(,"content":"hello bob"}})";
+      R"({"msg_type":"send_message","seq":12,"token":"","data":{"client_msg_id":"cmsg_tcp_12","to_user_id":)" + std::to_string(bob_user_id) + R"(,"content":"hello bob"}})";
   
   const nlohmann::json ack_resp = SendAndReceiveOnSocket(fd_alice, send_msg_request);
   
   // Verify Alice receives the send_message_resp ACK
   ExpectCommonEnvelope(ack_resp, "send_message_resp", 12, chat::ErrorCode::OK);
   assert(ack_resp["data"]["to_user_id"].get<int>() == bob_user_id);
+  assert(!ack_resp["data"]["message_id"].get<std::string>().empty());
+  assert(!ack_resp["data"]["conversation_id"].get<std::string>().empty());
+  assert(ack_resp["data"]["status"].get<int>() == 1);
+  assert(ack_resp["data"]["created_at"].is_number_integer());
 
   // Verify Bob receives the message_push
   auto ReceiveOnSocket = [](int fd) {
@@ -252,9 +256,13 @@ void TestSendMessageOverTcp() {
 
   const nlohmann::json push_resp = ReceiveOnSocket(fd_bob);
   ExpectCommonEnvelope(push_resp, "message_push", 0, chat::ErrorCode::OK);
+  assert(!push_resp["data"]["message_id"].get<std::string>().empty());
+  assert(!push_resp["data"]["conversation_id"].get<std::string>().empty());
   assert(push_resp["data"]["from_user_id"].get<int>() == 10001);
   assert(push_resp["data"]["from_username"].get<std::string>() == "alice");
+  assert(push_resp["data"]["to_user_id"].get<int>() == bob_user_id);
   assert(push_resp["data"]["content"].get<std::string>() == "hello bob");
+  assert(push_resp["data"]["created_at"].is_number_integer());
   assert(push_resp["data"].contains("server_time"));
 
   close(fd_alice);

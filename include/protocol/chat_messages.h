@@ -2,6 +2,7 @@
 #define LINUX_SERVER_INCLUDE_PROTOCOL_CHAT_MESSAGES_H_
 
 #include <string>
+#include <vector>
 
 #include "common/types.h"
 
@@ -15,8 +16,11 @@ namespace chat {
 
 // 发送消息请求中的业务字段。
 struct SendMessageRequest {
+    // 客户端生成的消息唯一标识。
+    std::string client_msg_id;
+
     // 接收者用户 ID。
-    UserId receiver_id = 0;
+    UserId to_user_id = 0;
 
     // 消息文本内容。
     std::string content;
@@ -24,17 +28,81 @@ struct SendMessageRequest {
 
 // 发送消息成功后返回给发送者的确认数据。
 struct SendMessageAckData {
+    // 服务端生成的消息唯一标识。
+    std::string message_id;
+
+    // 会话 ID。
+    std::string conversation_id;
+
     // 接收者用户 ID。
-    UserId receiver_id = 0;
+    UserId to_user_id = 0;
+
+    // 消息状态。
+    int32_t status = 0;
+
+    // 消息创建时间戳。
+    Timestamp created_at = 0;
 };
 
 // 服务端推送给接收者的消息数据。
 struct MessagePushData {
+    // 服务端生成的消息唯一标识。
+    std::string message_id;
+
+    // 会话 ID。
+    std::string conversation_id;
+
+    // 发送方用户 ID。
     UserId from_user_id = 0;
+
+    // 发送方用户名。
     std::string from_username;
+
+    // 接收方用户 ID。
+    UserId to_user_id = 0;
+
+    // 消息文本内容。
     std::string content;
+
+    // 消息创建时间戳。
+    Timestamp created_at = 0;
+
+    // 服务端处理消息时的系统时间戳（保留兼容）。
     Timestamp server_time = 0;
 };
+
+// 单条离线消息结构。
+struct OfflineMessage {
+    std::string message_id;
+    std::string conversation_id;
+    UserId from_user_id = 0;
+    UserId to_user_id = 0;
+    std::string content;
+    Timestamp created_at = 0;
+    int32_t status = 0;
+};
+
+// 拉取离线消息请求。
+struct PullOfflineMessagesRequest {
+    // 限制返回的消息条数。
+    int32_t limit = 0;
+
+    // 可选：在此消息 ID 之前的消息（分页）。
+    std::string before_message_id;
+
+    // 可选：在此消息 ID 之后的消息（分页）。
+    std::string since_message_id;
+};
+
+// 拉取离线消息响应数据。
+struct PullOfflineMessagesResponseData {
+    // 离线消息列表。
+    std::vector<OfflineMessage> messages;
+
+    // 是否还有更多离线消息。
+    bool has_more = false;
+};
+
 }  // namespace chat
 
 #endif  // LINUX_SERVER_INCLUDE_PROTOCOL_CHAT_MESSAGES_H_

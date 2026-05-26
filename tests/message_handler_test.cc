@@ -344,7 +344,7 @@ void TestHandleSendMessageSuccess() {
   session_manager.BindSession(43, bob_session);
 
   const std::string request =
-      R"({"msg_type":"send_message","seq":20,"token":"","data":{"to_user_id":10002,"content":"hello bob"}})";
+      R"({"msg_type":"send_message","seq":20,"token":"","data":{"client_msg_id":"cmsg_100","to_user_id":10002,"content":"hello bob"}})";
 
   const HandleResult result = handler.handle(request, 42);
 
@@ -352,6 +352,10 @@ void TestHandleSendMessageSuccess() {
   const nlohmann::json ack_resp = ParseResponse(result);
   ExpectCommonEnvelope(ack_resp, "send_message_resp", 20, ErrorCode::OK);
   assert(ack_resp["data"]["to_user_id"].get<UserId>() == 10002);
+  assert(!ack_resp["data"]["message_id"].get<std::string>().empty());
+  assert(ack_resp["data"]["conversation_id"].get<std::string>() == "conv_10001_10002");
+  assert(ack_resp["data"]["status"].get<int32_t>() == 1);
+  assert(ack_resp["data"]["created_at"].is_number_integer());
 
   // Verify push to Bob
   assert(result.pushes.size() == 1);
@@ -359,10 +363,14 @@ void TestHandleSendMessageSuccess() {
   
   const nlohmann::json push_resp = ParseResponse(result.pushes[0].payload);
   ExpectCommonEnvelope(push_resp, "message_push", 0, ErrorCode::OK);
+  assert(!push_resp["data"]["message_id"].get<std::string>().empty());
+  assert(push_resp["data"]["conversation_id"].get<std::string>() == "conv_10001_10002");
   assert(push_resp["data"]["from_user_id"].get<UserId>() == 10001);
   assert(push_resp["data"]["from_username"].get<std::string>() == "alice");
+  assert(push_resp["data"]["to_user_id"].get<UserId>() == 10002);
   assert(push_resp["data"]["content"].get<std::string>() == "hello bob");
-  assert(push_resp["data"].contains("server_time"));
+  assert(push_resp["data"]["created_at"].is_number_integer());
+  assert(push_resp["data"]["server_time"].is_number_integer());
 }
 
 void TestSendMessagePushDiscardedOnConnectionRebound() {
@@ -387,7 +395,7 @@ void TestSendMessagePushDiscardedOnConnectionRebound() {
   session_manager.BindSession(43, bob_session);
 
   const std::string request =
-      R"({"msg_type":"send_message","seq":20,"token":"","data":{"to_user_id":10002,"content":"hello bob"}})";
+      R"({"msg_type":"send_message","seq":20,"token":"","data":{"client_msg_id":"cmsg_200","to_user_id":10002,"content":"hello bob"}})";
 
   const HandleResult result = handler.handle(request, 42);
 
@@ -421,6 +429,92 @@ void TestSendMessagePushDiscardedOnConnectionRebound() {
   assert(handler.isConnectionBoundToUser(push.target_conn_id, push.target_user_id) == false);
 }
 
+void TestHandleSendMessageMissingClientMsgId() {
+  FakeUserRepository repo;
+  SessionManager session_manager;
+  UserService service(repo, session_manager);
+  ChatService chat_service(session_manager);
+  MessageHandler handler(service, chat_service);
+
+  // Setup alice session on conn 42
+  ConnectionSession alice_session;
+  alice_session.authenticated = true;
+  alice_session.user_id = 10001;
+  alice_session.username = "alice";
+  session_manager.BindSession(42, alice_session);
+
+  const std::string request =
+      R"({"msg_type":"send_message","seq":21,"token":"","data":{"to_user_id":10002,"content":"hello bob"}})";
+
+  const HandleResult result = handler.handle(request, 42);
+  const nlohmann::json resp = ParseResponse(result);
+  ExpectCommonEnvelope(resp, "send_message_resp", 21, ErrorCode::INVALID_PARAM);
+  assert(resp["message"].get<std::string>().find("client_msg_id") != std::string::npos);
+}
+
+void TestHandleSendMessageEmptyClientMsgId() {
+  FakeUserRepository repo;
+  SessionManager session_manager;
+  UserService service(repo, session_manager);
+  ChatService chat_service(session_manager);
+  MessageHandler handler(service, chat_service);
+
+  // Setup alice session on conn 42
+  ConnectionSession alice_session;
+  alice_session.authenticated = true;
+  alice_session.user_id = 10001;
+  alice_session.username = "alice";
+  session_manager.BindSession(42, alice_session);
+
+  const std::string request =
+      R"({"msg_type":"send_message","seq":22,"token":"","data":{"client_msg_id":"","to_user_id":10002,"content":"hello bob"}})";
+
+  const HandleResult result = handler.handle(request, 42);
+  const nlohmann::json resp = ParseResponse(result);
+  ExpectCommonEnvelope(resp, "send_message_resp", 22, ErrorCode::INVALID_PARAM);
+  assert(resp["message"].get<std::string>().find("Empty") != std::string::npos);
+}
+
+void TestHandlePullOfflineMessagesNotLoggedIn() {
+  FakeUserRepository repo;
+  SessionManager session_manager;
+  UserService service(repo, session_manager);
+  ChatService chat_service(session_manager);
+  MessageHandler handler(service, chat_service);
+
+  const std::string request =
+      R"({"msg_type":"pull_offline_messages","seq":30,"token":"","data":{"limit":10}})";
+
+  const HandleResult result = handler.handle(request, 42);
+  const nlohmann::json resp = ParseResponse(result);
+  ExpectCommonEnvelope(resp, "pull_offline_messages_resp", 30, ErrorCode::NOT_LOGGED_IN);
+}
+
+void TestHandlePullOfflineMessagesSuccess() {
+  FakeUserRepository repo;
+  SessionManager session_manager;
+  UserService service(repo, session_manager);
+  ChatService chat_service(session_manager);
+  MessageHandler handler(service, chat_service);
+
+  // Setup alice session on conn 42
+  ConnectionSession alice_session;
+  alice_session.authenticated = true;
+  alice_session.user_id = 10001;
+  alice_session.username = "alice";
+  session_manager.BindSession(42, alice_session);
+
+  const std::string request =
+      R"({"msg_type":"pull_offline_messages","seq":31,"token":"","data":{"limit":15,"since_message_id":"msg_123"}})";
+
+  const HandleResult result = handler.handle(request, 42);
+  const nlohmann::json resp = ParseResponse(result);
+  ExpectCommonEnvelope(resp, "pull_offline_messages_resp", 31, ErrorCode::OK);
+  assert(resp["data"]["messages"].is_array());
+  assert(resp["data"]["messages"].empty());
+  assert(resp["data"]["has_more"].get<bool>() == false);
+}
+
 }  // namespace
 
 int main() {
@@ -439,6 +533,10 @@ int main() {
   TestHandleInvalidJson();
   TestHandleSendMessageSuccess();
   TestSendMessagePushDiscardedOnConnectionRebound();
+  TestHandleSendMessageMissingClientMsgId();
+  TestHandleSendMessageEmptyClientMsgId();
+  TestHandlePullOfflineMessagesNotLoggedIn();
+  TestHandlePullOfflineMessagesSuccess();
 
   std::cout << "[PASS] message handler tests passed\n";
   return 0;

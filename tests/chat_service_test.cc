@@ -52,7 +52,7 @@ void TestSendMessageNotLoggedIn() {
     chat::ChatService chat_service(session_manager);
 
     chat::SendMessageRequest req;
-    req.receiver_id = 2;
+    req.to_user_id = 2;
     req.content = "hello";
 
     auto result = chat_service.sendMessage(100, req);
@@ -71,7 +71,7 @@ void TestSendMessageToSelf() {
     session_manager.BindSession(100, sender_session);
 
     chat::SendMessageRequest req;
-    req.receiver_id = 1;  // Sending to self
+    req.to_user_id = 1;  // Sending to self
     req.content = "hello";
 
     auto result = chat_service.sendMessage(100, req);
@@ -90,7 +90,7 @@ void TestSendMessageTargetNotOnline() {
     session_manager.BindSession(100, sender_session);
 
     chat::SendMessageRequest req;
-    req.receiver_id = 2;  // Target user offline
+    req.to_user_id = 2;  // Target user offline
     req.content = "hello";
 
     auto result = chat_service.sendMessage(100, req);
@@ -116,7 +116,8 @@ void TestSendMessageSuccess() {
     session_manager.BindSession(200, receiver_session);
 
     chat::SendMessageRequest req;
-    req.receiver_id = 2;
+    req.client_msg_id = "msg_test_1";
+    req.to_user_id = 2;
     req.content = "hello world";
 
     auto result = chat_service.sendMessage(100, req);
@@ -127,6 +128,10 @@ void TestSendMessageSuccess() {
     assert(result.to_conn_id == 200);
     assert(result.content == "hello world");
     assert(result.server_time > 0);
+    assert(!result.message_id.empty());
+    assert(result.conversation_id == "conv_1_2");
+    assert(result.status == 1);
+    assert(result.created_at == result.server_time);
 }
 
 void TestSendMessageEmptyContent() {
@@ -134,7 +139,7 @@ void TestSendMessageEmptyContent() {
     chat::ChatService chat_service(session_manager);
 
     chat::SendMessageRequest req;
-    req.receiver_id = 2;
+    req.to_user_id = 2;
     req.content = "";
 
     auto result = chat_service.sendMessage(100, req);
@@ -146,11 +151,43 @@ void TestSendMessageTooLongContent() {
     chat::ChatService chat_service(session_manager);
 
     chat::SendMessageRequest req;
-    req.receiver_id = 2;
+    req.to_user_id = 2;
     req.content = std::string(4097, 'x');
 
     auto result = chat_service.sendMessage(100, req);
     assert(result.code == chat::ErrorCode::MESSAGE_TOO_LONG);
+}
+
+void TestPullOfflineMessagesNotLoggedIn() {
+    FakeSessionManager session_manager;
+    chat::ChatService chat_service(session_manager);
+
+    chat::PullOfflineMessagesRequest req;
+    req.limit = 10;
+
+    auto result = chat_service.pullOfflineMessages(100, req);
+    assert(result.code == chat::ErrorCode::NOT_LOGGED_IN);
+}
+
+void TestPullOfflineMessagesSuccess() {
+    FakeSessionManager session_manager;
+    chat::ChatService chat_service(session_manager);
+
+    // Setup user session
+    chat::ConnectionSession user_session;
+    user_session.authenticated = true;
+    user_session.user_id = 1;
+    user_session.username = "user1";
+    session_manager.BindSession(100, user_session);
+
+    chat::PullOfflineMessagesRequest req;
+    req.limit = 10;
+    req.since_message_id = "msg_last";
+
+    auto result = chat_service.pullOfflineMessages(100, req);
+    assert(result.code == chat::ErrorCode::OK);
+    assert(result.messages.empty());
+    assert(result.has_more == false);
 }
 
 }  // namespace
@@ -162,6 +199,8 @@ int main() {
     TestSendMessageSuccess();
     TestSendMessageEmptyContent();
     TestSendMessageTooLongContent();
+    TestPullOfflineMessagesNotLoggedIn();
+    TestPullOfflineMessagesSuccess();
     std::cout << "[PASS] chat service tests passed\n";
     return 0;
 }

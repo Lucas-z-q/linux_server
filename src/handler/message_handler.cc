@@ -44,6 +44,8 @@ HandleResult MessageHandler::handle(const std::string &raw_request, chat::Connec
         return handleWhoAmI(msg, conn_id);
     } else if (msg.msg_type == "send_message") {
         return handleSendMessage(msg, conn_id);
+    } else if (msg.msg_type == "pull_offline_messages") {
+        return handlePullOfflineMessages(msg, conn_id);
     } else {
         return handleUnknown(msg);
     }
@@ -198,7 +200,11 @@ HandleResult MessageHandler::handleSendMessage(const Message &msg, chat::Connect
     HandleResult handle_result;
     if (result.code == ErrorCode::OK) {
         SendMessageAckData ack_data;
-        ack_data.receiver_id = result.to_user_id;
+        ack_data.message_id = result.message_id;
+        ack_data.conversation_id = result.conversation_id;
+        ack_data.to_user_id = result.to_user_id;
+        ack_data.status = result.status;
+        ack_data.created_at = result.created_at;
         codec_.fillSendMessageAck(ack, ack_data);
 
         Response push;
@@ -208,9 +214,13 @@ HandleResult MessageHandler::handleSendMessage(const Message &msg, chat::Connect
         push.message = "new message";
 
         MessagePushData push_data;
+        push_data.message_id = result.message_id;
+        push_data.conversation_id = result.conversation_id;
         push_data.from_user_id = result.from_user_id;
         push_data.from_username = result.from_username;
+        push_data.to_user_id = result.to_user_id;
         push_data.content = result.content;
+        push_data.created_at = result.created_at;
         push_data.server_time = result.server_time;
         codec_.fillMessagePush(push, push_data);
 
@@ -222,6 +232,36 @@ HandleResult MessageHandler::handleSendMessage(const Message &msg, chat::Connect
     }
 
     handle_result.response = codec_.encodeResponse(ack);
+    return handle_result;
+}
+
+HandleResult MessageHandler::handlePullOfflineMessages(const Message &msg, chat::ConnectionId conn_id) {
+    PullOfflineMessagesRequest req;
+    std::string err;
+    if (!codec_.parsePullOfflineMessagesRequest(msg, req, err)) {
+        Response resp = MakeInvalidParamResponse(msg, err);
+        HandleResult res;
+        res.response = codec_.encodeResponse(resp);
+        return res;
+    }
+
+    PullOfflineMessagesResult result = chat_service_.pullOfflineMessages(conn_id, req);
+
+    Response resp;
+    resp.msg_type = "pull_offline_messages_resp";
+    resp.seq = msg.seq;
+    resp.code = result.code;
+    resp.message = result.message;
+
+    if (result.code == ErrorCode::OK) {
+        PullOfflineMessagesResponseData resp_data;
+        resp_data.messages = result.messages;
+        resp_data.has_more = result.has_more;
+        codec_.fillPullOfflineMessagesResponse(resp, resp_data);
+    }
+
+    HandleResult handle_result;
+    handle_result.response = codec_.encodeResponse(resp);
     return handle_result;
 }
 }  // namespace chat

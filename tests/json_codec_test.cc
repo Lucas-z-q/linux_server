@@ -102,13 +102,15 @@ void TestSendMessageRequest()
         msg.msg_type = "send_message";
         msg.seq = 100;
         msg.data = nlohmann::json::object();
+        msg.data["client_msg_id"] = "msg_123";
         msg.data["to_user_id"] = 12345;
         msg.data["content"] = "hello world";
 
         SendMessageRequest req;
         bool ok = codec.parseSendMessageRequest(msg, req, err);
         assert(ok);
-        assert(req.receiver_id == 12345);
+        assert(req.client_msg_id == "msg_123");
+        assert(req.to_user_id == 12345);
         assert(req.content == "hello world");
     }
 
@@ -117,6 +119,7 @@ void TestSendMessageRequest()
         Message msg;
         msg.msg_type = "send_message";
         msg.data = nlohmann::json::object();
+        msg.data["client_msg_id"] = "msg_123";
         msg.data["content"] = "hello";
 
         SendMessageRequest req;
@@ -130,6 +133,7 @@ void TestSendMessageRequest()
         Message msg;
         msg.msg_type = "send_message";
         msg.data = nlohmann::json::object();
+        msg.data["client_msg_id"] = "msg_123";
         msg.data["to_user_id"] = "12345";
         msg.data["content"] = "hello";
 
@@ -144,6 +148,7 @@ void TestSendMessageRequest()
         Message msg;
         msg.msg_type = "send_message";
         msg.data = nlohmann::json::object();
+        msg.data["client_msg_id"] = "msg_123";
         msg.data["to_user_id"] = 0;
         msg.data["content"] = "hello";
 
@@ -158,6 +163,7 @@ void TestSendMessageRequest()
         Message msg;
         msg.msg_type = "send_message";
         msg.data = nlohmann::json::object();
+        msg.data["client_msg_id"] = "msg_123";
         msg.data["to_user_id"] = 123;
 
         SendMessageRequest req;
@@ -171,6 +177,7 @@ void TestSendMessageRequest()
         Message msg;
         msg.msg_type = "send_message";
         msg.data = nlohmann::json::object();
+        msg.data["client_msg_id"] = "msg_123";
         msg.data["to_user_id"] = 123;
         msg.data["content"] = 12345;
 
@@ -185,6 +192,7 @@ void TestSendMessageRequest()
         Message msg;
         msg.msg_type = "send_message";
         msg.data = nlohmann::json::object();
+        msg.data["client_msg_id"] = "msg_123";
         msg.data["to_user_id"] = 123;
         msg.data["content"] = "";
 
@@ -199,8 +207,53 @@ void TestSendMessageRequest()
         Message msg;
         msg.msg_type = "send_message";
         msg.data = nlohmann::json::object();
+        msg.data["client_msg_id"] = "msg_123";
         msg.data["to_user_id"] = 123;
         msg.data["content"] = std::string(4097, 'a');
+
+        SendMessageRequest req;
+        bool ok = codec.parseSendMessageRequest(msg, req, err);
+        assert(!ok);
+        assert(err.find("too long") != std::string::npos);
+    }
+
+    // 8a. Missing client_msg_id
+    {
+        Message msg;
+        msg.msg_type = "send_message";
+        msg.data = nlohmann::json::object();
+        msg.data["to_user_id"] = 123;
+        msg.data["content"] = "hello";
+
+        SendMessageRequest req;
+        bool ok = codec.parseSendMessageRequest(msg, req, err);
+        assert(!ok);
+        assert(err.find("client_msg_id") != std::string::npos);
+    }
+
+    // 8b. Empty client_msg_id
+    {
+        Message msg;
+        msg.msg_type = "send_message";
+        msg.data = nlohmann::json::object();
+        msg.data["client_msg_id"] = "";
+        msg.data["to_user_id"] = 123;
+        msg.data["content"] = "hello";
+
+        SendMessageRequest req;
+        bool ok = codec.parseSendMessageRequest(msg, req, err);
+        assert(!ok);
+        assert(err.find("Empty") != std::string::npos);
+    }
+
+    // 8c. Too long client_msg_id (> 64)
+    {
+        Message msg;
+        msg.msg_type = "send_message";
+        msg.data = nlohmann::json::object();
+        msg.data["client_msg_id"] = std::string(65, 'a');
+        msg.data["to_user_id"] = 123;
+        msg.data["content"] = "hello";
 
         SendMessageRequest req;
         bool ok = codec.parseSendMessageRequest(msg, req, err);
@@ -212,26 +265,149 @@ void TestSendMessageRequest()
     {
         Response resp;
         SendMessageAckData data;
-        data.receiver_id = 999;
+        data.message_id = "msg_1";
+        data.conversation_id = "conv_1";
+        data.to_user_id = 999;
+        data.status = 1;
+        data.created_at = 123456;
 
         codec.fillSendMessageAck(resp, data);
+        assert(resp.data["message_id"].get<std::string>() == "msg_1");
+        assert(resp.data["conversation_id"].get<std::string>() == "conv_1");
         assert(resp.data["to_user_id"].get<UserId>() == 999);
+        assert(resp.data["status"].get<int32_t>() == 1);
+        assert(resp.data["created_at"].get<Timestamp>() == 123456);
     }
 
     // 10. fillMessagePush
     {
         Response resp;
         MessagePushData data;
+        data.message_id = "msg_2";
+        data.conversation_id = "conv_2";
         data.from_user_id = 111;
         data.from_username = "alice";
+        data.to_user_id = 222;
         data.content = "hi";
+        data.created_at = 1621948800;
         data.server_time = 1621948800;
 
         codec.fillMessagePush(resp, data);
+        assert(resp.data["message_id"].get<std::string>() == "msg_2");
+        assert(resp.data["conversation_id"].get<std::string>() == "conv_2");
         assert(resp.data["from_user_id"].get<UserId>() == 111);
         assert(resp.data["from_username"].get<std::string>() == "alice");
+        assert(resp.data["to_user_id"].get<UserId>() == 222);
         assert(resp.data["content"].get<std::string>() == "hi");
+        assert(resp.data["created_at"].get<Timestamp>() == 1621948800);
         assert(resp.data["server_time"].get<Timestamp>() == 1621948800);
+    }
+}
+
+void TestPullOfflineMessages()
+{
+    JsonCodec codec;
+    std::string err;
+
+    // 1. Success case with optional fields
+    {
+        Message msg;
+        msg.msg_type = "pull_offline_messages";
+        msg.seq = 200;
+        msg.data = nlohmann::json::object();
+        msg.data["limit"] = 20;
+        msg.data["before_message_id"] = "msg_before";
+        msg.data["since_message_id"] = "msg_since";
+
+        PullOfflineMessagesRequest req;
+        bool ok = codec.parsePullOfflineMessagesRequest(msg, req, err);
+        assert(ok);
+        assert(req.limit == 20);
+        assert(req.before_message_id == "msg_before");
+        assert(req.since_message_id == "msg_since");
+    }
+
+    // 2. Success case without optional fields
+    {
+        Message msg;
+        msg.msg_type = "pull_offline_messages";
+        msg.seq = 200;
+        msg.data = nlohmann::json::object();
+        msg.data["limit"] = 10;
+
+        PullOfflineMessagesRequest req;
+        bool ok = codec.parsePullOfflineMessagesRequest(msg, req, err);
+        assert(ok);
+        assert(req.limit == 10);
+        assert(req.before_message_id.empty());
+        assert(req.since_message_id.empty());
+    }
+
+    // 3. Missing limit
+    {
+        Message msg;
+        msg.msg_type = "pull_offline_messages";
+        msg.data = nlohmann::json::object();
+
+        PullOfflineMessagesRequest req;
+        bool ok = codec.parsePullOfflineMessagesRequest(msg, req, err);
+        assert(!ok);
+        assert(err.find("limit") != std::string::npos);
+    }
+
+    // 4. Invalid limit (not integer)
+    {
+        Message msg;
+        msg.msg_type = "pull_offline_messages";
+        msg.data = nlohmann::json::object();
+        msg.data["limit"] = "10";
+
+        PullOfflineMessagesRequest req;
+        bool ok = codec.parsePullOfflineMessagesRequest(msg, req, err);
+        assert(!ok);
+        assert(err.find("limit") != std::string::npos);
+    }
+
+    // 5. Invalid limit value (<= 0)
+    {
+        Message msg;
+        msg.msg_type = "pull_offline_messages";
+        msg.data = nlohmann::json::object();
+        msg.data["limit"] = 0;
+
+        PullOfflineMessagesRequest req;
+        bool ok = codec.parsePullOfflineMessagesRequest(msg, req, err);
+        assert(!ok);
+        assert(err.find("limit") != std::string::npos);
+    }
+
+    // 6. fillPullOfflineMessagesResponse
+    {
+        Response resp;
+        PullOfflineMessagesResponseData data;
+        data.has_more = true;
+
+        OfflineMessage msg1;
+        msg1.message_id = "m1";
+        msg1.conversation_id = "c1";
+        msg1.from_user_id = 111;
+        msg1.to_user_id = 222;
+        msg1.content = "hello";
+        msg1.created_at = 12345;
+        msg1.status = 1;
+        data.messages.push_back(msg1);
+
+        codec.fillPullOfflineMessagesResponse(resp, data);
+        assert(resp.data["has_more"].get<bool>() == true);
+        assert(resp.data["messages"].is_array());
+        assert(resp.data["messages"].size() == 1);
+        assert(resp.data["messages"][0]["message_id"].get<std::string>() == "m1");
+        assert(resp.data["messages"][0]["conversation_id"].get<std::string>() == "c1");
+        assert(resp.data["messages"][0]["from_user_id"].get<UserId>() == 111);
+        assert(resp.data["messages"][0]["to_user_id"].get<UserId>() == 222);
+        assert(resp.data["messages"][0]["content"].get<std::string>() == "hello");
+        assert(resp.data["messages"][0]["created_at"].get<Timestamp>() == 12345);
+        assert(resp.data["messages"][0]["status"].get<int32_t>() == 1);
     }
 }
 
@@ -244,6 +420,7 @@ int main()
     TestRejectMissingRequiredField();
     TestEncodeResponseReturnsPureJson();
     TestSendMessageRequest();
+    TestPullOfflineMessages();
     std::cout << "[PASS] json codec tests passed\n";
     return 0;
 }

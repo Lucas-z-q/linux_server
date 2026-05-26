@@ -35,6 +35,33 @@ struct SendMessageResult {
 
     // 服务端处理消息时的系统时间戳。
     Timestamp server_time = 0;
+
+    // 服务端生成的消息唯一标识。
+    std::string message_id;
+
+    // 会话 ID。
+    std::string conversation_id;
+
+    // 消息状态。
+    int32_t status = 0;
+
+    // 消息创建时间戳。
+    Timestamp created_at = 0;
+};
+
+// 表示拉取离线消息的业务执行结果。
+struct PullOfflineMessagesResult {
+    // 错误码。
+    ErrorCode code = ErrorCode::OK;
+
+    // 错误或状态信息。
+    std::string message;
+
+    // 离线消息列表。
+    std::vector<OfflineMessage> messages;
+
+    // 是否还有更多。
+    bool has_more = false;
 };
 
 // 负责处理单聊等即时通讯核心业务逻辑。
@@ -46,6 +73,10 @@ public:
     // 发送一条单聊消息。
     SendMessageResult sendMessage(ConnectionId from_conn_id,
                                   const SendMessageRequest& req);
+
+    // 拉取离线消息。
+    PullOfflineMessagesResult pullOfflineMessages(ConnectionId from_conn_id,
+                                                  const PullOfflineMessagesRequest& req);
 
 private:
     ISessionManager& session_manager_;

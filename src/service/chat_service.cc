@@ -1,6 +1,8 @@
 #include "service/chat_service.h"
 
 #include <chrono>
+#include <atomic>
+#include <algorithm>
 
 namespace chat {
 
@@ -34,8 +36,8 @@ SendMessageResult ChatService::sendMessage(ConnectionId from_conn_id,
         return result;
     }
 
-    // 3. 如果 req.receiver_id == 当前用户 id，返回 CANNOT_SEND_TO_SELF
-    if (req.receiver_id == from_session_opt->user_id) {
+    // 3. 如果 req.to_user_id == 当前用户 id，返回 CANNOT_SEND_TO_SELF
+    if (req.to_user_id == from_session_opt->user_id) {
         SendMessageResult result;
         result.code = ErrorCode::CANNOT_SEND_TO_SELF;
         result.message = "Cannot send message to yourself";
@@ -43,7 +45,7 @@ SendMessageResult ChatService::sendMessage(ConnectionId from_conn_id,
     }
 
     // 4. 获取接收方连接 ID
-    auto target_conn_id_opt = session_manager_.GetConnectionId(req.receiver_id);
+    auto target_conn_id_opt = session_manager_.GetConnectionId(req.to_user_id);
 
     // 5. 如果目标用户不在线，返回 USER_NOT_ONLINE
     if (!target_conn_id_opt.has_value()) {
@@ -59,10 +61,43 @@ SendMessageResult ChatService::sendMessage(ConnectionId from_conn_id,
     result.message = "Success";
     result.from_user_id = from_session_opt->user_id;
     result.from_username = from_session_opt->username;
-    result.to_user_id = req.receiver_id;
+    result.to_user_id = req.to_user_id;
     result.to_conn_id = target_conn_id_opt.value();
     result.content = req.content;
     result.server_time = std::chrono::system_clock::to_time_t(std::chrono::system_clock::now());
+
+    // 生成 message_id, conversation_id, status, created_at
+    static std::atomic<uint64_t> msg_seq{0};
+    result.message_id = "msg_" + std::to_string(result.server_time) + "_" + std::to_string(result.from_user_id) + "_" + std::to_string(++msg_seq);
+
+    UserId min_id = std::min(result.from_user_id, result.to_user_id);
+    UserId max_id = std::max(result.from_user_id, result.to_user_id);
+    result.conversation_id = "conv_" + std::to_string(min_id) + "_" + std::to_string(max_id);
+    result.status = 1; // 1 = sent/delivered
+    result.created_at = result.server_time;
+
+    return result;
+}
+
+PullOfflineMessagesResult ChatService::pullOfflineMessages(ConnectionId from_conn_id,
+                                                          const PullOfflineMessagesRequest& req) {
+    (void)req;
+    // 1. 获取发送方会话
+    auto from_session_opt = session_manager_.GetSession(from_conn_id);
+
+    // 2. 如果没有 session，返回 user not logged in
+    if (!from_session_opt.has_value() || !from_session_opt->authenticated) {
+        PullOfflineMessagesResult result;
+        result.code = ErrorCode::NOT_LOGGED_IN;
+        result.message = "User not logged in";
+        return result;
+    }
+
+    // 3. 返回 Mock 消息列表
+    PullOfflineMessagesResult result;
+    result.code = ErrorCode::OK;
+    result.message = "Success";
+    result.has_more = false;
     return result;
 }
 
