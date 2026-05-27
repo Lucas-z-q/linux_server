@@ -12,35 +12,36 @@ namespace chat {
 
 // 表示协议处理与业务执行过程中可能出现的结果状态。
 enum class ErrorCode {
-  // 请求成功。
-  OK = 0,
+    // 请求成功。
+    OK = 0,
 
-  // 通用协议与参数错误。
-  INVALID_PARAM = 1,
-  INVALID_JSON = 2,
-  INVALID_PACKET = 3,
-  UNKNOWN_MESSAGE_TYPE = 4,
+    // 通用协议与参数错误。
+    INVALID_PARAM = 1,
+    INVALID_JSON = 2,
+    INVALID_PACKET = 3,
+    UNKNOWN_MESSAGE_TYPE = 4,
 
-  // 用户与认证相关错误。
-  USER_ALREADY_EXISTS = 1001,
-  USER_NOT_FOUND = 1002,
-  WRONG_PASSWORD = 1003,
-  INVALID_CREDENTIALS = 1004,
-  USER_ALREADY_ONLINE = 1005,
+    // 用户与认证相关错误。
+    USER_ALREADY_EXISTS = 1001,
+    USER_NOT_FOUND = 1002,
+    WRONG_PASSWORD = 1003,
+    INVALID_CREDENTIALS = 1004,
+    USER_ALREADY_ONLINE = 1005,
 
-  // 数据库相关错误。
-  DB_INIT_FAILED = 2001,
-  DB_QUERY_FAILED = 2002,
-  DB_INSERT_FAILED = 2003,
+    // 数据库相关错误。
+    DB_INIT_FAILED = 2001,
+    DB_QUERY_FAILED = 2002,
+    DB_INSERT_FAILED = 2003,
 
-  // 消息与聊天相关错误。
-  MESSAGE_TOO_LONG = 3001,
-  USER_NOT_ONLINE = 3002,
-  CANNOT_SEND_TO_SELF = 3003,
-  NOT_LOGGED_IN = 3004,
+    // 消息与聊天相关错误。
+    MESSAGE_TOO_LONG = 3001,
+    USER_NOT_ONLINE = 3002,
+    CANNOT_SEND_TO_SELF = 3003,
+    NOT_LOGGED_IN = 3004,
+    IDEMPOTENCY_CONFLICT = 3005,
 
-  // 兜底内部错误。
-  INTERNAL_ERROR = 9001,
+    // 兜底内部错误。
+    INTERNAL_ERROR = 9001,
 };
 
 }  // namespace chat

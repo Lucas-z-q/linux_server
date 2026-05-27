@@ -207,28 +207,26 @@ HandleResult MessageHandler::handleSendMessage(const Message &msg, chat::Connect
         ack_data.created_at = result.created_at;
         codec_.fillSendMessageAck(ack, ack_data);
 
-        Response push;
-        push.msg_type = "message_push";
-        push.seq = 0;
-        push.code = ErrorCode::OK;
-        push.message = "new message";
+        if (result.to_conn_id != 0) {
+            Response push;
+            push.msg_type = "message_push";
+            push.seq = 0;
+            push.code = ErrorCode::OK;
+            push.message = "new message";
 
-        MessagePushData push_data;
-        push_data.message_id = result.message_id;
-        push_data.conversation_id = result.conversation_id;
-        push_data.from_user_id = result.from_user_id;
-        push_data.from_username = result.from_username;
-        push_data.to_user_id = result.to_user_id;
-        push_data.content = result.content;
-        push_data.created_at = result.created_at;
-        push_data.server_time = result.server_time;
-        codec_.fillMessagePush(push, push_data);
+            MessagePushData push_data;
+            push_data.message_id = result.message_id;
+            push_data.conversation_id = result.conversation_id;
+            push_data.from_user_id = result.from_user_id;
+            push_data.from_username = result.from_username;
+            push_data.to_user_id = result.to_user_id;
+            push_data.content = result.content;
+            push_data.created_at = result.created_at;
+            push_data.server_time = result.server_time;
+            codec_.fillMessagePush(push, push_data);
 
-        handle_result.pushes.push_back({
-            result.to_conn_id,
-            result.to_user_id,
-            codec_.encodeResponse(push)
-        });
+            handle_result.pushes.push_back({result.to_conn_id, result.to_user_id, codec_.encodeResponse(push)});
+        }
     }
 
     handle_result.response = codec_.encodeResponse(ack);

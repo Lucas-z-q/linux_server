@@ -190,7 +190,8 @@ void JsonCodec::fillMessagePush(Response &resp, const MessagePushData &data) con
     resp.data["server_time"] = data.server_time;
 }
 
-bool JsonCodec::parsePullOfflineMessagesRequest(const Message &msg, PullOfflineMessagesRequest &req, std::string &err) const {
+bool JsonCodec::parsePullOfflineMessagesRequest(const Message &msg, PullOfflineMessagesRequest &req,
+                                                std::string &err) const {
     if (!msg.data.contains("limit")) {
         err = "Missing 'limit' field in data";
         return false;
@@ -202,6 +203,10 @@ bool JsonCodec::parsePullOfflineMessagesRequest(const Message &msg, PullOfflineM
     int32_t limit = msg.data["limit"].get<int32_t>();
     if (limit <= 0) {
         err = "Invalid 'limit' field in data: must be greater than 0";
+        return false;
+    }
+    if (limit > 100) {
+        err = "Invalid 'limit' field in data: must be at most 100";
         return false;
     }
     req.limit = limit;

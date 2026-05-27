@@ -9,12 +9,13 @@
 
 #include "app/main_runner.h"
 #include "db/db_pool.h"
+#include "db/message_repository.h"
 #include "db/user_repository.h"
 #include "handler/message_handler.h"
 #include "net/TcpServer.h"
 #include "server/session_manager.h"
-#include "service/user_service.h"
 #include "service/chat_service.h"
+#include "service/user_service.h"
 
 /**
  * @file main.cc
@@ -67,11 +68,12 @@ int main() {
         return 1;
     }
 
-    // 2. 依赖注入：DbPool -> UserRepository -> UserService -> MessageHandler
+    // 2. 依赖注入：DbPool -> Repository -> Service -> MessageHandler
     chat::UserRepository user_repo(&db_pool);
+    chat::MessageRepository message_repo(&db_pool);
     chat::SessionManager session_manager;
     chat::UserService user_service(user_repo, session_manager);
-    chat::ChatService chat_service(session_manager);
+    chat::ChatService chat_service(session_manager, message_repo);
     chat::MessageHandler handler(user_service, chat_service);
 
     // 3. 启动服务器

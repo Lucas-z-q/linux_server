@@ -2,20 +2,17 @@
 
 #include <cassert>
 #include <iostream>
-#include <string>
-
 #include <nlohmann/json.hpp>
+#include <string>
 
 #include "common/message.h"
 #include "common/response.h"
 
 using namespace chat;
 
-namespace
-{
+namespace {
 
-void TestDecodeAndParseLoginRequest()
-{
+void TestDecodeAndParseLoginRequest() {
     JsonCodec codec;
     const std::string raw_login =
         R"({"msg_type":"login","seq":2,"token":"","data":{"username":"alice","password":"123456"}})";
@@ -34,11 +31,9 @@ void TestDecodeAndParseLoginRequest()
     assert(req.password == "123456");
 }
 
-void TestRejectInvalidJson()
-{
+void TestRejectInvalidJson() {
     JsonCodec codec;
-    const std::string bad_json =
-        R"({"msg_type":"login", "seq": 3, "data": { broken...)";
+    const std::string bad_json = R"({"msg_type":"login", "seq": 3, "data": { broken...)";
     Message msg;
     std::string err;
 
@@ -46,11 +41,9 @@ void TestRejectInvalidJson()
     assert(!decode_ok);
 }
 
-void TestRejectMissingRequiredField()
-{
+void TestRejectMissingRequiredField() {
     JsonCodec codec;
-    const std::string missing_field_json =
-        R"({"msg_type":"login","seq":4,"data":{"username":"alice"}})";
+    const std::string missing_field_json = R"({"msg_type":"login","seq":4,"data":{"username":"alice"}})";
     Message msg;
     std::string err;
 
@@ -62,8 +55,7 @@ void TestRejectMissingRequiredField()
     assert(!parse_ok);
 }
 
-void TestEncodeResponseReturnsPureJson()
-{
+void TestEncodeResponseReturnsPureJson() {
     JsonCodec codec;
     Response resp;
     resp.msg_type = "login_resp";
@@ -91,8 +83,7 @@ void TestEncodeResponseReturnsPureJson()
     assert(encoded["data"]["token"].get<std::string>() == "token_xxx");
 }
 
-void TestSendMessageRequest()
-{
+void TestSendMessageRequest() {
     JsonCodec codec;
     std::string err;
 
@@ -304,8 +295,7 @@ void TestSendMessageRequest()
     }
 }
 
-void TestPullOfflineMessages()
-{
+void TestPullOfflineMessages() {
     JsonCodec codec;
     std::string err;
 
@@ -381,7 +371,20 @@ void TestPullOfflineMessages()
         assert(err.find("limit") != std::string::npos);
     }
 
-    // 6. fillPullOfflineMessagesResponse
+    // 6. Invalid limit value (> 100)
+    {
+        Message msg;
+        msg.msg_type = "pull_offline_messages";
+        msg.data = nlohmann::json::object();
+        msg.data["limit"] = 101;
+
+        PullOfflineMessagesRequest req;
+        bool ok = codec.parsePullOfflineMessagesRequest(msg, req, err);
+        assert(!ok);
+        assert(err.find("limit") != std::string::npos);
+    }
+
+    // 7. fillPullOfflineMessagesResponse
     {
         Response resp;
         PullOfflineMessagesResponseData data;
@@ -413,8 +416,7 @@ void TestPullOfflineMessages()
 
 }  // namespace
 
-int main()
-{
+int main() {
     TestDecodeAndParseLoginRequest();
     TestRejectInvalidJson();
     TestRejectMissingRequiredField();

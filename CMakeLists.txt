@@ -44,6 +44,7 @@ add_executable(server
     src/db/db_pool.cc
     src/db/db_connection.cc
     src/db/user_repository.cc
+    src/db/message_repository.cc
     src/handler/message_handler.cc
     src/protocol/protocol_helper.cc
     src/server/session_manager.cc
@@ -85,6 +86,13 @@ add_executable(packet_codec_test
 
 target_include_directories(packet_codec_test PRIVATE include third_party)
 add_test(NAME packet_codec_test COMMAND packet_codec_test)
+
+add_executable(message_record_test
+    tests/message_record_test.cc
+)
+
+target_include_directories(message_record_test PRIVATE include third_party)
+add_test(NAME message_record_test COMMAND message_record_test)
 
 add_executable(message_handler_test
     tests/message_handler_test.cc
