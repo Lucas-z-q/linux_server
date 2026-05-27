@@ -362,14 +362,13 @@ void TestPullOfflineMessagesSuccess() {
     assert(result.code == chat::ErrorCode::OK);
     assert(result.messages.size() == 1);
     assert(result.messages[0].message_id == "m1");
-    assert(result.messages[0].status == chat::ToProtocolMessageStatus(chat::MessageStatus::kDelivered));
+    assert(result.messages[0].status == chat::ToProtocolMessageStatus(chat::MessageStatus::kStored));
     assert(result.has_more == false);
-    assert(message_repo.delivered_message_ids.size() == 1);
-    assert(message_repo.delivered_message_ids[0] == "m1");
+    assert(message_repo.delivered_message_ids.empty());
     assert(message_repo.last_since_message_id == "msg_last");
 }
 
-void TestPullOfflineMessagesReturnsErrorWhenMarkDeliveredFails() {
+void TestPullOfflineMessagesDoesNotMarkDeliveredBeforeClientAck() {
     FakeSessionManager session_manager;
     FakeMessageRepository message_repo;
     message_repo.mark_delivered_status = chat::RepositoryStatus::kQueryFailed;
@@ -396,11 +395,13 @@ void TestPullOfflineMessagesReturnsErrorWhenMarkDeliveredFails() {
     req.limit = 10;
 
     auto result = chat_service.pullOfflineMessages(100, req);
-    assert(result.code == chat::ErrorCode::DB_QUERY_FAILED);
-    assert(result.messages.empty());
+    assert(result.code == chat::ErrorCode::OK);
+    assert(result.messages.size() == 1);
+    assert(result.messages[0].status == chat::ToProtocolMessageStatus(chat::MessageStatus::kStored));
+    assert(message_repo.delivered_message_ids.empty());
 }
 
-void TestPullOfflineMessagesReturnsPartialOnLaterMarkDeliveredFailure() {
+void TestPullOfflineMessagesReturnsAllWithoutDeliveryMutation() {
     FakeSessionManager session_manager;
     FakeMessageRepository message_repo;
     message_repo.mark_delivered_fail_after = 1;
@@ -434,10 +435,11 @@ void TestPullOfflineMessagesReturnsPartialOnLaterMarkDeliveredFailure() {
 
     auto result = chat_service.pullOfflineMessages(100, req);
     assert(result.code == chat::ErrorCode::OK);
-    assert(result.messages.size() == 1);
+    assert(result.messages.size() == 2);
     assert(result.messages[0].message_id == "m1");
-    assert(result.has_more == true);
-    assert(message_repo.delivered_message_ids.size() == 2);
+    assert(result.messages[1].message_id == "m2");
+    assert(result.has_more == false);
+    assert(message_repo.delivered_message_ids.empty());
 }
 
 void TestPullOfflineMessagesRejectsTwoCursors() {
@@ -494,8 +496,8 @@ int main() {
     TestSendMessageTooLongContent();
     TestPullOfflineMessagesNotLoggedIn();
     TestPullOfflineMessagesSuccess();
-    TestPullOfflineMessagesReturnsErrorWhenMarkDeliveredFails();
-    TestPullOfflineMessagesReturnsPartialOnLaterMarkDeliveredFailure();
+    TestPullOfflineMessagesDoesNotMarkDeliveredBeforeClientAck();
+    TestPullOfflineMessagesReturnsAllWithoutDeliveryMutation();
     TestPullOfflineMessagesRejectsTwoCursors();
     TestPullOfflineMessagesRejectsOversizedLimit();
     std::cout << "[PASS] chat service tests passed\n";

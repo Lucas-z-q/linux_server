@@ -2,18 +2,18 @@
 
 ## 项目概览
 
-本项目是一个基于 C++17 的 TCP 长连接聊天服务器雏形。当前已经实现的业务范围包括用户注册、登录、登出、心跳、基于连接的登录态查询、在线单聊消息路由，以及离线消息协议和数据库 schema 的第一版脚手架。整体架构按如下链路分层：
+本项目是一个基于 C++17 的 TCP 长连接聊天服务器雏形。当前已经实现的业务范围包括用户注册、登录、登出、心跳、基于连接的登录态查询、在线单聊消息路由、消息持久化数据模型、消息仓储和离线消息拉取。整体架构按如下链路分层：
 
 ```text
 client
   -> TcpServer / ConnectionContext / PacketCodec
   -> IMessageHandler / MessageHandler / JsonCodec
   -> UserService / ChatService / SessionManager
-  -> UserRepository / DbPool / DbConnection / sql schema
+  -> UserRepository / MessageRepository / DbPool / DbConnection / sql schema
   -> MySQL
 ```
 
-主程序目标是 `server`。它启动一个基于 epoll 的 TCP 服务器，通过工作线程池处理业务请求，使用换行分隔的 JSON 作为应用层协议，由 `MessageHandler` 路由消息，并通过 MySQL 仓储层持久化用户数据。聊天消息当前已支持在线 push 的协议和服务层流程；离线拉取协议、消息状态字段和建表脚本已经落位，后续还需要补齐 `MessageRepository` 才能真正持久化离线消息。
+主程序目标是 `server`。它启动一个基于 epoll 的 TCP 服务器，通过工作线程池处理业务请求，使用换行分隔的 JSON 作为应用层协议，由 `MessageHandler` 路由消息，并通过 MySQL 仓储层持久化用户和聊天消息数据。聊天消息当前采用 at-least-once 语义：服务端先将消息保存为 `stored`，再尝试在线 push 或离线拉取返回；在补齐客户端 ACK 或 I/O 投递确认前，服务端不会提前把消息推进为 `delivered`。
 
 ## 目录树
 
@@ -263,16 +263,17 @@ Handler 本质上是协调器，不直接拥有数据库访问逻辑，也不直
 - 将仓储层状态转换为对客户端可见的业务错误码。
 - 生成密码哈希和认证 token。
 - 登录成功后生成 `ConnectionSession`。
-- 实现在线单聊发送的第一版业务校验和目标连接查找。
-- 为 `send_message` 生成当前临时的 `message_id`、`conversation_id`、`created_at` 和状态字段。
-- 提供 `pullOfflineMessages()` 的登录态校验和空响应脚手架，等待后续接入 `MessageRepository`。
+- 实现在线单聊发送的业务校验、消息落库和目标连接查找。
+- 为 `send_message` 生成 `message_id`、`conversation_id`、`created_at` 和初始状态字段。
+- 通过 `MessageRepository` 查询离线消息并返回给客户端。
 
 当前值得注意的设计：
 
 - 密码哈希当前使用 `std::hash<std::string>`。
 - token 当前按 `token_<user_id>` 生成。
-- 聊天消息 ID 和会话 ID 当前由 `ChatService` 临时生成，还不是数据库持久化结果。
-- 目标用户离线时，`sendMessage()` 仍返回 `USER_NOT_ONLINE`；离线存储需要后续 Repository 层接入后再改成持久化成功响应。
+- 聊天消息 ID 当前由 `ChatService` 生成，消息、会话和会话成员由 `MessageRepository` 持久化。
+- 目标用户离线时，`sendMessage()` 仍会返回成功，消息保持 `stored`，等待在线 push 重试、离线拉取或后续 ACK 机制推进状态。
+- 在线 push 和离线拉取当前都不代表客户端已经可靠收到消息；客户端需要按 `message_id` 去重。
 - 头文件中已经把这两处标记为后续可抽离的扩展点。
 
 ### 会话与服务端状态层
@@ -300,8 +301,10 @@ Handler 本质上是协调器，不直接拥有数据库访问逻辑，也不直
 - `include/db/db_pool.h`、`src/db/db_pool.cc`
 - `include/db/db_pool_config.h`
 - `include/db/user_repository.h`、`src/db/user_repository.cc`
+- `include/db/message_repository.h`、`src/db/message_repository.cc`
 - `include/config/db_config.h`
 - `include/model/user_record.h`
+- `include/model/message_record.h`
 - `sql/001_create_chat_tables.sql`
 
 职责：
@@ -312,6 +315,8 @@ Handler 本质上是协调器，不直接拥有数据库访问逻辑，也不直
 - `DbPool` 负责数据库连接池、借出超时、健康检查、连接失效处理和统计信息。
 - `UserRepository` 实现 `IUserRepository`，向 `UserService` 屏蔽 SQL 细节。
 - `UserRecord` 映射 `users` 表查询结果。
+- `MessageRepository` 实现 `IMessageRepository`，向 `ChatService` 屏蔽消息、会话和会话成员相关 SQL 细节。
+- `MessageRecord`、`ConversationRecord` 和 `MessageStatus` 映射聊天持久化模型。
 - `001_create_chat_tables.sql` 定义用户、会话、会话成员和消息持久化表结构。
 
 当前仓储层支持：
@@ -319,6 +324,9 @@ Handler 本质上是协调器，不直接拥有数据库访问逻辑，也不直
 - 按用户名查询用户。
 - 按用户 ID 查询用户。
 - 创建用户。
+- 创建消息并维护单聊会话和会话成员。
+- 按接收方和游标查询 `stored` 状态的离线消息。
+- 将消息状态推进为 `delivered` 或 `read`，状态推进本身是幂等的。
 
 SQL 字符串通过 `mysql_real_escape_string` 做转义。查询和插入结果会映射为 `RepositoryStatus`，让 Service 层可以区分未命中、重复键、连接不可用、借出超时和普通查询失败。
 
@@ -406,8 +414,8 @@ MessageHandler::handleSendMessage()
   -> JsonCodec::parseSendMessageRequest()
   -> ChatService::sendMessage()
   -> ISessionManager::GetSession(from_conn_id)
+  -> IMessageRepository::createMessage()
   -> ISessionManager::GetConnectionId(to_user_id)
-  -> create temporary message metadata
   -> return SendMessageResult
   -> MessageHandler builds send_message_resp
   -> MessageHandler builds message_push in HandleResult.pushes
@@ -423,11 +431,12 @@ MessageHandler::handlePullOfflineMessages()
   -> JsonCodec::parsePullOfflineMessagesRequest()
   -> ChatService::pullOfflineMessages()
   -> ISessionManager::GetSession(conn_id)
-  -> return empty PullOfflineMessagesResult for now
+  -> IMessageRepository::listOfflineMessages()
+  -> return PullOfflineMessagesResult
   -> MessageHandler builds pull_offline_messages_resp
 ```
 
-这一流程目前只完成协议、登录态校验和响应结构，后续接入 `MessageRepository` 后会从 MySQL 查询 `messages` 表并更新投递状态。
+这一流程当前只查询 `stored` 状态消息并返回，不在响应写回客户端前推进 `delivered`。因此离线消息拉取也是 at-least-once 语义：如果客户端已经通过在线 push 收到同一条消息，或者拉取响应写回过程中出现重试，客户端需要按 `message_id` 去重。后续补齐 `message_ack` 或 I/O 投递确认路径后，再由确认路径推进 `delivered` 和 `read`。
 
 ### 登录流程
 
@@ -512,10 +521,11 @@ net
 | JSON 协议 | `JsonCodec`、`Message`、`Response`、`auth_messages`、`chat_messages` | 在原始 JSON 和类型化协议对象之间转换 |
 | 业务路由 | `MessageHandler` | 解码、路由、调用 Service、编码响应 |
 | 用户业务逻辑 | `UserService` | 注册、登录、登出、whoami、校验、token 和 session 准备 |
-| 聊天业务逻辑 | `ChatService` | 在线单聊校验、临时消息元数据生成、离线拉取脚手架 |
+| 聊天业务逻辑 | `ChatService` | 在线单聊校验、消息落库编排、离线消息拉取 |
 | 会话状态 | `SessionManager`、`ConnectionSession` | 维护用户到连接、连接到会话的内存映射 |
 | 数据库基础设施 | `DbConnection`、`DbPool`、`DbConnectionFactory` | MySQL 连接生命周期与连接池 |
 | 用户持久化 | `UserRepository`、`UserRecord` | `users` 表读写操作 |
+| 消息持久化 | `MessageRepository`、`MessageRecord`、`ConversationRecord` | `messages`、`conversations` 和 `conversation_members` 表读写操作 |
 | 聊天 schema | `sql/001_create_chat_tables.sql` | 会话、会话成员、消息持久化表结构 |
 | 并发工具 | `ThreadPool` | 业务请求的 worker 执行 |
 | 测试支持 | `tests/fake_server.cc`、`tests/fake_auth_server.cc` | 集成测试用轻量服务端目标 |
@@ -529,12 +539,13 @@ net
 - `json_codec_test.cc`：JSON 信封以及认证数据解析和编码。
 - `message_handler_test.cc`：消息路由、响应和聊天 push 生成行为。
 - `user_service_test.cc`：使用注入依赖测试用户业务流程。
-- `chat_service_test.cc`：在线单聊 service 校验、目标在线查找和离线拉取脚手架行为。
+- `chat_service_test.cc`：在线单聊 service 校验、目标在线查找、消息落库编排和离线拉取行为。
 - `session_manager_test.cc`：内存会话映射行为。
 - `thread_pool_test.cc`：工作线程池行为。
 - `db_connection_test.cc`：MySQL 连接封装。
 - `db_pool_test.cc`：连接池生命周期和借出行为。
 - `user_repository_test.cc`：用户仓储层数据访问。
+- `message_record_test.cc`：消息状态枚举、状态转换和消息模型构造。
 - `server_shutdown_test.cc`：服务器停止与关闭行为。
 - `server_integration_test.cc`：TCP 服务端集成路径。
 - `auth_integration_test.cc`：认证相关集成路径。
@@ -550,22 +561,23 @@ net
 代码中已经预留了比较清晰的扩展方向：
 
 - 随着消息类型增长，将 `MessageHandler` 拆分为认证、聊天、好友、群组等子处理器。
-- 新增 `MessageRepository`，将 `send_message` 从临时 ID 生成改为先持久化再 push。
-- 将 `pull_offline_messages` 从空响应改为查询 `messages` 表并批量更新投递状态。
+- 新增 `message_ack` 或接入 I/O 投递确认路径，由确认结果推进 `delivered`。
+- 新增已读上报协议，由客户端 ACK 推进 `read`。
 - 将 `std::hash` 密码哈希替换为独立的密码哈希组件。
 - 将确定性的 token 生成替换为安全 token 生成器。
 - 将连接查询和广播能力正式抽离到 `ConnectionManager`。
 - 如果需要多实例或进程重启后保留登录态，引入 Redis 或其他外部会话存储。
 - 将 `PacketCodec` 从换行分隔协议升级为长度前缀协议。
 - 在认证协议之外扩展聊天、离线消息、好友和群组协议模型。
-- 为 `MessageStatus` 建立 C++ 枚举，避免 service、codec 和 SQL 对状态数字各自解释。
+- 为 `MessageRepository` 增加真实 MySQL 集成测试，覆盖事务、唯一键冲突、游标 SQL 和状态幂等。
 
 ## 当前边界说明
 
 - `src/server.cc` 和 `EchoHandler` 属于示例或遗留代码，有助于理解项目演进，但不是当前主业务路径。
 - `include/server/connection_manager.h` 当前只是占位文件，没有实际功能实现。
-- `ChatService` 当前不访问 MySQL，`message_id` 和 `conversation_id` 仍是内存临时生成值。
-- `pull_offline_messages` 当前只完成协议入口和登录态校验，还没有真正查询离线消息。
+- 消息投递当前是 at-least-once 语义；在线 push 和离线拉取都不会在响应真正到达客户端前推进 `delivered`。
+- 客户端必须按 `message_id` 做幂等去重。
+- `delivered` 和 `read` 依赖后续 `message_ack`、已读上报或 I/O 投递确认路径推进。
 - `README.md` 当前更偏向外部协议说明，而不是代码组织说明。
 - `AGENTS.md`、`CLAUDE.md`、`.codegraph/` 属于本地代理或工具上下文，不属于源码结构。
 - `third_party/nlohmann/json.hpp` 是随项目 vendored 的第三方 JSON 头文件，通过 `third_party` include 路径使用。

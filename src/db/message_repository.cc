@@ -386,7 +386,8 @@ RepositoryStatus MessageRepository::markDelivered(const std::string& message_id,
     if (read_status != RepositoryStatus::kOk) {
         return read_status;
     }
-    return status == MessageStatus::kDelivered ? RepositoryStatus::kOk : RepositoryStatus::kNotFound;
+    return (status == MessageStatus::kDelivered || status == MessageStatus::kRead) ? RepositoryStatus::kOk
+                                                                                   : RepositoryStatus::kNotFound;
 }
 
 RepositoryStatus MessageRepository::markRead(const std::string& message_id, Timestamp read_at) {

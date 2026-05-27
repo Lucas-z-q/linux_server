@@ -452,12 +452,14 @@
 ### 14.1 Send Message (send_message)
 
 **请求 (Request):**
+
 ```json
 {
   "msg_type": "send_message",
   "seq": 10,
   "token": "token_10001",
   "data": {
+    "client_msg_id": "client-msg-001",
     "to_user_id": 10002,
     "content": "hello bob"
   }
@@ -465,24 +467,31 @@
 ```
 
 **响应 (Response):**
-*   **发送确认响应 (send_message_resp):**
-    表示服务器已成功接收并处理该消息请求。在第一版（即时推送）中，此响应代表消息的“接收并尽最大努力投递（Best-effort Delivery）”确认。
-    ```json
-    {
-      "msg_type": "send_message_resp",
-      "seq": 10,
-      "code": 0,
-      "message": "Success",
-      "data": {
-        "to_user_id": 10002
-      }
-    }
-    ```
+
+- **发送确认响应 (send_message_resp):**
+  表示服务器已成功接收并保存该消息。当前版本采用 at-least-once 语义，响应中的 `status` 仍可能是 `stored`，不代表接收方已经真正收到消息。客户端需要按 `message_id` 做幂等去重。
+
+```json
+{
+  "msg_type": "send_message_resp",
+  "seq": 10,
+  "code": 0,
+  "message": "Success",
+  "data": {
+    "message_id": "msg_0000000065f000000000000000000001",
+    "conversation_id": "conv_10001_10002",
+    "to_user_id": 10002,
+    "status": 0,
+    "created_at": 1621948800
+  }
+}
+```
 
 ### 14.2 Message Push (message_push)
 
 **推送 (Server Push):**
 由服务端主动推向在线的目标接收方客户端（长连接）。
+
 ```json
 {
   "msg_type": "message_push",
@@ -490,11 +499,16 @@
   "code": 0,
   "message": "new message",
   "data": {
+    "message_id": "msg_0000000065f000000000000000000001",
+    "conversation_id": "conv_10001_10002",
     "from_user_id": 10001,
     "from_username": "alice",
+    "to_user_id": 10002,
     "content": "hello bob",
+    "created_at": 1621948800,
     "server_time": 1621948800
   }
 }
 ```
 
+当前版本不会因为生成了在线 push 就立即将消息状态推进为 `delivered`。后续需要通过客户端 ACK、已读上报或 I/O 投递确认路径推进 `delivered` 和 `read`。

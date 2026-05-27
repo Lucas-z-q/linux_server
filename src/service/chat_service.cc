@@ -200,19 +200,7 @@ PullOfflineMessagesResult ChatService::pullOfflineMessages(ConnectionId from_con
     result.code = ErrorCode::OK;
     result.message = "Success";
     result.has_more = list_result.has_more;
-    const Timestamp now = std::chrono::system_clock::to_time_t(std::chrono::system_clock::now());
     for (const MessageRecord& record : list_result.messages) {
-        const RepositoryStatus delivered_status = message_repository_.markDelivered(record.id, now);
-        if (delivered_status != RepositoryStatus::kOk) {
-            if (result.messages.empty()) {
-                PullOfflineMessagesResult error_result;
-                error_result.code = MapRepositoryError(delivered_status);
-                error_result.message = "mark offline message delivered failed";
-                return error_result;
-            }
-            result.has_more = true;
-            return result;
-        }
         OfflineMessage message;
         message.message_id = record.id;
         message.conversation_id = record.conversation_id;
@@ -220,7 +208,7 @@ PullOfflineMessagesResult ChatService::pullOfflineMessages(ConnectionId from_con
         message.to_user_id = record.to_user_id;
         message.content = record.content;
         message.created_at = record.created_at;
-        message.status = ToProtocolMessageStatus(MessageStatus::kDelivered);
+        message.status = ToProtocolMessageStatus(record.status);
         result.messages.push_back(message);
     }
     return result;
