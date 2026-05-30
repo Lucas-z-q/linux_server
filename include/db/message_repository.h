@@ -13,6 +13,7 @@ namespace chat {
 
 struct CreateMessageResult {
     RepositoryStatus status = RepositoryStatus::kInsertFailed;
+    std::string message_id;
     std::optional<MessageRecord> message;
     bool created = false;
 };
@@ -23,16 +24,38 @@ struct ListOfflineMessagesResult {
     bool has_more = false;
 };
 
+struct MarkDeliveredResult {
+    RepositoryStatus status = RepositoryStatus::kQueryFailed;
+    int32_t affected_rows = 0;
+};
+
+struct MarkReadResult {
+    RepositoryStatus status = RepositoryStatus::kQueryFailed;
+    int32_t affected_rows = 0;
+};
+
+struct FindOrCreateConversationResult {
+    RepositoryStatus status = RepositoryStatus::kQueryFailed;
+    std::string conversation_id;
+    bool created = false;
+};
+
+struct FindMessageResult {
+    RepositoryStatus status = RepositoryStatus::kNotFound;
+    std::optional<MessageRecord> message;
+};
+
 class IMessageRepository {
    public:
     virtual ~IMessageRepository() = default;
 
+    virtual FindOrCreateConversationResult findOrCreateSingleConversation(UserId user_a, UserId user_b) = 0;
     virtual CreateMessageResult createMessage(const MessageRecord& message) = 0;
+    virtual FindMessageResult findMessageByClientMsgId(UserId from_user_id, const std::string& client_msg_id) = 0;
     virtual ListOfflineMessagesResult listOfflineMessages(UserId to_user_id, int32_t limit,
-                                                          const std::string& before_message_id,
-                                                          const std::string& since_message_id) = 0;
-    virtual RepositoryStatus markDelivered(const std::string& message_id, Timestamp delivered_at) = 0;
-    virtual RepositoryStatus markRead(const std::string& message_id, Timestamp read_at) = 0;
+                                                          const std::string& cursor) = 0;
+    virtual MarkDeliveredResult markDelivered(UserId to_user_id, const std::vector<std::string>& message_ids) = 0;
+    virtual MarkReadResult markRead(UserId to_user_id, const std::vector<std::string>& message_ids) = 0;
 };
 
 class DbPool;
@@ -41,12 +64,12 @@ class MessageRepository : public IMessageRepository {
    public:
     explicit MessageRepository(DbPool* pool);
 
+    FindOrCreateConversationResult findOrCreateSingleConversation(UserId user_a, UserId user_b) override;
     CreateMessageResult createMessage(const MessageRecord& message) override;
-    ListOfflineMessagesResult listOfflineMessages(UserId to_user_id, int32_t limit,
-                                                  const std::string& before_message_id,
-                                                  const std::string& since_message_id) override;
-    RepositoryStatus markDelivered(const std::string& message_id, Timestamp delivered_at) override;
-    RepositoryStatus markRead(const std::string& message_id, Timestamp read_at) override;
+    FindMessageResult findMessageByClientMsgId(UserId from_user_id, const std::string& client_msg_id) override;
+    ListOfflineMessagesResult listOfflineMessages(UserId to_user_id, int32_t limit, const std::string& cursor) override;
+    MarkDeliveredResult markDelivered(UserId to_user_id, const std::vector<std::string>& message_ids) override;
+    MarkReadResult markRead(UserId to_user_id, const std::vector<std::string>& message_ids) override;
 
    private:
     DbPool* pool_;

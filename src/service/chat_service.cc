@@ -173,10 +173,10 @@ PullOfflineMessagesResult ChatService::pullOfflineMessages(ConnectionId from_con
         result.message = "User not logged in";
         return result;
     }
-    if (!req.before_message_id.empty() && !req.since_message_id.empty()) {
+    if (!req.before_message_id.empty()) {
         PullOfflineMessagesResult result;
         result.code = ErrorCode::INVALID_PARAM;
-        result.message = "before_message_id and since_message_id cannot both be set";
+        result.message = "before_message_id is not supported";
         return result;
     }
     if (req.limit <= 0 || req.limit > kMaxPullOfflineLimit) {
@@ -187,8 +187,8 @@ PullOfflineMessagesResult ChatService::pullOfflineMessages(ConnectionId from_con
     }
 
     const int32_t limit = req.limit;
-    ListOfflineMessagesResult list_result = message_repository_.listOfflineMessages(
-        from_session_opt->user_id, limit, req.before_message_id, req.since_message_id);
+    ListOfflineMessagesResult list_result =
+        message_repository_.listOfflineMessages(from_session_opt->user_id, limit, req.since_message_id);
     if (list_result.status != RepositoryStatus::kOk) {
         PullOfflineMessagesResult result;
         result.code = MapRepositoryError(list_result.status);

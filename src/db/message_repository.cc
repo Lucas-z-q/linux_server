@@ -111,8 +111,8 @@ std::string MessageSelectColumns() {
            "delivered_at, read_at";
 }
 
-chat::CreateMessageResult ReadMessageByClientId(chat::PooledConnection& conn, chat::UserId from_user_id,
-                                                const std::string& client_msg_id) {
+chat::FindMessageResult ReadMessageByClientId(chat::PooledConnection& conn, chat::UserId from_user_id,
+                                              const std::string& client_msg_id) {
     MYSQL* raw_conn = conn->nativeHandle();
     const std::string escaped_client_msg_id = EscapeSqlValue(raw_conn, client_msg_id);
     const std::string query = "SELECT " + MessageSelectColumns() +
@@ -148,7 +148,7 @@ chat::CreateMessageResult ReadMessageByClientId(chat::PooledConnection& conn, ch
     if (!record.has_value()) {
         return {.status = chat::RepositoryStatus::kQueryFailed};
     }
-    return {.status = chat::RepositoryStatus::kOk, .message = record, .created = false};
+    return {.status = chat::RepositoryStatus::kOk, .message = record};
 }
 
 chat::RepositoryStatus ReadMessageStatusById(chat::PooledConnection& conn, const std::string& message_id,
@@ -200,6 +200,123 @@ namespace chat {
 
 MessageRepository::MessageRepository(DbPool* pool) : pool_(pool) {}
 
+FindOrCreateConversationResult MessageRepository::findOrCreateSingleConversation(UserId user_a, UserId user_b) {
+    auto borrow_res = pool_->borrow();
+    if (!borrow_res.ok()) {
+        return {.status = MapBorrowError(borrow_res.error)};
+    }
+    auto& conn = *borrow_res.connection;
+    MYSQL* raw_conn = conn->nativeHandle();
+
+    const std::string key = SingleChatKey(user_a, user_b);
+    const std::string escaped_key = EscapeSqlValue(raw_conn, key);
+    const std::string query = "SELECT id FROM conversations WHERE single_chat_key='" + escaped_key + "' LIMIT 1";
+
+    if (mysql_query(raw_conn, query.c_str()) != 0) {
+        const unsigned int err_no = mysql_errno(raw_conn);
+        LogMysqlError(raw_conn, "select conversation by key");
+        if (IsConnectionError(err_no)) {
+            conn.markBad();
+            return {.status = RepositoryStatus::kConnectionUnavailable};
+        }
+        return {.status = RepositoryStatus::kQueryFailed};
+    }
+
+    MysqlResultPtr result(mysql_store_result(raw_conn));
+    if (result == nullptr) {
+        const unsigned int err_no = mysql_errno(raw_conn);
+        LogMysqlError(raw_conn, "store conversation select result");
+        if (IsConnectionError(err_no)) {
+            conn.markBad();
+            return {.status = RepositoryStatus::kConnectionUnavailable};
+        }
+        return {.status = RepositoryStatus::kQueryFailed};
+    }
+
+    MYSQL_ROW row = mysql_fetch_row(result.get());
+    if (row != nullptr) {
+        unsigned long* lengths = mysql_fetch_lengths(result.get());
+        std::string conv_id(row[0], lengths[0]);
+        return {.status = RepositoryStatus::kOk, .conversation_id = conv_id, .created = false};
+    }
+
+    // Not found, create it
+    const std::string conv_id = "conv_" + key;
+    const std::string escaped_conv_id = EscapeSqlValue(raw_conn, conv_id);
+
+    QueryExecResult exec_result =
+        ExecuteQueryWithStatus(conn, "START TRANSACTION", "start create conversation transaction");
+    if (!exec_result.ok) {
+        return {.status = exec_result.status};
+    }
+
+    const std::string insert_conversation = "INSERT INTO conversations(id, type, single_chat_key) VALUES('" +
+                                            escaped_conv_id + "','single','" + escaped_key + "')";
+    if (mysql_query(raw_conn, insert_conversation.c_str()) != 0) {
+        const unsigned int err_no = mysql_errno(raw_conn);
+        RollbackTransaction(conn);
+        if (err_no == kMysqlDuplicateEntryError) {
+            // Concurrently created, read again
+            if (mysql_query(raw_conn, query.c_str()) == 0) {
+                MysqlResultPtr select_res(mysql_store_result(raw_conn));
+                if (select_res != nullptr) {
+                    MYSQL_ROW r = mysql_fetch_row(select_res.get());
+                    if (r != nullptr) {
+                        unsigned long* len = mysql_fetch_lengths(select_res.get());
+                        return {.status = RepositoryStatus::kOk,
+                                .conversation_id = std::string(r[0], len[0]),
+                                .created = false};
+                    }
+                }
+            }
+            return {.status = RepositoryStatus::kDuplicate};
+        }
+        LogMysqlError(raw_conn, "insert conversation");
+        if (IsConnectionError(err_no)) {
+            conn.markBad();
+            return {.status = RepositoryStatus::kConnectionUnavailable};
+        }
+        return {.status = RepositoryStatus::kInsertFailed};
+    }
+
+    const std::string insert_member_a = "INSERT INTO conversation_members(conversation_id, user_id, role) VALUES('" +
+                                        escaped_conv_id + "'," + std::to_string(user_a) + ",'member')";
+    if (mysql_query(raw_conn, insert_member_a.c_str()) != 0) {
+        const unsigned int err_no = mysql_errno(raw_conn);
+        RollbackTransaction(conn);
+        LogMysqlError(raw_conn, "insert member a");
+        if (IsConnectionError(err_no)) {
+            conn.markBad();
+            return {.status = RepositoryStatus::kConnectionUnavailable};
+        }
+        return {.status = RepositoryStatus::kInsertFailed};
+    }
+
+    if (user_a != user_b) {
+        const std::string insert_member_b =
+            "INSERT INTO conversation_members(conversation_id, user_id, role) VALUES('" + escaped_conv_id + "'," +
+            std::to_string(user_b) + ",'member')";
+        if (mysql_query(raw_conn, insert_member_b.c_str()) != 0) {
+            const unsigned int err_no = mysql_errno(raw_conn);
+            RollbackTransaction(conn);
+            LogMysqlError(raw_conn, "insert member b");
+            if (IsConnectionError(err_no)) {
+                conn.markBad();
+                return {.status = RepositoryStatus::kConnectionUnavailable};
+            }
+            return {.status = RepositoryStatus::kInsertFailed};
+        }
+    }
+
+    exec_result = ExecuteQueryWithStatus(conn, "COMMIT", "commit create conversation transaction");
+    if (!exec_result.ok) {
+        RollbackTransaction(conn);
+        return {.status = exec_result.status};
+    }
+
+    return {.status = RepositoryStatus::kOk, .conversation_id = conv_id, .created = true};
+}
+
 CreateMessageResult MessageRepository::createMessage(const MessageRecord& message) {
     auto borrow_res = pool_->borrow();
     if (!borrow_res.ok()) {
@@ -208,9 +325,12 @@ CreateMessageResult MessageRepository::createMessage(const MessageRecord& messag
     auto& conn = *borrow_res.connection;
     MYSQL* raw_conn = conn->nativeHandle();
 
-    CreateMessageResult existing_message = ReadMessageByClientId(conn, message.from_user_id, message.client_msg_id);
-    if (existing_message.status == RepositoryStatus::kOk) {
-        return existing_message;
+    FindMessageResult existing_message = ReadMessageByClientId(conn, message.from_user_id, message.client_msg_id);
+    if (existing_message.status == RepositoryStatus::kOk && existing_message.message.has_value()) {
+        return {.status = RepositoryStatus::kOk,
+                .message_id = existing_message.message->id,
+                .message = existing_message.message,
+                .created = false};
     }
     if (existing_message.status != RepositoryStatus::kNotFound) {
         return {.status = existing_message.status};
@@ -273,12 +393,18 @@ CreateMessageResult MessageRepository::createMessage(const MessageRecord& messag
         const unsigned int err_no = mysql_errno(raw_conn);
         if (err_no == kMysqlDuplicateEntryError) {
             RollbackTransaction(conn);
-            CreateMessageResult duplicate_message =
+            FindMessageResult duplicate_message =
                 ReadMessageByClientId(conn, message.from_user_id, message.client_msg_id);
+            if (duplicate_message.status == RepositoryStatus::kOk && duplicate_message.message.has_value()) {
+                return {.status = RepositoryStatus::kOk,
+                        .message_id = duplicate_message.message->id,
+                        .message = duplicate_message.message,
+                        .created = false};
+            }
             if (duplicate_message.status == RepositoryStatus::kNotFound) {
                 return {.status = RepositoryStatus::kDuplicate};
             }
-            return duplicate_message;
+            return {.status = duplicate_message.status};
         }
         LogMysqlError(raw_conn, "insert message");
         if (IsConnectionError(err_no)) {
@@ -296,12 +422,20 @@ CreateMessageResult MessageRepository::createMessage(const MessageRecord& messag
         return {.status = exec_result.status};
     }
 
-    return {.status = RepositoryStatus::kOk, .message = message, .created = true};
+    return {.status = RepositoryStatus::kOk, .message_id = message.id, .message = message, .created = true};
+}
+
+FindMessageResult MessageRepository::findMessageByClientMsgId(UserId from_user_id, const std::string& client_msg_id) {
+    auto borrow_res = pool_->borrow();
+    if (!borrow_res.ok()) {
+        return {.status = MapBorrowError(borrow_res.error)};
+    }
+    auto& conn = *borrow_res.connection;
+    return ReadMessageByClientId(conn, from_user_id, client_msg_id);
 }
 
 ListOfflineMessagesResult MessageRepository::listOfflineMessages(UserId to_user_id, int32_t limit,
-                                                                 const std::string& before_message_id,
-                                                                 const std::string& since_message_id) {
+                                                                 const std::string& cursor) {
     auto borrow_res = pool_->borrow();
     if (!borrow_res.ok()) {
         return {.status = MapBorrowError(borrow_res.error)};
@@ -311,19 +445,13 @@ ListOfflineMessagesResult MessageRepository::listOfflineMessages(UserId to_user_
 
     const int32_t safe_limit = std::min(limit > 0 ? limit : 20, 100);
     const int32_t query_limit = safe_limit + 1;
-    const std::string escaped_before_message_id = EscapeSqlValue(raw_conn, before_message_id);
-    const std::string escaped_since_message_id = EscapeSqlValue(raw_conn, since_message_id);
+    const std::string escaped_cursor = EscapeSqlValue(raw_conn, cursor);
     const std::string query =
         "SELECT " + MessageSelectColumns() + " FROM messages WHERE to_user_id=" + std::to_string(to_user_id) +
         " AND status=" + std::to_string(ToStorageMessageStatus(MessageStatus::kStored)) +
-        (before_message_id.empty()
-             ? ""
-             : " AND (created_at, id) < (SELECT created_at, id FROM messages WHERE id='" + escaped_before_message_id +
-                   "' AND to_user_id=" + std::to_string(to_user_id) + " LIMIT 1)") +
-        (since_message_id.empty()
-             ? ""
-             : " AND (created_at, id) > (SELECT created_at, id FROM messages WHERE id='" + escaped_since_message_id +
-                   "' AND to_user_id=" + std::to_string(to_user_id) + " LIMIT 1)") +
+        (cursor.empty() ? ""
+                        : " AND (created_at, id) > (SELECT created_at, id FROM messages WHERE id='" + escaped_cursor +
+                              "' AND to_user_id=" + std::to_string(to_user_id) + " LIMIT 1)") +
         " ORDER BY created_at ASC, id ASC LIMIT " + std::to_string(query_limit);
 
     QueryExecResult exec_result = ExecuteQueryWithStatus(conn, query, "list offline messages");
@@ -360,64 +488,76 @@ ListOfflineMessagesResult MessageRepository::listOfflineMessages(UserId to_user_
     return list_result;
 }
 
-RepositoryStatus MessageRepository::markDelivered(const std::string& message_id, Timestamp delivered_at) {
+MarkDeliveredResult MessageRepository::markDelivered(UserId to_user_id, const std::vector<std::string>& message_ids) {
+    if (message_ids.empty()) {
+        return {.status = RepositoryStatus::kOk, .affected_rows = 0};
+    }
+
     auto borrow_res = pool_->borrow();
     if (!borrow_res.ok()) {
-        return MapBorrowError(borrow_res.error);
+        return {.status = MapBorrowError(borrow_res.error)};
     }
     auto& conn = *borrow_res.connection;
     MYSQL* raw_conn = conn->nativeHandle();
-    const std::string escaped_message_id = EscapeSqlValue(raw_conn, message_id);
+
+    std::string in_clause = "";
+    for (size_t i = 0; i < message_ids.size(); ++i) {
+        if (i > 0)
+            in_clause += ",";
+        in_clause += "'" + EscapeSqlValue(raw_conn, message_ids[i]) + "'";
+    }
+
+    const Timestamp now = std::chrono::system_clock::to_time_t(std::chrono::system_clock::now());
     const std::string query =
         "UPDATE messages SET status=" + std::to_string(ToStorageMessageStatus(MessageStatus::kDelivered)) +
-        ", delivered_at=" + std::to_string(delivered_at) + " WHERE id='" + escaped_message_id + "' AND status IN (" +
-        std::to_string(ToStorageMessageStatus(MessageStatus::kStored)) + "," +
-        std::to_string(ToStorageMessageStatus(MessageStatus::kDelivered)) + ")";
-    QueryExecResult exec_result = ExecuteQueryWithStatus(conn, query, "mark delivered");
+        ", delivered_at=" + std::to_string(now) + " WHERE id IN (" + in_clause +
+        ") AND to_user_id=" + std::to_string(to_user_id) +
+        " AND status=" + std::to_string(ToStorageMessageStatus(MessageStatus::kStored));
+
+    QueryExecResult exec_result = ExecuteQueryWithStatus(conn, query, "batch mark delivered");
     if (!exec_result.ok) {
-        return exec_result.status;
-    }
-    if (mysql_affected_rows(raw_conn) > 0) {
-        return RepositoryStatus::kOk;
+        return {.status = exec_result.status};
     }
 
-    MessageStatus status = MessageStatus::kStored;
-    const RepositoryStatus read_status = ReadMessageStatusById(conn, message_id, &status);
-    if (read_status != RepositoryStatus::kOk) {
-        return read_status;
-    }
-    return (status == MessageStatus::kDelivered || status == MessageStatus::kRead) ? RepositoryStatus::kOk
-                                                                                   : RepositoryStatus::kNotFound;
+    int32_t affected = static_cast<int32_t>(mysql_affected_rows(raw_conn));
+    return {.status = RepositoryStatus::kOk, .affected_rows = affected};
 }
 
-RepositoryStatus MessageRepository::markRead(const std::string& message_id, Timestamp read_at) {
+MarkReadResult MessageRepository::markRead(UserId to_user_id, const std::vector<std::string>& message_ids) {
+    if (message_ids.empty()) {
+        return {.status = RepositoryStatus::kOk, .affected_rows = 0};
+    }
+
     auto borrow_res = pool_->borrow();
     if (!borrow_res.ok()) {
-        return MapBorrowError(borrow_res.error);
+        return {.status = MapBorrowError(borrow_res.error)};
     }
     auto& conn = *borrow_res.connection;
     MYSQL* raw_conn = conn->nativeHandle();
-    const std::string escaped_message_id = EscapeSqlValue(raw_conn, message_id);
-    const std::string query =
-        "UPDATE messages SET status=" + std::to_string(ToStorageMessageStatus(MessageStatus::kRead)) +
-        ", read_at=" + std::to_string(read_at) + " WHERE id='" + escaped_message_id + "' AND status IN (" +
-        std::to_string(ToStorageMessageStatus(MessageStatus::kStored)) + "," +
-        std::to_string(ToStorageMessageStatus(MessageStatus::kDelivered)) + "," +
-        std::to_string(ToStorageMessageStatus(MessageStatus::kRead)) + ")";
-    QueryExecResult exec_result = ExecuteQueryWithStatus(conn, query, "mark read");
-    if (!exec_result.ok) {
-        return exec_result.status;
-    }
-    if (mysql_affected_rows(raw_conn) > 0) {
-        return RepositoryStatus::kOk;
+
+    std::string in_clause = "";
+    for (size_t i = 0; i < message_ids.size(); ++i) {
+        if (i > 0)
+            in_clause += ",";
+        in_clause += "'" + EscapeSqlValue(raw_conn, message_ids[i]) + "'";
     }
 
-    MessageStatus status = MessageStatus::kStored;
-    const RepositoryStatus read_status = ReadMessageStatusById(conn, message_id, &status);
-    if (read_status != RepositoryStatus::kOk) {
-        return read_status;
+    const Timestamp now = std::chrono::system_clock::to_time_t(std::chrono::system_clock::now());
+    const std::string query =
+        "UPDATE messages SET delivered_at=CASE WHEN delivered_at IS NULL THEN " + std::to_string(now) +
+        " ELSE delivered_at END, status=" + std::to_string(ToStorageMessageStatus(MessageStatus::kRead)) +
+        ", read_at=" + std::to_string(now) + " WHERE id IN (" + in_clause +
+        ") AND to_user_id=" + std::to_string(to_user_id) + " AND status IN (" +
+        std::to_string(ToStorageMessageStatus(MessageStatus::kStored)) + "," +
+        std::to_string(ToStorageMessageStatus(MessageStatus::kDelivered)) + ")";
+
+    QueryExecResult exec_result = ExecuteQueryWithStatus(conn, query, "batch mark read");
+    if (!exec_result.ok) {
+        return {.status = exec_result.status};
     }
-    return status == MessageStatus::kRead ? RepositoryStatus::kOk : RepositoryStatus::kNotFound;
+
+    int32_t affected = static_cast<int32_t>(mysql_affected_rows(raw_conn));
+    return {.status = RepositoryStatus::kOk, .affected_rows = affected};
 }
 
 }  // namespace chat

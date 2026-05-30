@@ -205,6 +205,17 @@ target_include_directories(user_repository_test PRIVATE include third_party)
 target_link_libraries(user_repository_test PRIVATE ${MYSQLCLIENT_LIB})
 add_test(NAME user_repository_test COMMAND user_repository_test)
 
+add_executable(message_repository_test
+    tests/message_repository_test.cc
+    src/db/message_repository.cc
+    src/db/db_pool.cc
+    src/db/db_connection.cc
+)
+
+target_include_directories(message_repository_test PRIVATE include third_party)
+target_link_libraries(message_repository_test PRIVATE ${MYSQLCLIENT_LIB})
+add_test(NAME message_repository_test COMMAND message_repository_test)
+
 add_executable(thread_pool_test
     tests/thread_pool_test.cc
     src/concurrency/thread_pool.cc
