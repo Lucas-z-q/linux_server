@@ -2,9 +2,9 @@
 
 #include <gtest/gtest.h>
 
+#include <atomic>
 #include <chrono>
 #include <thread>
-#include <atomic>
 #include <vector>
 
 TEST(ThreadPoolTest, BasicExecution) {
@@ -42,9 +42,7 @@ TEST(ThreadPoolTest, RejectSubmitAfterStop) {
     ThreadPool pool(2);
     pool.stop();
 
-    EXPECT_THROW({
-        pool.submit([] { return 1; });
-    }, std::runtime_error);
+    EXPECT_THROW({ pool.submit([] { return 1; }); }, std::runtime_error);
 }
 
 TEST(ThreadPoolTest, MultipleStopCallsAreSafe) {

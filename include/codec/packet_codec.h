@@ -11,13 +11,11 @@
 // TODO(lzq): 将当前按换行分包的实现升级为长度前缀协议。
 // TODO(lzq): 为非法包和半包场景补充单元测试。
 
-namespace chat
-{
+namespace chat {
 
-  // 负责从字节流中切分完整业务包，并封装发送载荷。
-  class PacketCodec
-  {
-  public:
+// 负责从字节流中切分完整业务包，并封装发送载荷。
+class PacketCodec {
+   public:
     // 当前按换行协议允许缓存的最大半包大小。
     static constexpr std::size_t kMaxPacketSize = 64 * 1024;
 
@@ -28,11 +26,11 @@ namespace chat
     // 将业务载荷编码成可直接下发到网络层的完整包。
     std::string encode(const std::string &payload) const;
 
-  private:
+   private:
     // 保存尚未形成完整包的残留字节。
     std::string buffer_;
-  };
+};
 
-} // namespace chat
+}  // namespace chat
 
-#endif // LINUX_SERVER_INCLUDE_CODEC_PACKET_CODEC_H_
+#endif  // LINUX_SERVER_INCLUDE_CODEC_PACKET_CODEC_H_

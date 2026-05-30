@@ -417,15 +417,14 @@ bool TcpServer::submitRequestTask(RequestTask task) {
                     return;
                 }
 
-                ResponseTask response_task{
-                    std::weak_ptr<ConnectionContext>(context),
-                    task.conn_id,
-                    std::move(result.response),
-                    next_response_task_id_.fetch_add(1),
-                    false,
-                    result.session_action,
-                    std::move(result.pending_session),
-                    std::move(result.pushes)};
+                ResponseTask response_task{std::weak_ptr<ConnectionContext>(context),
+                                           task.conn_id,
+                                           std::move(result.response),
+                                           next_response_task_id_.fetch_add(1),
+                                           false,
+                                           result.session_action,
+                                           std::move(result.pending_session),
+                                           std::move(result.pushes)};
                 enqueueResponseTask(std::move(response_task));
             } catch (const std::exception &ex) {
                 std::cerr << "worker request failed: " << ex.what() << std::endl;

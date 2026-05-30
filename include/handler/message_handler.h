@@ -7,8 +7,8 @@
 #include "common/message.h"
 #include "common/response.h"
 #include "net/IMessageHandler.h"
-#include "service/user_service.h"
 #include "service/chat_service.h"
+#include "service/user_service.h"
 
 // 本文件声明统一消息处理器。
 // 该处理器位于网络层与业务层之间，负责请求解析、路由和响应封装。

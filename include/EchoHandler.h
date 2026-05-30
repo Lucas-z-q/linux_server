@@ -14,11 +14,11 @@
 
 // 一个将请求原样返回的消息处理器实现。
 class EchoHandler : public IMessageHandler {
- public:
-  // 处理一条请求，并直接返回相同内容作为响应。
-  HandleResult handle(const std::string& request, chat::ConnectionId conn_id) override;
+   public:
+    // 处理一条请求，并直接返回相同内容作为响应。
+    HandleResult handle(const std::string& request, chat::ConnectionId conn_id) override;
 
-  // EchoHandler 不涉及用户会话，为测试简便起见直接允许推送通过（默认返回 true）。
-  bool isConnectionBoundToUser(chat::ConnectionId conn_id, chat::UserId user_id) override;
+    // EchoHandler 不涉及用户会话，为测试简便起见直接允许推送通过（默认返回 true）。
+    bool isConnectionBoundToUser(chat::ConnectionId conn_id, chat::UserId user_id) override;
 };
 #endif  // LINUX_SERVER_INCLUDE_ECHO_HANDLER_H_

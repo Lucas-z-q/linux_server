@@ -23,8 +23,7 @@ std::string makeResponseType(const std::string& request_type);
 Response makeSuccessResponse(const Message& request);
 
 // 基于请求信封构造一个统一错误响应。
-Response makeErrorResponse(const Message& request, ErrorCode code,
-                           const std::string& message);
+Response makeErrorResponse(const Message& request, ErrorCode code, const std::string& message);
 
 // 判断给定消息类型是否属于认证相关消息。
 bool isAuthMessage(const std::string& msg_type);

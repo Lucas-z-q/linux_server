@@ -1,9 +1,10 @@
 #ifndef LINUX_SERVER_INCLUDE_NET_CONNECTION_CONTEXT_H_
 #define LINUX_SERVER_INCLUDE_NET_CONNECTION_CONTEXT_H_
 
+#include <sys/types.h>
+
 #include <cstddef>
 #include <cstdint>
-#include <sys/types.h>
 #include <mutex>
 #include <queue>
 #include <string>

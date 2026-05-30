@@ -7,13 +7,20 @@ namespace chat {
 
 const char* DbPoolErrorToString(DbPoolError error) {
     switch (error) {
-        case DbPoolError::kNone: return "None";
-        case DbPoolError::kInvalidConfig: return "InvalidConfig";
-        case DbPoolError::kNotInitialized: return "NotInitialized";
-        case DbPoolError::kStopping: return "Stopping";
-        case DbPoolError::kConnectFailed: return "ConnectFailed";
-        case DbPoolError::kBorrowTimeout: return "BorrowTimeout";
-        case DbPoolError::kHealthCheckFailed: return "HealthCheckFailed";
+        case DbPoolError::kNone:
+            return "None";
+        case DbPoolError::kInvalidConfig:
+            return "InvalidConfig";
+        case DbPoolError::kNotInitialized:
+            return "NotInitialized";
+        case DbPoolError::kStopping:
+            return "Stopping";
+        case DbPoolError::kConnectFailed:
+            return "ConnectFailed";
+        case DbPoolError::kBorrowTimeout:
+            return "BorrowTimeout";
+        case DbPoolError::kHealthCheckFailed:
+            return "HealthCheckFailed";
     }
     return "UnknownError";
 }
@@ -63,16 +70,11 @@ PooledConnection::operator bool() const noexcept { return conn_ != nullptr; }
 void PooledConnection::markBad() noexcept { reusable_ = false; }
 
 void DbPool::logStats(const std::string& action, DbPoolError error, const std::string& extra) {
-    std::cerr << "[db_pool] action=" << action
-              << " error=" << DbPoolErrorToString(error)
-              << " idle=" << idle_connections_.size()
-              << " total=" << total_connections_
-              << " waiting=" << stats_.waiting_threads
-              << " created=" << stats_.total_created
-              << " ping_failed=" << stats_.total_ping_failed
-              << " invalidated=" << stats_.total_invalidated
-              << " expired=" << stats_.total_expired
-              << " timeouts=" << stats_.total_timeouts;
+    std::cerr << "[db_pool] action=" << action << " error=" << DbPoolErrorToString(error)
+              << " idle=" << idle_connections_.size() << " total=" << total_connections_
+              << " waiting=" << stats_.waiting_threads << " created=" << stats_.total_created
+              << " ping_failed=" << stats_.total_ping_failed << " invalidated=" << stats_.total_invalidated
+              << " expired=" << stats_.total_expired << " timeouts=" << stats_.total_timeouts;
     if (!extra.empty()) {
         std::cerr << " details=" << extra;
     }
@@ -95,13 +97,15 @@ DbPool::~DbPool() { stop(); }
 DbPoolInitResult DbPool::init() {
     // 校验基础数据库配置
     if (config_.host.empty() || config_.port == 0 || config_.username.empty() || config_.database.empty()) {
-        std::cerr << "[db_pool] action=init error=invalid_config details=host, port, username, or database is empty" << std::endl;
+        std::cerr << "[db_pool] action=init error=invalid_config details=host, port, username, or database is empty"
+                  << std::endl;
         return DbPoolInitResult{false, DbPoolError::kInvalidConfig, 0, "host, port, username, or database is empty"};
     }
 
     // 校验连接池容量配置
     if (pool_config_.min_connections > pool_config_.max_connections) {
-        std::cerr << "[db_pool] action=init error=invalid_config details=min_connections > max_connections" << std::endl;
+        std::cerr << "[db_pool] action=init error=invalid_config details=min_connections > max_connections"
+                  << std::endl;
         return DbPoolInitResult{false, DbPoolError::kInvalidConfig, 0, "min_connections > max_connections"};
     }
 
@@ -130,7 +134,8 @@ DbPoolInitResult DbPool::init() {
             std::cerr << "[db_pool] action=init error=" << DbPoolErrorToString(res.error)
                       << " mysql_errno=" << res.mysql_error_code
                       << " details=failed to create initial connection: " << res.message << std::endl;
-            return DbPoolInitResult{false, res.error, res.mysql_error_code, "failed to create initial connection: " + res.message};
+            return DbPoolInitResult{false, res.error, res.mysql_error_code,
+                                    "failed to create initial connection: " + res.message};
         }
         IdleConnection idle;
         idle.conn = std::move(res.connection);
@@ -208,7 +213,9 @@ BorrowConnectionResult DbPool::borrow() {
             }
 
             if (is_healthy) {
-                return BorrowConnectionResult{PooledConnection(this, std::move(idle_wrapper.conn), idle_wrapper.create_time), DbPoolError::kNone, 0, ""};
+                return BorrowConnectionResult{
+                    PooledConnection(this, std::move(idle_wrapper.conn), idle_wrapper.create_time), DbPoolError::kNone,
+                    0, ""};
             }
 
             // ping 失败处理策略（采用 continue 循环模式）：
@@ -262,15 +269,20 @@ BorrowConnectionResult DbPool::borrow() {
 
             if (new_conn_res.connection) {
                 stats_.total_created++;  // 只有真正建立成功并被池子接纳才计入创建统计
-                return BorrowConnectionResult{PooledConnection(this, std::move(new_conn_res.connection), std::chrono::steady_clock::now()), DbPoolError::kNone, 0, ""};
+                return BorrowConnectionResult{
+                    PooledConnection(this, std::move(new_conn_res.connection), std::chrono::steady_clock::now()),
+                    DbPoolError::kNone, 0, ""};
             } else {
                 // 建连失败，必须退回之前预留的名额
                 total_connections_--;
-                cv_.notify_one();     // 释放了名额，唤醒其他可能正在等待的线程
-                
+                cv_.notify_one();  // 释放了名额，唤醒其他可能正在等待的线程
+
                 DbPoolError final_err = encountered_health_check ? DbPoolError::kHealthCheckFailed : new_conn_res.error;
-                logStats("borrow", final_err, "mysql_errno=" + std::to_string(new_conn_res.mysql_error_code) + " details=" + new_conn_res.message);
-                return BorrowConnectionResult{std::nullopt, final_err, new_conn_res.mysql_error_code, new_conn_res.message};
+                logStats("borrow", final_err,
+                         "mysql_errno=" + std::to_string(new_conn_res.mysql_error_code) +
+                             " details=" + new_conn_res.message);
+                return BorrowConnectionResult{std::nullopt, final_err, new_conn_res.mysql_error_code,
+                                              new_conn_res.message};
             }
         }
 
@@ -290,7 +302,8 @@ BorrowConnectionResult DbPool::borrow() {
         // 如果因为超时被唤醒，并且依然没有空闲连接可用
         if (!wait_success && idle_connections_.empty()) {
             stats_.total_timeouts++;
-            DbPoolError final_err = encountered_health_check ? DbPoolError::kHealthCheckFailed : DbPoolError::kBorrowTimeout;
+            DbPoolError final_err =
+                encountered_health_check ? DbPoolError::kHealthCheckFailed : DbPoolError::kBorrowTimeout;
             logStats("borrow", final_err, "borrow connection timeout");
             return BorrowConnectionResult{std::nullopt, final_err, 0, "borrow connection timeout"};
         }
@@ -312,7 +325,8 @@ void DbPool::returnConnection(std::unique_ptr<DbConnection> conn, std::chrono::s
     if (stopping_ || !is_healthy) {
         if (!stopping_ && !is_healthy) {
             stats_.total_invalidated++;
-            logStats("return", DbPoolError::kHealthCheckFailed, reusable ? "connection ping failed on return" : "connection marked bad by user");
+            logStats("return", DbPoolError::kHealthCheckFailed,
+                     reusable ? "connection ping failed on return" : "connection marked bad by user");
         } else if (stopping_) {
             logStats("return", DbPoolError::kStopping, "discarding returned connection during pool shutdown");
         }

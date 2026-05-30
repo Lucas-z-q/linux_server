@@ -47,21 +47,13 @@ class FakeDbConnection : public DbConnection {
         return DbConnectionResult{false, 2003, "Can't connect to MySQL server"};
     }
 
-    void close() noexcept override {
-        connected_ = false;
-    }
+    void close() noexcept override { connected_ = false; }
 
-    bool ping() noexcept override {
-        return connected_ && ping_succeed_;
-    }
+    bool ping() noexcept override { return connected_ && ping_succeed_; }
 
-    bool isConnected() const noexcept override {
-        return connected_;
-    }
+    bool isConnected() const noexcept override { return connected_; }
 
-    void setPingSucceed(bool succeed) noexcept {
-        ping_succeed_ = succeed;
-    }
+    void setPingSucceed(bool succeed) noexcept { ping_succeed_ = succeed; }
 
     std::size_t id() const noexcept { return id_; }
 
@@ -404,10 +396,10 @@ TEST_F(DbPoolTest, ConnectFailedErrorCase) {
     mock_config.port = 3306;
     mock_config.username = "root";
     mock_config.database = "test";
-    
+
     DbPoolConfig pool_config;
     pool_config.min_connections = 1;
-    pool_config.connect_retry_count = 0; // 不重试
+    pool_config.connect_retry_count = 0;  // 不重试
 
     // 注入总是连接失败的 factory
     auto factory = std::make_shared<FakeDbConnectionFactory>(false, false);
@@ -509,8 +501,8 @@ TEST_F(DbPoolTest, HealthCheckFailedErrorCase) {
         auto conn = pool.borrow();
         ASSERT_TRUE(conn.ok());
         raw_conn_ptr = dynamic_cast<FakeDbConnection*>(&(**conn.connection));
-    } // 成功归还
-    
+    }  // 成功归还
+
     ASSERT_NE(raw_conn_ptr, nullptr);
 
     // 3. 模拟空闲检查时 ping 失败
@@ -570,20 +562,18 @@ TEST_F(DbPoolTest, FactoryReturnsNullErrorCase) {
     mock_config.port = 3306;
     mock_config.username = "root";
     mock_config.database = "test";
-    
+
     DbPoolConfig pool_config;
     pool_config.min_connections = 1;
-    
+
     class NullDbConnectionFactory : public IDbConnectionFactory {
-    public:
-        std::unique_ptr<DbConnection> createConnection(const DbConfig&) override {
-            return nullptr;
-        }
+       public:
+        std::unique_ptr<DbConnection> createConnection(const DbConfig&) override { return nullptr; }
     };
-    
+
     auto factory = std::make_shared<NullDbConnectionFactory>();
     DbPool pool(mock_config, pool_config, factory);
-    
+
     auto init_res = pool.init();
     EXPECT_FALSE(init_res.success);
     EXPECT_EQ(init_res.error, DbPoolError::kConnectFailed);

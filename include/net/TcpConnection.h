@@ -1,9 +1,10 @@
 #ifndef LINUX_SERVER_INCLUDE_NET_TCP_CONNECTION_H_
 #define LINUX_SERVER_INCLUDE_NET_TCP_CONNECTION_H_
 
+#include <sys/types.h>
+
 #include <cstddef>
 #include <cstdint>
-#include <sys/types.h>
 #include <string>
 
 // 本文件声明对已建立 TCP 连接的轻量封装。

@@ -49,7 +49,7 @@ DbConnectionResult DbConnection::connect() {
         return err_res;
 
     MYSQL* connected = mysql_real_connect(raw, config_.host.c_str(), config_.username.c_str(), config_.password.c_str(),
-                                           config_.database.c_str(), config_.port, nullptr, 0);
+                                          config_.database.c_str(), config_.port, nullptr, 0);
     if (connected == nullptr) {
         unsigned int err_no = mysql_errno(raw);
         std::string err = mysql_error(raw);
