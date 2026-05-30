@@ -67,7 +67,7 @@ void ConnectionContext::clearPendingSend() { pending_send_.clear(); }
 
 bool ConnectionContext::startRequestOrQueue(const std::string& request) {
     std::lock_guard<std::mutex> lock(request_mutex_);
-    if (!request_in_flight_) {
+    if (!request_in_flight_ && pending_requests_.empty() && pending_delivery_marks_.load() == 0) {
         request_in_flight_ = true;
         return true;
     }
@@ -78,8 +78,21 @@ bool ConnectionContext::startRequestOrQueue(const std::string& request) {
 
 bool ConnectionContext::finishRequestAndPopNext(std::string& next_request) {
     std::lock_guard<std::mutex> lock(request_mutex_);
-    if (pending_requests_.empty()) {
+    if (pending_requests_.empty() || pending_delivery_marks_.load() > 0) {
         request_in_flight_ = false;
+        next_request.clear();
+        return false;
+    }
+
+    next_request = std::move(pending_requests_.front());
+    pending_requests_.pop();
+    request_in_flight_ = true;
+    return true;
+}
+
+bool ConnectionContext::popNextRequestIfIdle(std::string& next_request) {
+    std::lock_guard<std::mutex> lock(request_mutex_);
+    if (request_in_flight_ || pending_requests_.empty() || pending_delivery_marks_.load() > 0) {
         next_request.clear();
         return false;
     }

@@ -11,21 +11,20 @@
 // TODO(lzq): 明确 ConnectionId 与 TcpServer 内部连接编号的映射关系。
 // TODO(lzq): 如后续引入毫秒/纳秒级时间语义，可补充更细粒度时间类型。
 
-namespace chat
-{
+namespace chat {
 
-    // 表示业务层用户唯一标识。
-    using UserId = std::int64_t;
+// 表示业务层用户唯一标识。
+using UserId = std::int64_t;
 
-    // 表示连接层使用的轻量连接标识。
-    using ConnectionId = std::uint64_t;
+// 表示连接层使用的轻量连接标识。
+using ConnectionId = std::uint64_t;
 
-    // 表示一条请求与响应配对使用的消息序号。
-    using SeqId = std::uint64_t;
+// 表示一条请求与响应配对使用的消息序号。
+using SeqId = std::uint64_t;
 
-    // 表示协议中传输的时间戳，当前约定为整数时间值。
-    using Timestamp = std::int64_t;
+// 表示协议中传输的时间戳，当前约定为整数时间值。
+using Timestamp = std::int64_t;
 
-} // namespace chat
+}  // namespace chat
 
-#endif // LINUX_SERVER_INCLUDE_COMMON_TYPES_H_
+#endif  // LINUX_SERVER_INCLUDE_COMMON_TYPES_H_

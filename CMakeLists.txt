@@ -44,6 +44,7 @@ add_executable(server
     src/db/db_pool.cc
     src/db/db_connection.cc
     src/db/user_repository.cc
+    src/db/message_repository.cc
     src/handler/message_handler.cc
     src/protocol/protocol_helper.cc
     src/server/session_manager.cc
@@ -85,6 +86,23 @@ add_executable(packet_codec_test
 
 target_include_directories(packet_codec_test PRIVATE include third_party)
 add_test(NAME packet_codec_test COMMAND packet_codec_test)
+
+add_executable(connection_context_test
+    tests/connection_context_test.cc
+    src/ConnectionContext.cc
+    src/TcpConnection.cc
+    src/codec/packet_codec.cc
+)
+
+target_include_directories(connection_context_test PRIVATE include third_party)
+add_test(NAME connection_context_test COMMAND connection_context_test)
+
+add_executable(message_record_test
+    tests/message_record_test.cc
+)
+
+target_include_directories(message_record_test PRIVATE include third_party)
+add_test(NAME message_record_test COMMAND message_record_test)
 
 add_executable(message_handler_test
     tests/message_handler_test.cc
@@ -196,6 +214,17 @@ add_executable(user_repository_test
 target_include_directories(user_repository_test PRIVATE include third_party)
 target_link_libraries(user_repository_test PRIVATE ${MYSQLCLIENT_LIB})
 add_test(NAME user_repository_test COMMAND user_repository_test)
+
+add_executable(message_repository_test
+    tests/message_repository_test.cc
+    src/db/message_repository.cc
+    src/db/db_pool.cc
+    src/db/db_connection.cc
+)
+
+target_include_directories(message_repository_test PRIVATE include third_party)
+target_link_libraries(message_repository_test PRIVATE ${MYSQLCLIENT_LIB})
+add_test(NAME message_repository_test COMMAND message_repository_test)
 
 add_executable(thread_pool_test
     tests/thread_pool_test.cc

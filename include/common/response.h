@@ -1,9 +1,8 @@
 #ifndef LINUX_SERVER_INCLUDE_COMMON_RESPONSE_H_
 #define LINUX_SERVER_INCLUDE_COMMON_RESPONSE_H_
 
-#include <string>
-
 #include <nlohmann/json.hpp>
+#include <string>
 
 #include "common/error_code.h"
 #include "common/types.h"
@@ -19,20 +18,20 @@ namespace chat {
 
 // 表示一条从服务端返回给客户端的通用协议响应。
 struct Response {
-  // 响应消息类型，通常为请求类型后追加 _resp。
-  std::string msg_type;
+    // 响应消息类型，通常为请求类型后追加 _resp。
+    std::string msg_type;
 
-  // 与请求对应的序号，用于客户端匹配异步响应。
-  SeqId seq = 0;
+    // 与请求对应的序号，用于客户端匹配异步响应。
+    SeqId seq = 0;
 
-  // 响应结果状态码。
-  ErrorCode code = ErrorCode::OK;
+    // 响应结果状态码。
+    ErrorCode code = ErrorCode::OK;
 
-  // 便于日志与客户端展示的简短文本说明。
-  std::string message;
+    // 便于日志与客户端展示的简短文本说明。
+    std::string message;
 
-  // 存放具体业务返回数据的 JSON 对象。
-  nlohmann::json data;
+    // 存放具体业务返回数据的 JSON 对象。
+    nlohmann::json data;
 };
 
 }  // namespace chat

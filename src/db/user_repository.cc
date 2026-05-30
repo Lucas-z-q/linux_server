@@ -1,5 +1,7 @@
 #include "db/user_repository.h"
 
+#include <mysql/mysql.h>
+
 #include <cstdlib>
 #include <iostream>
 #include <limits>
@@ -10,8 +12,6 @@
 #include <vector>
 
 #include "db/db_pool.h"
-
-#include <mysql/mysql.h>
 
 // 本文件实现 users 表的最小数据访问能力。
 // Repository 向业务层屏蔽 SQL 细节，同时通过接入 DbPool 实现物理连接的高效复用。

@@ -32,6 +32,9 @@ struct OutboundMessage {
 
     // 待推送的原始消息数据（通常为序列化后的 JSON 字符串）。
     std::string payload;
+
+    // 推送成功进入目标连接发送队列后需要标记为 delivered 的消息 ID。
+    std::string message_id;
 };
 
 struct HandleResult {
@@ -43,6 +46,12 @@ struct HandleResult {
 
     SessionAction session_action = SessionAction::NONE;
     chat::ConnectionSession pending_session;  // 仅在bind时有效
+
+    // 响应成功入队后需要在 I/O 线程标记为 delivered 的消息 ID 列表（离线拉取场景）。
+    std::vector<std::string> delivered_message_ids;
+
+    // delivered_message_ids 对应的接收方用户 ID，用于 markDelivered 的所有权校验。
+    chat::UserId delivered_user_id = 0;
 };
 // 抽象一类“输入请求字符串，输出响应字符串”的消息处理器。
 class IMessageHandler {
@@ -65,6 +74,14 @@ class IMessageHandler {
     // 检查指定连接当前是否仍属于目标用户（用于推送安全性校验）。
     // 此方法为纯虚函数，强制所有消息处理器显式声明并实现安全性校验策略。
     virtual bool isConnectionBoundToUser(chat::ConnectionId conn_id, chat::UserId user_id) = 0;
+
+    // I/O 线程在响应/推送成功进入发送队列后调用，标记消息已投递。
+    // delivered 表示服务端已投递/已返回给客户端，不等价于客户端已读。
+    // 默认空实现，需要该能力的 handler 自行覆盖。
+    virtual void onMessagesDelivered(chat::UserId user_id, const std::vector<std::string> &message_ids) {
+        (void)user_id;
+        (void)message_ids;
+    }
 };
 
 #endif  // LINUX_SERVER_INCLUDE_NET_IMESSAGE_HANDLER_H_

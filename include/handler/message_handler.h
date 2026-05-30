@@ -7,8 +7,8 @@
 #include "common/message.h"
 #include "common/response.h"
 #include "net/IMessageHandler.h"
-#include "service/user_service.h"
 #include "service/chat_service.h"
+#include "service/user_service.h"
 
 // 本文件声明统一消息处理器。
 // 该处理器位于网络层与业务层之间，负责请求解析、路由和响应封装。
@@ -42,6 +42,8 @@ class MessageHandler : public IMessageHandler {
         return user_service_.isConnectionBoundToUser(conn_id, user_id);
     }
 
+    void onMessagesDelivered(chat::UserId user_id, const std::vector<std::string>& message_ids) override;
+
    private:
     // 处理注册请求。
     HandleResult handleRegister(const Message &msg);
@@ -60,6 +62,9 @@ class MessageHandler : public IMessageHandler {
 
     // 处理发送消息请求。
     HandleResult handleSendMessage(const Message &msg, chat::ConnectionId conn_id);
+
+    // 处理拉取离线消息请求。
+    HandleResult handlePullOfflineMessages(const Message &msg, chat::ConnectionId conn_id);
 
     // 处理未知消息类型的请求。
     HandleResult handleUnknown(const Message &msg);

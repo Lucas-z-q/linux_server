@@ -51,6 +51,12 @@ class JsonCodec {
 
     // 将消息推送数据写回通用响应对象。
     void fillMessagePush(Response &resp, const MessagePushData &data) const;
+
+    // 从通用消息中提取拉取离线消息请求结构。
+    bool parsePullOfflineMessagesRequest(const Message &msg, PullOfflineMessagesRequest &req, std::string &err) const;
+
+    // 将拉取离线消息响应业务数据写回通用响应对象。
+    void fillPullOfflineMessagesResponse(Response &resp, const PullOfflineMessagesResponseData &data) const;
 };
 
 }  // namespace chat

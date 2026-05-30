@@ -199,7 +199,8 @@ TEST(TcpServerShutdownTest, PushDiscardedWhenConnectionRebound) {
 
         // 等待 I/O 线程和 worker 线程处理完成
         for (int i = 0; i < 100; ++i) {
-            if (handler.push_checked.load()) break;
+            if (handler.push_checked.load())
+                break;
             std::this_thread::sleep_for(std::chrono::milliseconds(10));
         }
         ASSERT_TRUE(handler.push_checked.load());
@@ -239,7 +240,8 @@ TEST(TcpServerShutdownTest, PushDiscardedWhenConnectionRebound) {
 
         // 等待 I/O 线程和 worker 线程处理完成
         for (int i = 0; i < 100; ++i) {
-            if (handler.push_checked.load()) break;
+            if (handler.push_checked.load())
+                break;
             std::this_thread::sleep_for(std::chrono::milliseconds(10));
         }
         ASSERT_TRUE(handler.push_checked.load());

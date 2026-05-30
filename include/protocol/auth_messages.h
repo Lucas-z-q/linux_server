@@ -16,41 +16,41 @@ namespace chat {
 
 // 注册请求中的业务字段。
 struct RegisterRequest {
-  // 待注册的用户名。
-  std::string username;
+    // 待注册的用户名。
+    std::string username;
 
-  // 客户端提交的原始密码。
-  std::string password;
+    // 客户端提交的原始密码。
+    std::string password;
 
-  // 用户昵称，可选。
-  std::string nickname;
+    // 用户昵称，可选。
+    std::string nickname;
 };
 
 // 注册成功后返回给客户端的数据。
 struct RegisterResponseData {
-  // 新创建用户的 ID。
-  UserId user_id = 0;
+    // 新创建用户的 ID。
+    UserId user_id = 0;
 };
 
 // 登录请求中的业务字段。
 struct LoginRequest {
-  // 待登录的用户名。
-  std::string username;
+    // 待登录的用户名。
+    std::string username;
 
-  // 客户端提交的原始密码。
-  std::string password;
+    // 客户端提交的原始密码。
+    std::string password;
 };
 
 // 登录成功后返回给客户端的数据。
 struct LoginResponseData {
-  // 已登录用户的 ID。
-  UserId user_id = 0;
+    // 已登录用户的 ID。
+    UserId user_id = 0;
 
-  // 当前用户昵称。
-  std::string nickname;
+    // 当前用户昵称。
+    std::string nickname;
 
-  // 服务端下发的认证令牌。
-  std::string token;
+    // 服务端下发的认证令牌。
+    std::string token;
 };
 
 // 登出请求的数据体；当前版本无额外字段。
@@ -61,8 +61,8 @@ struct HeartbeatRequest {};
 
 // 心跳响应中返回的数据。
 struct HeartbeatResponseData {
-  // 服务端当前时间戳。
-  Timestamp server_time = 0;
+    // 服务端当前时间戳。
+    Timestamp server_time = 0;
 };
 
 }  // namespace chat

@@ -1,14 +1,68 @@
 #include "service/chat_service.h"
 
+#include <unistd.h>
+
+#include <algorithm>
+#include <atomic>
 #include <chrono>
+#include <iomanip>
+#include <random>
+#include <sstream>
 
 namespace chat {
 
-ChatService::ChatService(ISessionManager& session_manager)
-    : session_manager_(session_manager) {}
+namespace {
 
-SendMessageResult ChatService::sendMessage(ConnectionId from_conn_id,
-                                          const SendMessageRequest& req) {
+constexpr int32_t kMaxPullOfflineLimit = 100;
+
+ErrorCode MapRepositoryError(RepositoryStatus status) {
+    switch (status) {
+        case RepositoryStatus::kInsertFailed:
+        case RepositoryStatus::kDuplicate:
+            return ErrorCode::DB_INSERT_FAILED;
+        case RepositoryStatus::kQueryFailed:
+        case RepositoryStatus::kConnectionUnavailable:
+        case RepositoryStatus::kBorrowTimeout:
+        case RepositoryStatus::kNotFound:
+            return ErrorCode::DB_QUERY_FAILED;
+        default:
+            return ErrorCode::INTERNAL_ERROR;
+    }
+}
+
+std::string BuildConversationId(UserId user_a, UserId user_b) {
+    const UserId min_id = std::min(user_a, user_b);
+    const UserId max_id = std::max(user_a, user_b);
+    return "conv_" + std::to_string(min_id) + "_" + std::to_string(max_id);
+}
+
+std::string BuildMessageId(Timestamp now, UserId from_user_id) {
+    static std::atomic<uint64_t> msg_seq{0};
+    static thread_local std::mt19937_64 rng(std::random_device{}());
+
+    const uint64_t random_part = rng();
+    const uint64_t mixed_part = (static_cast<uint64_t>(now) << 32) ^ (static_cast<uint64_t>(getpid()) << 16) ^
+                                static_cast<uint64_t>(from_user_id) ^ (++msg_seq);
+
+    std::ostringstream oss;
+    oss << "msg_" << std::hex << std::setw(16) << std::setfill('0') << mixed_part << std::setw(16) << std::setfill('0')
+        << random_part;
+    return oss.str();
+}
+
+bool IsSameIdempotentMessage(const MessageRecord& expected, const MessageRecord& actual) {
+    return expected.conversation_id == actual.conversation_id && expected.client_msg_id == actual.client_msg_id &&
+           expected.from_user_id == actual.from_user_id && expected.to_user_id == actual.to_user_id &&
+           expected.content == actual.content;
+}
+
+}  // namespace
+
+ChatService::ChatService(ISessionManager& session_manager, IMessageRepository& message_repository,
+                         IUserRepository& user_repository)
+    : session_manager_(session_manager), message_repository_(message_repository), user_repository_(user_repository) {}
+
+SendMessageResult ChatService::sendMessage(ConnectionId from_conn_id, const SendMessageRequest& req) {
     // 0. 校验内容合法性（安全与业务兜底）
     if (req.content.empty()) {
         SendMessageResult result;
@@ -20,6 +74,18 @@ SendMessageResult ChatService::sendMessage(ConnectionId from_conn_id,
         SendMessageResult result;
         result.code = ErrorCode::MESSAGE_TOO_LONG;
         result.message = "Message content exceeds limit (4096)";
+        return result;
+    }
+    if (req.client_msg_id.empty()) {
+        SendMessageResult result;
+        result.code = ErrorCode::INVALID_PARAM;
+        result.message = "client_msg_id cannot be empty";
+        return result;
+    }
+    if (req.client_msg_id.length() > 64) {
+        SendMessageResult result;
+        result.code = ErrorCode::INVALID_PARAM;
+        result.message = "client_msg_id exceeds limit (64)";
         return result;
     }
 
@@ -34,23 +100,63 @@ SendMessageResult ChatService::sendMessage(ConnectionId from_conn_id,
         return result;
     }
 
-    // 3. 如果 req.receiver_id == 当前用户 id，返回 CANNOT_SEND_TO_SELF
-    if (req.receiver_id == from_session_opt->user_id) {
+    // 3. 如果 req.to_user_id == 当前用户 id，返回 CANNOT_SEND_TO_SELF
+    if (req.to_user_id == from_session_opt->user_id) {
         SendMessageResult result;
         result.code = ErrorCode::CANNOT_SEND_TO_SELF;
         result.message = "Cannot send message to yourself";
         return result;
     }
 
-    // 4. 获取接收方连接 ID
-    auto target_conn_id_opt = session_manager_.GetConnectionId(req.receiver_id);
-
-    // 5. 如果目标用户不在线，返回 USER_NOT_ONLINE
-    if (!target_conn_id_opt.has_value()) {
+    const FindUserResult target_user = user_repository_.findById(req.to_user_id);
+    if (target_user.status == RepositoryStatus::kNotFound ||
+        (target_user.status == RepositoryStatus::kOk && !target_user.user.has_value())) {
         SendMessageResult result;
-        result.code = ErrorCode::USER_NOT_ONLINE;
-        result.message = "Target user not online";
+        result.code = ErrorCode::USER_NOT_FOUND;
+        result.message = "target user not found";
         return result;
+    }
+    if (target_user.status != RepositoryStatus::kOk) {
+        SendMessageResult result;
+        result.code = MapRepositoryError(target_user.status);
+        result.message = "query target user failed";
+        return result;
+    }
+
+    const Timestamp now = std::chrono::system_clock::to_time_t(std::chrono::system_clock::now());
+
+    MessageRecord pending_message;
+    pending_message.id = BuildMessageId(now, from_session_opt->user_id);
+    pending_message.conversation_id = BuildConversationId(from_session_opt->user_id, req.to_user_id);
+    pending_message.client_msg_id = req.client_msg_id;
+    pending_message.from_user_id = from_session_opt->user_id;
+    pending_message.to_user_id = req.to_user_id;
+    pending_message.content = req.content;
+    pending_message.status = MessageStatus::kStored;
+    pending_message.created_at = now;
+
+    CreateMessageResult create_result = message_repository_.createMessage(pending_message);
+    if (create_result.status != RepositoryStatus::kOk || !create_result.message.has_value()) {
+        SendMessageResult result;
+        result.code = MapRepositoryError(create_result.status);
+        result.message = "store message failed";
+        return result;
+    }
+
+    MessageRecord stored_message = *create_result.message;
+    if (!IsSameIdempotentMessage(pending_message, stored_message)) {
+        SendMessageResult result;
+        result.code = ErrorCode::IDEMPOTENCY_CONFLICT;
+        result.message = "client_msg_id conflicts with existing message";
+        return result;
+    }
+
+    // 4. 获取接收方连接 ID
+    auto target_conn_id_opt = session_manager_.GetConnectionId(stored_message.to_user_id);
+
+    const bool can_attempt_push = create_result.created || stored_message.status == MessageStatus::kStored;
+    if (!can_attempt_push) {
+        target_conn_id_opt.reset();
     }
 
     // 6. 返回发送方、接收方、目标连接、消息内容等信息
@@ -59,11 +165,73 @@ SendMessageResult ChatService::sendMessage(ConnectionId from_conn_id,
     result.message = "Success";
     result.from_user_id = from_session_opt->user_id;
     result.from_username = from_session_opt->username;
-    result.to_user_id = req.receiver_id;
-    result.to_conn_id = target_conn_id_opt.value();
-    result.content = req.content;
-    result.server_time = std::chrono::system_clock::to_time_t(std::chrono::system_clock::now());
+    result.to_user_id = stored_message.to_user_id;
+    result.to_conn_id = target_conn_id_opt.value_or(0);
+    result.content = stored_message.content;
+    result.server_time = now;
+    result.message_id = stored_message.id;
+    result.conversation_id = stored_message.conversation_id;
+    result.status = ToProtocolMessageStatus(stored_message.status);
+    result.created_at = stored_message.created_at;
+
     return result;
+}
+
+PullOfflineMessagesResult ChatService::pullOfflineMessages(ConnectionId from_conn_id,
+                                                           const PullOfflineMessagesRequest& req) {
+    // 1. 获取发送方会话
+    auto from_session_opt = session_manager_.GetSession(from_conn_id);
+
+    // 2. 如果没有 session，返回 user not logged in
+    if (!from_session_opt.has_value() || !from_session_opt->authenticated) {
+        PullOfflineMessagesResult result;
+        result.code = ErrorCode::NOT_LOGGED_IN;
+        result.message = "User not logged in";
+        return result;
+    }
+    if (!req.before_message_id.empty()) {
+        PullOfflineMessagesResult result;
+        result.code = ErrorCode::INVALID_PARAM;
+        result.message = "before_message_id is not supported";
+        return result;
+    }
+    if (req.limit <= 0 || req.limit > kMaxPullOfflineLimit) {
+        PullOfflineMessagesResult result;
+        result.code = ErrorCode::INVALID_PARAM;
+        result.message = "limit must be between 1 and 100";
+        return result;
+    }
+
+    const int32_t limit = req.limit;
+    ListOfflineMessagesResult list_result =
+        message_repository_.listOfflineMessages(from_session_opt->user_id, limit, req.since_message_id);
+    if (list_result.status != RepositoryStatus::kOk) {
+        PullOfflineMessagesResult result;
+        result.code = MapRepositoryError(list_result.status);
+        result.message = "list offline messages failed";
+        return result;
+    }
+
+    PullOfflineMessagesResult result;
+    result.code = ErrorCode::OK;
+    result.message = "Success";
+    result.has_more = list_result.has_more;
+    for (const MessageRecord& record : list_result.messages) {
+        OfflineMessage message;
+        message.message_id = record.id;
+        message.conversation_id = record.conversation_id;
+        message.from_user_id = record.from_user_id;
+        message.to_user_id = record.to_user_id;
+        message.content = record.content;
+        message.created_at = record.created_at;
+        message.status = ToProtocolMessageStatus(record.status);
+        result.messages.push_back(message);
+    }
+    return result;
+}
+
+void ChatService::markMessagesDelivered(UserId user_id, const std::vector<std::string>& message_ids) {
+    message_repository_.markDelivered(user_id, message_ids);
 }
 
 }  // namespace chat
