@@ -87,6 +87,16 @@ add_executable(packet_codec_test
 target_include_directories(packet_codec_test PRIVATE include third_party)
 add_test(NAME packet_codec_test COMMAND packet_codec_test)
 
+add_executable(connection_context_test
+    tests/connection_context_test.cc
+    src/ConnectionContext.cc
+    src/TcpConnection.cc
+    src/codec/packet_codec.cc
+)
+
+target_include_directories(connection_context_test PRIVATE include third_party)
+add_test(NAME connection_context_test COMMAND connection_context_test)
+
 add_executable(message_record_test
     tests/message_record_test.cc
 )

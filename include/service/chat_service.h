@@ -77,6 +77,9 @@ class ChatService {
     // 拉取离线消息。
     PullOfflineMessagesResult pullOfflineMessages(ConnectionId from_conn_id, const PullOfflineMessagesRequest& req);
 
+    // I/O 线程在推送/响应成功入队后回调，批量标记消息已投递。
+    void markMessagesDelivered(UserId user_id, const std::vector<std::string>& message_ids);
+
    private:
     ISessionManager& session_manager_;
     IMessageRepository& message_repository_;

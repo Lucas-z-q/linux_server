@@ -13,7 +13,7 @@ client
   -> MySQL
 ```
 
-主程序目标是 `server`。它启动一个基于 epoll 的 TCP 服务器，通过工作线程池处理业务请求，使用换行分隔的 JSON 作为应用层协议，由 `MessageHandler` 路由消息，并通过 MySQL 仓储层持久化用户和聊天消息数据。聊天消息当前采用 at-least-once 语义：服务端先将消息保存为 `stored`，再尝试在线 push 或离线拉取返回；在补齐客户端 ACK 或 I/O 投递确认前，服务端不会提前把消息推进为 `delivered`。
+主程序目标是 `server`。它启动一个基于 epoll 的 TCP 服务器，通过工作线程池处理业务请求，使用换行分隔的 JSON 作为应用层协议，由 `MessageHandler` 路由消息，并通过 MySQL 仓储层持久化用户和聊天消息数据。聊天消息当前采用服务端投递语义：服务端先将消息保存为 `stored`；当在线 push 或离线拉取响应成功进入 I/O 发送队列后，服务端将消息推进为 `delivered`。`delivered` 表示服务端已投递或已返回给客户端，不等价于客户端已读。
 
 ## 目录树
 
@@ -272,8 +272,8 @@ Handler 本质上是协调器，不直接拥有数据库访问逻辑，也不直
 - 密码哈希当前使用 `std::hash<std::string>`。
 - token 当前按 `token_<user_id>` 生成。
 - 聊天消息 ID 当前由 `ChatService` 生成，消息、会话和会话成员由 `MessageRepository` 持久化。
-- 目标用户离线时，`sendMessage()` 仍会返回成功，消息保持 `stored`，等待在线 push 重试、离线拉取或后续 ACK 机制推进状态。
-- 在线 push 和离线拉取当前都不代表客户端已经可靠收到消息；客户端需要按 `message_id` 去重。
+- 目标用户离线时，`sendMessage()` 仍会返回成功，消息保持 `stored`，等待后续在线 push 或离线拉取推进状态。
+- 在线 push 或离线拉取响应进入 I/O 发送队列后，消息可推进为 `delivered`；这不代表客户端已经已读。
 - 头文件中已经把这两处标记为后续可抽离的扩展点。
 
 ### 会话与服务端状态层
@@ -436,7 +436,7 @@ MessageHandler::handlePullOfflineMessages()
   -> MessageHandler builds pull_offline_messages_resp
 ```
 
-这一流程当前只查询 `stored` 状态消息并返回，不在响应写回客户端前推进 `delivered`。因此离线消息拉取也是 at-least-once 语义：如果客户端已经通过在线 push 收到同一条消息，或者拉取响应写回过程中出现重试，客户端需要按 `message_id` 去重。后续补齐 `message_ack` 或 I/O 投递确认路径后，再由确认路径推进 `delivered` 和 `read`。
+这一流程只查询 `stored` 状态消息。拉取响应成功进入当前连接的 I/O 发送队列后，网络层会异步批量推进这些消息为 `delivered`，并在投递标记完成前保持同连接请求 FIFO，避免重复拉取无限返回同一批消息。`delivered` 仍只是服务端已返回语义，不代表客户端已读；后续 `read` 由已读上报推进。
 
 ### 登录流程
 
@@ -561,7 +561,7 @@ net
 代码中已经预留了比较清晰的扩展方向：
 
 - 随着消息类型增长，将 `MessageHandler` 拆分为认证、聊天、好友、群组等子处理器。
-- 新增 `message_ack` 或接入 I/O 投递确认路径，由确认结果推进 `delivered`。
+- 如需强投递确认，可新增 `message_ack` 或更细粒度 I/O 投递确认路径。
 - 新增已读上报协议，由客户端 ACK 推进 `read`。
 - 将 `std::hash` 密码哈希替换为独立的密码哈希组件。
 - 将确定性的 token 生成替换为安全 token 生成器。
@@ -575,9 +575,9 @@ net
 
 - `src/server.cc` 和 `EchoHandler` 属于示例或遗留代码，有助于理解项目演进，但不是当前主业务路径。
 - `include/server/connection_manager.h` 当前只是占位文件，没有实际功能实现。
-- 消息投递当前是 at-least-once 语义；在线 push 和离线拉取都不会在响应真正到达客户端前推进 `delivered`。
+- 消息投递当前是服务端投递语义；在线 push 和离线拉取响应成功进入 I/O 发送队列后推进 `delivered`。
 - 客户端必须按 `message_id` 做幂等去重。
-- `delivered` 和 `read` 依赖后续 `message_ack`、已读上报或 I/O 投递确认路径推进。
+- `delivered` 表示服务端已投递或已返回给客户端，不等价于客户端已读；`read` 仍依赖后续已读上报推进。
 - `README.md` 当前更偏向外部协议说明，而不是代码组织说明。
 - `AGENTS.md`、`CLAUDE.md`、`.codegraph/` 属于本地代理或工具上下文，不属于源码结构。
 - `third_party/nlohmann/json.hpp` 是随项目 vendored 的第三方 JSON 头文件，通过 `third_party` include 路径使用。

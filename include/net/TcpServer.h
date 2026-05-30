@@ -52,6 +52,11 @@ class TcpServer {
         std::string request;
     };
 
+    struct PostDeliveryEvent {
+        uint64_t conn_id = 0;
+        bool finish_current_request = false;
+    };
+
     // 创建监听 socket。
     bool createListenSocket();
 
@@ -88,6 +93,12 @@ class TcpServer {
     // 完成当前请求，并按同连接顺序尝试投递下一个请求。
     // 该函数可在 worker 失败补偿路径调用，只能操作连接请求队列和线程池投递，不能做网络 I/O。
     bool finishCurrentRequestAndSubmitNext(const std::shared_ptr<ConnectionContext> &context, uint64_t conn_id);
+
+    // 投递围栏解除后，如果连接空闲，则按 FIFO 投递队首请求。
+    bool submitNextQueuedRequestIfIdle(const std::shared_ptr<ConnectionContext> &context, uint64_t conn_id);
+
+    // 记录 markDelivered 完成事件，并唤醒 I/O 线程恢复请求推进。
+    void enqueuePostDeliveryEvent(uint64_t conn_id, bool finish_current_request);
 
     // 将 worker 完成的响应任务放入 I/O 线程消费队列。
     bool enqueueResponseTask(ResponseTask task);
@@ -171,6 +182,13 @@ class TcpServer {
 
     // 辅助函数：日志记录连接断开状态
     void logConnectionDisconnected(const ConnectionMeta &meta, const std::string &reason);
+
+    // worker 线程完成 markDelivered 后回信的连接恢复事件队列。
+    std::mutex post_delivery_mutex_;
+    std::vector<PostDeliveryEvent> post_delivery_events_;
+
+    // 向 worker_event_fd_ 写入通知，唤醒 I/O 线程。
+    void notifyWorkerEventFd();
 };
 
 #endif  // LINUX_SERVER_INCLUDE_NET_TCP_SERVER_H_

@@ -214,4 +214,8 @@ PullOfflineMessagesResult ChatService::pullOfflineMessages(ConnectionId from_con
     return result;
 }
 
+void ChatService::markMessagesDelivered(UserId user_id, const std::vector<std::string>& message_ids) {
+    message_repository_.markDelivered(user_id, message_ids);
+}
+
 }  // namespace chat

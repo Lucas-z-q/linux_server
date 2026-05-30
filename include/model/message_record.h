@@ -10,6 +10,7 @@ namespace chat {
 
 // 对应 messages.status 的稳定领域状态。
 // 数据库当前存储值：0=stored, 1=delivered, 2=read。
+// delivered 表示服务端已将在线 push 或离线拉取响应放入 I/O 发送队列，不等价于客户端已读。
 enum class MessageStatus : int32_t {
     kStored = 0,
     kDelivered = 1,

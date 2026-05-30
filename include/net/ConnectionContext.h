@@ -3,6 +3,7 @@
 
 #include <sys/types.h>
 
+#include <atomic>
 #include <cstddef>
 #include <cstdint>
 #include <mutex>
@@ -27,9 +28,10 @@ class ConnectionContext {
     chat::PacketCodec packet_codec_;  // 用于将连续字节流解析为独立数据包的编解码器。
     ConnectionMeta meta_;             // 连接的元数据和统计信息。
 
-    std::mutex request_mutex_;                  // 保护同连接请求串行化状态。
-    bool request_in_flight_;                    // 是否已有请求正在 worker 中处理。
+    std::mutex request_mutex_;  // 保护同连接请求串行化状态。
+    bool request_in_flight_;    // 是否已有请求正在 worker 中处理或等待投递标记闭环。
     std::queue<std::string> pending_requests_;  // 等待按连接顺序处理的请求队列。
+    std::atomic<int> pending_delivery_marks_{0};  // 跨连接推送未完成投递标记数，阻塞新请求直至清零。
 
    public:
     // 构造一个新的 ConnectionContext。
@@ -84,8 +86,17 @@ class ConnectionContext {
     // 标记当前请求完成，并取出同连接的下一个待处理请求。
     bool finishRequestAndPopNext(std::string& next_request);
 
+    // 投递围栏解除后，如果连接空闲，则取出队首请求继续处理。
+    bool popNextRequestIfIdle(std::string& next_request);
+
     // 清空当前连接尚未处理的请求。
     void clearPendingRequests();
+
+    // 递增跨连接推送未完成投递计数，阻塞新请求提交。
+    void incrementPendingDeliveryMarks() { pending_delivery_marks_.fetch_add(1); }
+
+    // 递减跨连接推送未完成投递计数。
+    void decrementPendingDeliveryMarks() { pending_delivery_marks_.fetch_sub(1); }
 
     // 在接收到数据后更新元数据。
     // 递增接收次数，并将 `bytes` 累加到接收总字节数中。

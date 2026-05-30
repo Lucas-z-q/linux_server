@@ -424,7 +424,9 @@ bool TcpServer::submitRequestTask(RequestTask task) {
                                            false,
                                            result.session_action,
                                            std::move(result.pending_session),
-                                           std::move(result.pushes)};
+                                           std::move(result.pushes),
+                                           std::move(result.delivered_message_ids),
+                                           result.delivered_user_id};
                 enqueueResponseTask(std::move(response_task));
             } catch (const std::exception &ex) {
                 std::cerr << "worker request failed: " << ex.what() << std::endl;
@@ -470,6 +472,29 @@ bool TcpServer::finishCurrentRequestAndSubmitNext(const std::shared_ptr<Connecti
     return false;
 }
 
+bool TcpServer::submitNextQueuedRequestIfIdle(const std::shared_ptr<ConnectionContext> &context, uint64_t conn_id) {
+    std::string next_request;
+    if (!context->popNextRequestIfIdle(next_request)) {
+        return true;
+    }
+
+    RequestTask next_task{std::weak_ptr<ConnectionContext>(context), conn_id, std::move(next_request)};
+    if (submitRequestTask(std::move(next_task))) {
+        return true;
+    }
+
+    context->clearPendingRequests();
+    return false;
+}
+
+void TcpServer::enqueuePostDeliveryEvent(uint64_t conn_id, bool finish_current_request) {
+    {
+        std::lock_guard<std::mutex> lock(post_delivery_mutex_);
+        post_delivery_events_.push_back({conn_id, finish_current_request});
+    }
+    notifyWorkerEventFd();
+}
+
 bool TcpServer::enqueueResponseTask(ResponseTask task) {
     if (stopping_.load()) {
         return false;
@@ -506,6 +531,21 @@ bool TcpServer::enqueueResponseTask(ResponseTask task) {
             // 不要去扫描并删除任务！
         }
         return true;  // 依然返回 true，告诉调用者任务已成功交接给 I/O 队列
+    }
+}
+
+void TcpServer::notifyWorkerEventFd() {
+    const uint64_t notify_value = 1;
+    while (true) {
+        ssize_t n = write(worker_event_fd_, &notify_value, sizeof(notify_value));
+        if (n == sizeof(notify_value)) {
+            return;
+        }
+        if (n < 0 && errno == EINTR) {
+            continue;
+        }
+        // EAGAIN/EWOULDBLOCK 表示 eventfd 已有未消费事件，其他错误不影响正确性
+        return;
     }
 }
 
@@ -551,12 +591,36 @@ void TcpServer::onWorkerResultReadable() {
             continue;
         }
 
+        bool deferred_next_request = false;
+
         if (!task.response.empty()) {
             chat::PacketCodec codec;
             context->appendPendingSend(codec.encode(task.response));
             if (!enableWritableEvent(context->fd())) {
                 closeClientFd(context->fd(), "enable_write_event_failed");
                 continue;
+            }
+            if (!task.delivered_message_ids.empty()) {
+                std::vector<std::string> msg_ids = std::move(task.delivered_message_ids);
+                chat::UserId user_id = task.delivered_user_id;
+                uint64_t conn_id = task.conn_id;
+                try {
+                    worker_pool_.submit([this, user_id, msg_ids = std::move(msg_ids), conn_id]() {
+                        try {
+                            handler_.onMessagesDelivered(user_id, msg_ids);
+                        } catch (const std::exception &ex) {
+                            std::cerr << "markDelivered batch failed: " << ex.what() << std::endl;
+                        } catch (...) {
+                            std::cerr << "markDelivered batch failed: unknown exception" << std::endl;
+                        }
+                        enqueuePostDeliveryEvent(conn_id, true);
+                    });
+                    deferred_next_request = true;
+                } catch (const std::exception &ex) {
+                    std::cerr << "submit markDelivered batch failed: " << ex.what() << std::endl;
+                } catch (...) {
+                    std::cerr << "submit markDelivered batch failed: unknown exception" << std::endl;
+                }
             }
         }
 
@@ -567,6 +631,9 @@ void TcpServer::onWorkerResultReadable() {
         }
 
         // 处理主动推送消息 (pushes)
+        std::vector<std::string> same_conn_push_msg_ids;
+        chat::UserId same_conn_user_id = 0;
+        std::unordered_map<uint64_t, std::pair<std::vector<std::string>, chat::UserId>> cross_conn_pushes;
         for (const auto &push : task.pushes) {
             // 校验目标连接当前仍属于原接收用户，避免在连接复用/重新登录时误投递
             if (!handler_.isConnectionBoundToUser(push.target_conn_id, push.target_user_id)) {
@@ -580,12 +647,104 @@ void TcpServer::onWorkerResultReadable() {
                 target_context->appendPendingSend(codec.encode(push.payload));
                 if (!enableWritableEvent(target_context->fd())) {
                     closeClientFd(target_context->fd(), "enable_write_event_failed");
+                } else if (!push.message_id.empty()) {
+                    if (push.target_conn_id == task.conn_id) {
+                        same_conn_push_msg_ids.push_back(push.message_id);
+                        if (same_conn_user_id == 0) {
+                            same_conn_user_id = push.target_user_id;
+                        }
+                    } else {
+                        auto &entry = cross_conn_pushes[push.target_conn_id];
+                        entry.first.push_back(push.message_id);
+                        if (entry.second == 0) {
+                            entry.second = push.target_user_id;
+                        }
+                    }
                 }
             }
         }
 
-        if (!finishCurrentRequestAndSubmitNext(context, task.conn_id)) {
-            closeClientFd(context->fd(), "submit_request_task_failed");
+        // 处理跨连接推送的投递标记：对目标连接加围栏，串行化后续请求直至 DB 更新完成
+        for (auto &[target_conn_id, entry] : cross_conn_pushes) {
+            auto target_ctx = getConnectionContextById(target_conn_id);
+            if (!target_ctx)
+                continue;
+
+            target_ctx->incrementPendingDeliveryMarks();
+
+            std::vector<std::string> msg_ids = std::move(entry.first);
+            chat::UserId user_id = entry.second;
+            try {
+                worker_pool_.submit([this, user_id, msg_ids = std::move(msg_ids), target_conn_id]() {
+                    try {
+                        handler_.onMessagesDelivered(user_id, msg_ids);
+                    } catch (const std::exception &ex) {
+                        std::cerr << "markDelivered cross-conn push failed: " << ex.what() << std::endl;
+                    } catch (...) {
+                        std::cerr << "markDelivered cross-conn push failed: unknown exception" << std::endl;
+                    }
+                    auto ctx = getConnectionContextById(target_conn_id);
+                    if (ctx) {
+                        ctx->decrementPendingDeliveryMarks();
+                        enqueuePostDeliveryEvent(target_conn_id, false);
+                    }
+                });
+            } catch (const std::exception &ex) {
+                target_ctx->decrementPendingDeliveryMarks();
+                std::cerr << "submit markDelivered cross-conn push failed: " << ex.what() << std::endl;
+                enqueuePostDeliveryEvent(target_conn_id, false);
+            } catch (...) {
+                target_ctx->decrementPendingDeliveryMarks();
+                std::cerr << "submit markDelivered cross-conn push failed: unknown exception" << std::endl;
+                enqueuePostDeliveryEvent(target_conn_id, false);
+            }
+        }
+
+        if (!same_conn_push_msg_ids.empty()) {
+            uint64_t conn_id = task.conn_id;
+            chat::UserId user_id = same_conn_user_id;
+            try {
+                worker_pool_.submit([this, user_id, msg_ids = std::move(same_conn_push_msg_ids), conn_id]() {
+                    try {
+                        handler_.onMessagesDelivered(user_id, msg_ids);
+                    } catch (const std::exception &ex) {
+                        std::cerr << "markDelivered same-conn push failed: " << ex.what() << std::endl;
+                    } catch (...) {
+                        std::cerr << "markDelivered same-conn push failed: unknown exception" << std::endl;
+                    }
+                    enqueuePostDeliveryEvent(conn_id, true);
+                });
+                deferred_next_request = true;
+            } catch (const std::exception &ex) {
+                std::cerr << "submit markDelivered same-conn push failed: " << ex.what() << std::endl;
+            } catch (...) {
+                std::cerr << "submit markDelivered same-conn push failed: unknown exception" << std::endl;
+            }
+        }
+
+        if (!deferred_next_request) {
+            if (!finishCurrentRequestAndSubmitNext(context, task.conn_id)) {
+                closeClientFd(context->fd(), "submit_request_task_failed");
+            }
+        }
+    }
+
+    // 处理 markDelivered 已完成的连接，按事件类型恢复请求提交。
+    std::vector<PostDeliveryEvent> ready_events;
+    {
+        std::lock_guard<std::mutex> lock(post_delivery_mutex_);
+        ready_events.swap(post_delivery_events_);
+    }
+    for (const PostDeliveryEvent &event : ready_events) {
+        auto ctx = getConnectionContextById(event.conn_id);
+        if (!ctx) {
+            continue;
+        }
+
+        const bool submitted = event.finish_current_request ? finishCurrentRequestAndSubmitNext(ctx, event.conn_id)
+                                                            : submitNextQueuedRequestIfIdle(ctx, event.conn_id);
+        if (!submitted) {
+            closeClientFd(ctx->fd(), "submit_request_task_failed");
         }
     }
 }

@@ -225,7 +225,8 @@ HandleResult MessageHandler::handleSendMessage(const Message &msg, chat::Connect
             push_data.server_time = result.server_time;
             codec_.fillMessagePush(push, push_data);
 
-            handle_result.pushes.push_back({result.to_conn_id, result.to_user_id, codec_.encodeResponse(push)});
+            handle_result.pushes.push_back(
+                {result.to_conn_id, result.to_user_id, codec_.encodeResponse(push), result.message_id});
         }
     }
 
@@ -251,15 +252,27 @@ HandleResult MessageHandler::handlePullOfflineMessages(const Message &msg, chat:
     resp.code = result.code;
     resp.message = result.message;
 
+    HandleResult handle_result;
     if (result.code == ErrorCode::OK) {
         PullOfflineMessagesResponseData resp_data;
         resp_data.messages = result.messages;
         resp_data.has_more = result.has_more;
         codec_.fillPullOfflineMessagesResponse(resp, resp_data);
+
+        if (!result.messages.empty()) {
+            handle_result.delivered_user_id = result.messages[0].to_user_id;
+            handle_result.delivered_message_ids.reserve(result.messages.size());
+            for (const auto& m : result.messages) {
+                handle_result.delivered_message_ids.push_back(m.message_id);
+            }
+        }
     }
 
-    HandleResult handle_result;
     handle_result.response = codec_.encodeResponse(resp);
     return handle_result;
 }
+void MessageHandler::onMessagesDelivered(chat::UserId user_id, const std::vector<std::string>& message_ids) {
+    chat_service_.markMessagesDelivered(user_id, message_ids);
+}
+
 }  // namespace chat
