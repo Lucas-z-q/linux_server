@@ -83,7 +83,7 @@ void TestHandleHeartbeatSuccess() {
     SessionManager session_manager;
     UserService service(repo, session_manager);
     FakeMessageRepository message_repo;
-    ChatService chat_service(session_manager, message_repo);
+    ChatService chat_service(session_manager, message_repo, repo);
     MessageHandler handler(service, chat_service);
     const std::string request = R"({"msg_type":"heartbeat","seq":1,"token":"","data":{}})";
 
@@ -100,7 +100,7 @@ void TestHandleLoginDbQueryFailedWithoutDbConfig() {
     SessionManager session_manager;
     UserService service(repo, session_manager);
     FakeMessageRepository message_repo;
-    ChatService chat_service(session_manager, message_repo);
+    ChatService chat_service(session_manager, message_repo, repo);
     MessageHandler handler(service, chat_service);
     const std::string request =
         R"({"msg_type":"login","seq":2,"token":"","data":{"username":"alice","password":"123456"}})";
@@ -116,7 +116,7 @@ void TestHandleRegisterDbQueryFailedWithoutDbConfig() {
     SessionManager session_manager;
     UserService service(repo, session_manager);
     FakeMessageRepository message_repo;
-    ChatService chat_service(session_manager, message_repo);
+    ChatService chat_service(session_manager, message_repo, repo);
     MessageHandler handler(service, chat_service);
     const std::string request =
         R"({"msg_type":"register","seq":3,"token":"","data":{"username":"alice","password":"123456","nickname":"Alice"}})";
@@ -131,7 +131,7 @@ void TestHandleLogoutReturnsUserNotLoggedIn() {
     SessionManager session_manager;
     UserService service(repo, session_manager);
     FakeMessageRepository message_repo;
-    ChatService chat_service(session_manager, message_repo);
+    ChatService chat_service(session_manager, message_repo, repo);
     MessageHandler handler(service, chat_service);
     const std::string request = R"({"msg_type":"logout","seq":4,"token":"","data":{}})";
 
@@ -145,7 +145,7 @@ void TestHandleWhoAmIReturnsUserNotLoggedIn() {
     SessionManager session_manager;
     UserService service(repo, session_manager);
     FakeMessageRepository message_repo;
-    ChatService chat_service(session_manager, message_repo);
+    ChatService chat_service(session_manager, message_repo, repo);
     MessageHandler handler(service, chat_service);
     const std::string request = R"({"msg_type":"whoami","seq":5,"token":"","data":{}})";
 
@@ -167,7 +167,7 @@ void TestHandleLoginThenWhoAmIThenLogoutOnSameConnection() {
 
     UserService service(repo, session_manager);
     FakeMessageRepository message_repo;
-    ChatService chat_service(session_manager, message_repo);
+    ChatService chat_service(session_manager, message_repo, repo);
     MessageHandler handler(service, chat_service);
 
     const HandleResult login_result = DispatchAndApply(
@@ -214,7 +214,7 @@ void TestHandleConnectionClosedClearsSession() {
 
     UserService service(repo, session_manager);
     FakeMessageRepository message_repo;
-    ChatService chat_service(session_manager, message_repo);
+    ChatService chat_service(session_manager, message_repo, repo);
     MessageHandler handler(service, chat_service);
 
     const nlohmann::json login_resp = ParseResponse(DispatchAndApply(
@@ -233,7 +233,7 @@ void TestHandleUnknownMessageType() {
     SessionManager session_manager;
     UserService service(repo, session_manager);
     FakeMessageRepository message_repo;
-    ChatService chat_service(session_manager, message_repo);
+    ChatService chat_service(session_manager, message_repo, repo);
     MessageHandler handler(service, chat_service);
     const std::string request = R"({"msg_type":"chat","seq":11,"token":"","data":{}})";
 
@@ -247,7 +247,7 @@ void TestHandleLoginMissingPassword() {
     SessionManager session_manager;
     UserService service(repo, session_manager);
     FakeMessageRepository message_repo;
-    ChatService chat_service(session_manager, message_repo);
+    ChatService chat_service(session_manager, message_repo, repo);
     MessageHandler handler(service, chat_service);
     const std::string request = R"({"msg_type":"login","seq":12,"token":"","data":{"username":"alice"}})";
 
@@ -261,7 +261,7 @@ void TestHandleRegisterMissingUsername() {
     SessionManager session_manager;
     UserService service(repo, session_manager);
     FakeMessageRepository message_repo;
-    ChatService chat_service(session_manager, message_repo);
+    ChatService chat_service(session_manager, message_repo, repo);
     MessageHandler handler(service, chat_service);
     const std::string request = R"({"msg_type":"register","seq":13,"token":"","data":{"password":"123456"}})";
 
@@ -275,7 +275,7 @@ void TestHandleInvalidDataFieldType() {
     SessionManager session_manager;
     UserService service(repo, session_manager);
     FakeMessageRepository message_repo;
-    ChatService chat_service(session_manager, message_repo);
+    ChatService chat_service(session_manager, message_repo, repo);
     MessageHandler handler(service, chat_service);
     const std::string request = R"({"msg_type":"login","seq":14,"token":"","data":"bad"})";
 
@@ -289,7 +289,7 @@ void TestHandleInvalidSeqType() {
     SessionManager session_manager;
     UserService service(repo, session_manager);
     FakeMessageRepository message_repo;
-    ChatService chat_service(session_manager, message_repo);
+    ChatService chat_service(session_manager, message_repo, repo);
     MessageHandler handler(service, chat_service);
     const std::string request =
         R"({"msg_type":"login","seq":"15","token":"","data":{"username":"alice","password":"123456"}})";
@@ -304,7 +304,7 @@ void TestHandleInvalidJson() {
     SessionManager session_manager;
     UserService service(repo, session_manager);
     FakeMessageRepository message_repo;
-    ChatService chat_service(session_manager, message_repo);
+    ChatService chat_service(session_manager, message_repo, repo);
     MessageHandler handler(service, chat_service);
     const std::string request = R"({"msg_type":"login","seq":16,"data":)";
 
@@ -315,10 +315,14 @@ void TestHandleInvalidJson() {
 
 void TestHandleSendMessageSuccess() {
     FakeUserRepository repo;
+    UserRecord target_user;
+    target_user.id = 10002;
+    repo.find_by_id_result.status = RepositoryStatus::kOk;
+    repo.find_by_id_result.user = target_user;
     SessionManager session_manager;
     UserService service(repo, session_manager);
     FakeMessageRepository message_repo;
-    ChatService chat_service(session_manager, message_repo);
+    ChatService chat_service(session_manager, message_repo, repo);
     MessageHandler handler(service, chat_service);
 
     // Setup alice session on conn 42
@@ -367,10 +371,14 @@ void TestHandleSendMessageSuccess() {
 
 void TestSendMessagePushDiscardedOnConnectionRebound() {
     FakeUserRepository repo;
+    UserRecord target_user;
+    target_user.id = 10002;
+    repo.find_by_id_result.status = RepositoryStatus::kOk;
+    repo.find_by_id_result.user = target_user;
     SessionManager session_manager;
     UserService service(repo, session_manager);
     FakeMessageRepository message_repo;
-    ChatService chat_service(session_manager, message_repo);
+    ChatService chat_service(session_manager, message_repo, repo);
     MessageHandler handler(service, chat_service);
 
     // Setup alice session on conn 42
@@ -422,12 +430,73 @@ void TestSendMessagePushDiscardedOnConnectionRebound() {
     assert(handler.isConnectionBoundToUser(push.target_conn_id, push.target_user_id) == false);
 }
 
+void TestHandleSendMessageOfflineSuccess() {
+    FakeUserRepository repo;
+    UserRecord target_user;
+    target_user.id = 10002;
+    repo.find_by_id_result.status = RepositoryStatus::kOk;
+    repo.find_by_id_result.user = target_user;
+    SessionManager session_manager;
+    UserService service(repo, session_manager);
+    FakeMessageRepository message_repo;
+    ChatService chat_service(session_manager, message_repo, repo);
+    MessageHandler handler(service, chat_service);
+
+    ConnectionSession alice_session;
+    alice_session.authenticated = true;
+    alice_session.user_id = 10001;
+    alice_session.username = "alice";
+    session_manager.BindSession(42, alice_session);
+
+    const std::string request =
+        R"({"msg_type":"send_message","seq":23,"token":"","data":{"client_msg_id":"cmsg_offline","to_user_id":10002,"content":"stored for bob"}})";
+
+    const HandleResult result = handler.handle(request, 42);
+    const nlohmann::json ack_resp = ParseResponse(result);
+    ExpectCommonEnvelope(ack_resp, "send_message_resp", 23, ErrorCode::OK);
+    assert(!ack_resp["data"]["message_id"].get<std::string>().empty());
+    assert(ack_resp["data"]["status"].get<int32_t>() == 0);
+    assert(result.pushes.empty());
+    assert(message_repo.created_messages.size() == 1);
+    assert(message_repo.created_messages[0].to_user_id == 10002);
+}
+
+void TestHandleSendMessageStoreFailure() {
+    FakeUserRepository repo;
+    UserRecord target_user;
+    target_user.id = 10002;
+    repo.find_by_id_result.status = RepositoryStatus::kOk;
+    repo.find_by_id_result.user = target_user;
+    SessionManager session_manager;
+    UserService service(repo, session_manager);
+    FakeMessageRepository message_repo;
+    message_repo.create_status = RepositoryStatus::kInsertFailed;
+    ChatService chat_service(session_manager, message_repo, repo);
+    MessageHandler handler(service, chat_service);
+
+    ConnectionSession alice_session;
+    alice_session.authenticated = true;
+    alice_session.user_id = 10001;
+    alice_session.username = "alice";
+    session_manager.BindSession(42, alice_session);
+
+    const std::string request =
+        R"({"msg_type":"send_message","seq":24,"token":"","data":{"client_msg_id":"cmsg_store_fail","to_user_id":10002,"content":"will fail"}})";
+
+    const HandleResult result = handler.handle(request, 42);
+    const nlohmann::json resp = ParseResponse(result);
+    ExpectCommonEnvelope(resp, "send_message_resp", 24, ErrorCode::DB_INSERT_FAILED);
+    assert(resp["message"].get<std::string>() == "store message failed");
+    assert(resp["data"].empty());
+    assert(result.pushes.empty());
+}
+
 void TestHandleSendMessageMissingClientMsgId() {
     FakeUserRepository repo;
     SessionManager session_manager;
     UserService service(repo, session_manager);
     FakeMessageRepository message_repo;
-    ChatService chat_service(session_manager, message_repo);
+    ChatService chat_service(session_manager, message_repo, repo);
     MessageHandler handler(service, chat_service);
 
     // Setup alice session on conn 42
@@ -451,7 +520,7 @@ void TestHandleSendMessageEmptyClientMsgId() {
     SessionManager session_manager;
     UserService service(repo, session_manager);
     FakeMessageRepository message_repo;
-    ChatService chat_service(session_manager, message_repo);
+    ChatService chat_service(session_manager, message_repo, repo);
     MessageHandler handler(service, chat_service);
 
     // Setup alice session on conn 42
@@ -475,7 +544,7 @@ void TestHandlePullOfflineMessagesNotLoggedIn() {
     SessionManager session_manager;
     UserService service(repo, session_manager);
     FakeMessageRepository message_repo;
-    ChatService chat_service(session_manager, message_repo);
+    ChatService chat_service(session_manager, message_repo, repo);
     MessageHandler handler(service, chat_service);
 
     const std::string request = R"({"msg_type":"pull_offline_messages","seq":30,"token":"","data":{"limit":10}})";
@@ -490,7 +559,7 @@ void TestHandlePullOfflineMessagesSuccess() {
     SessionManager session_manager;
     UserService service(repo, session_manager);
     FakeMessageRepository message_repo;
-    ChatService chat_service(session_manager, message_repo);
+    ChatService chat_service(session_manager, message_repo, repo);
     MessageHandler handler(service, chat_service);
 
     // Setup alice session on conn 42
@@ -529,6 +598,8 @@ int main() {
     TestHandleInvalidJson();
     TestHandleSendMessageSuccess();
     TestSendMessagePushDiscardedOnConnectionRebound();
+    TestHandleSendMessageOfflineSuccess();
+    TestHandleSendMessageStoreFailure();
     TestHandleSendMessageMissingClientMsgId();
     TestHandleSendMessageEmptyClientMsgId();
     TestHandlePullOfflineMessagesNotLoggedIn();

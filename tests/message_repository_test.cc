@@ -1,8 +1,8 @@
 #include "db/message_repository.h"
 
 #include <cassert>
-#include <iostream>
 #include <cstdlib>
+#include <iostream>
 
 #include "db/db_connection.h"
 #include "db/db_connection_factory.h"
@@ -12,12 +12,9 @@ namespace {
 
 class FakeDbConnection : public chat::DbConnection {
    public:
-    FakeDbConnection(const chat::DbConfig& config)
-        : chat::DbConnection(config) {}
+    FakeDbConnection(const chat::DbConfig& config) : chat::DbConnection(config) {}
 
-    chat::DbConnectionResult connect() override {
-        return chat::DbConnectionResult{true};
-    }
+    chat::DbConnectionResult connect() override { return chat::DbConnectionResult{true}; }
     void close() noexcept override {}
     bool ping() noexcept override { return true; }
     bool isConnected() const noexcept override { return true; }
@@ -43,6 +40,11 @@ chat::DbConfig GetTestDbConfig() {
     if (const char* db = std::getenv("CHAT_DB_NAME"))
         config.database = db;
     return config;
+}
+
+bool HasRealDbEnvConfig() {
+    return std::getenv("CHAT_DB_HOST") != nullptr && std::getenv("CHAT_DB_PORT") != nullptr &&
+           std::getenv("CHAT_DB_USER") != nullptr && std::getenv("CHAT_DB_NAME") != nullptr;
 }
 
 void TestReturnsUnavailableWhenConfigIncomplete() {
@@ -134,19 +136,19 @@ void TestRepositoryMapsBorrowTimeout() {
 }
 
 void TestRealDbBehavior() {
-    chat::DbConfig config = GetTestDbConfig();
-    if (config.host.empty()) {
-        std::cout << "[INFO] CHAT_DB_HOST not set, skipping real DB integration tests\n";
+    if (!HasRealDbEnvConfig()) {
+        std::cout << "[INFO] CHAT_DB_* env is incomplete, skipping real DB integration tests\n";
         return;
     }
 
+    chat::DbConfig config = GetTestDbConfig();
     std::cout << "[INFO] Running real DB integration tests...\n";
     chat::DbPool pool(config);
     auto init_res = pool.init();
     if (!init_res.success) {
-        std::cout << "[WARN] Failed to initialize DB Pool, skipping real DB tests: " << init_res.message << "\n";
-        return;
+        std::cerr << "[ERROR] Failed to initialize configured DB Pool: " << init_res.message << "\n";
     }
+    assert(init_res.success);
 
     chat::MessageRepository repo(&pool);
 
@@ -155,12 +157,20 @@ void TestRealDbBehavior() {
         auto borrow_res = pool.borrow();
         if (borrow_res.ok()) {
             MYSQL* raw_conn = (*borrow_res.connection)->nativeHandle();
-            mysql_query(raw_conn, "DELETE FROM messages WHERE from_user_id IN (1001, 1002, 1003) OR to_user_id IN (1001, 1002, 1003)");
+            mysql_query(
+                raw_conn,
+                "DELETE FROM messages WHERE from_user_id IN (1001, 1002, 1003) OR to_user_id IN (1001, 1002, 1003)");
             mysql_query(raw_conn, "DELETE FROM conversation_members WHERE user_id IN (1001, 1002, 1003)");
             mysql_query(raw_conn, "DELETE FROM users WHERE id IN (1001, 1002, 1003)");
-            mysql_query(raw_conn, "INSERT INTO users(id, username, password_hash, nickname) VALUES(1001, 'test_user_1001', 'hash', 'U1001')");
-            mysql_query(raw_conn, "INSERT INTO users(id, username, password_hash, nickname) VALUES(1002, 'test_user_1002', 'hash', 'U1002')");
-            mysql_query(raw_conn, "INSERT INTO users(id, username, password_hash, nickname) VALUES(1003, 'test_user_1003', 'hash', 'U1003')");
+            mysql_query(raw_conn,
+                        "INSERT INTO users(id, username, password_hash, nickname) VALUES(1001, 'test_user_1001', "
+                        "'hash', 'U1001')");
+            mysql_query(raw_conn,
+                        "INSERT INTO users(id, username, password_hash, nickname) VALUES(1002, 'test_user_1002', "
+                        "'hash', 'U1002')");
+            mysql_query(raw_conn,
+                        "INSERT INTO users(id, username, password_hash, nickname) VALUES(1003, 'test_user_1003', "
+                        "'hash', 'U1003')");
         }
     }
 
@@ -168,7 +178,7 @@ void TestRealDbBehavior() {
     auto conv_res = repo.findOrCreateSingleConversation(1001, 1002);
     assert(conv_res.status == chat::RepositoryStatus::kOk);
     assert(!conv_res.conversation_id.empty());
-    
+
     // Call again to verify idempotency and created=false
     auto conv_res2 = repo.findOrCreateSingleConversation(1001, 1002);
     assert(conv_res2.status == chat::RepositoryStatus::kOk);
@@ -199,14 +209,15 @@ void TestRealDbBehavior() {
     auto create_dup = repo.createMessage(msg);
     assert(create_dup.status == chat::RepositoryStatus::kOk);
     assert(create_dup.message_id == "test_msg_1");
-    assert(!create_dup.created); // fallback to existing
+    assert(!create_dup.created);  // fallback to existing
 
     // 3. Test listOfflineMessages with cursor ownership
     chat::ListOfflineMessagesResult list_res = repo.listOfflineMessages(1002, 10, "");
     assert(list_res.status == chat::RepositoryStatus::kOk);
     bool found = false;
     for (auto& r : list_res.messages) {
-        if (r.id == "test_msg_1") found = true;
+        if (r.id == "test_msg_1")
+            found = true;
     }
     assert(found);
 
@@ -230,17 +241,17 @@ void TestRealDbBehavior() {
     assert(list_1003_no_cursor.messages[0].id == "test_msg_3");
 
     // Fetch offline messages for user 1003 using cursor "test_msg_1" (which belongs to user 1002)
-    // The query should scope the cursor subquery to receiver (1003), yielding an empty/NULL subquery, 
+    // The query should scope the cursor subquery to receiver (1003), yielding an empty/NULL subquery,
     // which in turn must filter out / return empty result instead of leaking/skipping based on user 1002's cursor.
     chat::ListOfflineMessagesResult list_1003_wrong_cursor = repo.listOfflineMessages(1003, 10, "test_msg_1");
     assert(list_1003_wrong_cursor.status == chat::RepositoryStatus::kOk);
-    assert(list_1003_wrong_cursor.messages.empty()); // Proves receiver scope restriction is active!
-    
+    assert(list_1003_wrong_cursor.messages.empty());  // Proves receiver scope restriction is active!
+
     // 4. Test batch markDelivered and markRead with ownership boundaries
     // Attempting to mark delivered for recipient 9999 (wrong user)
     auto deliv_wrong = repo.markDelivered(9999, {"test_msg_1"});
     assert(deliv_wrong.status == chat::RepositoryStatus::kOk);
-    assert(deliv_wrong.affected_rows == 0); // Not updated because of ownership boundary
+    assert(deliv_wrong.affected_rows == 0);  // Not updated because of ownership boundary
 
     // Correct recipient 1002
     auto deliv_correct = repo.markDelivered(1002, {"test_msg_1"});
@@ -266,23 +277,27 @@ void TestRealDbBehavior() {
     assert(check_msg.message.has_value());
     assert(check_msg.message->status == chat::MessageStatus::kRead);
     assert(check_msg.message->read_at > 0);
-    assert(check_msg.message->delivered_at > 0); // Must be set to non-zero!
+    assert(check_msg.message->delivered_at > 0);  // Must be set to non-zero!
 
     // Cleanup
     {
         auto borrow_res = pool.borrow();
         if (borrow_res.ok()) {
             MYSQL* raw_conn = (*borrow_res.connection)->nativeHandle();
-            mysql_query(raw_conn, "DELETE FROM messages WHERE from_user_id IN (1001, 1002, 1003) OR to_user_id IN (1001, 1002, 1003)");
+            mysql_query(
+                raw_conn,
+                "DELETE FROM messages WHERE from_user_id IN (1001, 1002, 1003) OR to_user_id IN (1001, 1002, 1003)");
             mysql_query(raw_conn, "DELETE FROM conversation_members WHERE user_id IN (1001, 1002, 1003)");
-            mysql_query(raw_conn, ("DELETE FROM conversations WHERE id IN ('" + conv_res.conversation_id + "', '" + conv_res1003.conversation_id + "')").c_str());
+            mysql_query(raw_conn, ("DELETE FROM conversations WHERE id IN ('" + conv_res.conversation_id + "', '" +
+                                   conv_res1003.conversation_id + "')")
+                                      .c_str());
             mysql_query(raw_conn, "DELETE FROM users WHERE id IN (1001, 1002, 1003)");
         }
     }
     std::cout << "[INFO] Real DB integration tests passed successfully!\n";
 }
 
-} // namespace
+}  // namespace
 
 int main() {
     TestReturnsUnavailableWhenConfigIncomplete();

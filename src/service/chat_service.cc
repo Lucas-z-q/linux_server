@@ -58,8 +58,9 @@ bool IsSameIdempotentMessage(const MessageRecord& expected, const MessageRecord&
 
 }  // namespace
 
-ChatService::ChatService(ISessionManager& session_manager, IMessageRepository& message_repository)
-    : session_manager_(session_manager), message_repository_(message_repository) {}
+ChatService::ChatService(ISessionManager& session_manager, IMessageRepository& message_repository,
+                         IUserRepository& user_repository)
+    : session_manager_(session_manager), message_repository_(message_repository), user_repository_(user_repository) {}
 
 SendMessageResult ChatService::sendMessage(ConnectionId from_conn_id, const SendMessageRequest& req) {
     // 0. 校验内容合法性（安全与业务兜底）
@@ -104,6 +105,21 @@ SendMessageResult ChatService::sendMessage(ConnectionId from_conn_id, const Send
         SendMessageResult result;
         result.code = ErrorCode::CANNOT_SEND_TO_SELF;
         result.message = "Cannot send message to yourself";
+        return result;
+    }
+
+    const FindUserResult target_user = user_repository_.findById(req.to_user_id);
+    if (target_user.status == RepositoryStatus::kNotFound ||
+        (target_user.status == RepositoryStatus::kOk && !target_user.user.has_value())) {
+        SendMessageResult result;
+        result.code = ErrorCode::USER_NOT_FOUND;
+        result.message = "target user not found";
+        return result;
+    }
+    if (target_user.status != RepositoryStatus::kOk) {
+        SendMessageResult result;
+        result.code = MapRepositoryError(target_user.status);
+        result.message = "query target user failed";
         return result;
     }
 

@@ -29,7 +29,7 @@ int main() {
     FakeMessageRepository message_repository;
     chat::SessionManager session_manager;
     chat::UserService user_service(repository, session_manager);
-    chat::ChatService chat_service(session_manager, message_repository);
+    chat::ChatService chat_service(session_manager, message_repository, repository);
     chat::MessageHandler handler(user_service, chat_service);
     TcpServer server("127.0.0.1", 8080, handler);
 

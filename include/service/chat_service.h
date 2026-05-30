@@ -6,6 +6,7 @@
 #include "common/error_code.h"
 #include "common/types.h"
 #include "db/message_repository.h"
+#include "db/user_repository.h"
 #include "protocol/chat_messages.h"
 #include "server/session_manager.h"
 
@@ -68,8 +69,9 @@ struct PullOfflineMessagesResult {
 // 负责处理单聊等即时通讯核心业务逻辑。
 class ChatService {
    public:
-    // 构造函数，注入会话管理器和消息仓储。
-    ChatService(ISessionManager& session_manager, IMessageRepository& message_repository);
+    // 构造函数，注入会话管理器、消息仓储和用户仓储。
+    ChatService(ISessionManager& session_manager, IMessageRepository& message_repository,
+                IUserRepository& user_repository);
 
     // 发送一条单聊消息。
     SendMessageResult sendMessage(ConnectionId from_conn_id, const SendMessageRequest& req);
@@ -83,6 +85,7 @@ class ChatService {
    private:
     ISessionManager& session_manager_;
     IMessageRepository& message_repository_;
+    IUserRepository& user_repository_;
 };
 
 }  // namespace chat

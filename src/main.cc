@@ -73,7 +73,7 @@ int main() {
     chat::MessageRepository message_repo(&db_pool);
     chat::SessionManager session_manager;
     chat::UserService user_service(user_repo, session_manager);
-    chat::ChatService chat_service(session_manager, message_repo);
+    chat::ChatService chat_service(session_manager, message_repo, user_repo);
     chat::MessageHandler handler(user_service, chat_service);
 
     // 3. 启动服务器

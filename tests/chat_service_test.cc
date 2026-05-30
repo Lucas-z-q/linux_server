@@ -7,6 +7,7 @@
 #include <unordered_map>
 
 #include "fake_message_repository.h"
+#include "fake_user_repository.h"
 
 namespace {
 
@@ -51,7 +52,8 @@ class FakeSessionManager : public chat::ISessionManager {
 void TestSendMessageNotLoggedIn() {
     FakeSessionManager session_manager;
     FakeMessageRepository message_repo;
-    chat::ChatService chat_service(session_manager, message_repo);
+    FakeUserRepository user_repo;
+    chat::ChatService chat_service(session_manager, message_repo, user_repo);
 
     chat::SendMessageRequest req;
     req.client_msg_id = "msg_not_logged_in";
@@ -65,7 +67,8 @@ void TestSendMessageNotLoggedIn() {
 void TestSendMessageToSelf() {
     FakeSessionManager session_manager;
     FakeMessageRepository message_repo;
-    chat::ChatService chat_service(session_manager, message_repo);
+    FakeUserRepository user_repo;
+    chat::ChatService chat_service(session_manager, message_repo, user_repo);
 
     // Setup sender session
     chat::ConnectionSession sender_session;
@@ -83,10 +86,33 @@ void TestSendMessageToSelf() {
     assert(result.code == chat::ErrorCode::CANNOT_SEND_TO_SELF);
 }
 
+void TestSendMessageTargetNotExists() {
+    FakeSessionManager session_manager;
+    FakeMessageRepository message_repo;
+    FakeUserRepository user_repo;
+    chat::ChatService chat_service(session_manager, message_repo, user_repo);
+
+    chat::ConnectionSession sender_session;
+    sender_session.authenticated = true;
+    sender_session.user_id = 1;
+    sender_session.username = "sender";
+    session_manager.BindSession(100, sender_session);
+
+    chat::SendMessageRequest req;
+    req.client_msg_id = "msg_target_missing";
+    req.to_user_id = 999;
+    req.content = "hello";
+
+    auto result = chat_service.sendMessage(100, req);
+    assert(result.code == chat::ErrorCode::USER_NOT_FOUND);
+    assert(message_repo.created_messages.empty());
+}
+
 void TestSendMessageTargetNotOnline() {
     FakeSessionManager session_manager;
     FakeMessageRepository message_repo;
-    chat::ChatService chat_service(session_manager, message_repo);
+    FakeUserRepository user_repo;
+    chat::ChatService chat_service(session_manager, message_repo, user_repo);
 
     // Setup sender session
     chat::ConnectionSession sender_session;
@@ -108,10 +134,35 @@ void TestSendMessageTargetNotOnline() {
     assert(message_repo.delivered_message_ids.empty());
 }
 
+void TestSendMessageStoreFailureReturnsError() {
+    FakeSessionManager session_manager;
+    FakeMessageRepository message_repo;
+    FakeUserRepository user_repo;
+    message_repo.create_status = chat::RepositoryStatus::kInsertFailed;
+    chat::ChatService chat_service(session_manager, message_repo, user_repo);
+
+    chat::ConnectionSession sender_session;
+    sender_session.authenticated = true;
+    sender_session.user_id = 1;
+    sender_session.username = "sender";
+    session_manager.BindSession(100, sender_session);
+
+    chat::SendMessageRequest req;
+    req.client_msg_id = "msg_store_failure";
+    req.to_user_id = 2;
+    req.content = "hello";
+
+    auto result = chat_service.sendMessage(100, req);
+    assert(result.code == chat::ErrorCode::DB_INSERT_FAILED);
+    assert(result.message == "store message failed");
+    assert(message_repo.created_messages.empty());
+}
+
 void TestSendMessageRejectsEmptyClientMsgId() {
     FakeSessionManager session_manager;
     FakeMessageRepository message_repo;
-    chat::ChatService chat_service(session_manager, message_repo);
+    FakeUserRepository user_repo;
+    chat::ChatService chat_service(session_manager, message_repo, user_repo);
 
     chat::ConnectionSession sender_session;
     sender_session.authenticated = true;
@@ -131,7 +182,8 @@ void TestSendMessageRejectsEmptyClientMsgId() {
 void TestSendMessageRejectsLongClientMsgId() {
     FakeSessionManager session_manager;
     FakeMessageRepository message_repo;
-    chat::ChatService chat_service(session_manager, message_repo);
+    FakeUserRepository user_repo;
+    chat::ChatService chat_service(session_manager, message_repo, user_repo);
 
     chat::ConnectionSession sender_session;
     sender_session.authenticated = true;
@@ -152,8 +204,9 @@ void TestSendMessageRejectsLongClientMsgId() {
 void TestSendMessageDoesNotMarkDeliveredBeforePushAck() {
     FakeSessionManager session_manager;
     FakeMessageRepository message_repo;
+    FakeUserRepository user_repo;
     message_repo.mark_delivered_status = chat::RepositoryStatus::kQueryFailed;
-    chat::ChatService chat_service(session_manager, message_repo);
+    chat::ChatService chat_service(session_manager, message_repo, user_repo);
 
     chat::ConnectionSession sender_session;
     sender_session.authenticated = true;
@@ -182,7 +235,8 @@ void TestSendMessageDoesNotMarkDeliveredBeforePushAck() {
 void TestSendMessageSuccess() {
     FakeSessionManager session_manager;
     FakeMessageRepository message_repo;
-    chat::ChatService chat_service(session_manager, message_repo);
+    FakeUserRepository user_repo;
+    chat::ChatService chat_service(session_manager, message_repo, user_repo);
 
     // Setup sender session
     chat::ConnectionSession sender_session;
@@ -220,9 +274,37 @@ void TestSendMessageSuccess() {
     assert(message_repo.delivered_message_ids.empty());
 }
 
+void TestSendMessageDuplicateClientMsgIdReturnsSameMessage() {
+    FakeSessionManager session_manager;
+    FakeMessageRepository message_repo;
+    FakeUserRepository user_repo;
+    chat::ChatService chat_service(session_manager, message_repo, user_repo);
+
+    chat::ConnectionSession sender_session;
+    sender_session.authenticated = true;
+    sender_session.user_id = 1;
+    sender_session.username = "sender";
+    session_manager.BindSession(100, sender_session);
+
+    chat::SendMessageRequest req;
+    req.client_msg_id = "msg_duplicate_same";
+    req.to_user_id = 2;
+    req.content = "hello";
+
+    auto first = chat_service.sendMessage(100, req);
+    auto second = chat_service.sendMessage(100, req);
+
+    assert(first.code == chat::ErrorCode::OK);
+    assert(second.code == chat::ErrorCode::OK);
+    assert(!first.message_id.empty());
+    assert(second.message_id == first.message_id);
+    assert(message_repo.created_messages.size() == 1);
+}
+
 void TestSendMessageDeduplicatedDeliveredDoesNotPushAgain() {
     FakeSessionManager session_manager;
     FakeMessageRepository message_repo;
+    FakeUserRepository user_repo;
     chat::MessageRecord existing;
     existing.id = "m_existing";
     existing.conversation_id = "conv_1_2";
@@ -233,7 +315,7 @@ void TestSendMessageDeduplicatedDeliveredDoesNotPushAgain() {
     existing.status = chat::MessageStatus::kDelivered;
     existing.created_at = 12345;
     message_repo.create_message_override = existing;
-    chat::ChatService chat_service(session_manager, message_repo);
+    chat::ChatService chat_service(session_manager, message_repo, user_repo);
 
     chat::ConnectionSession sender_session;
     sender_session.authenticated = true;
@@ -263,6 +345,7 @@ void TestSendMessageDeduplicatedDeliveredDoesNotPushAgain() {
 void TestSendMessageDeduplicatedConflict() {
     FakeSessionManager session_manager;
     FakeMessageRepository message_repo;
+    FakeUserRepository user_repo;
     chat::MessageRecord existing;
     existing.id = "m_existing";
     existing.conversation_id = "conv_1_3";
@@ -273,7 +356,7 @@ void TestSendMessageDeduplicatedConflict() {
     existing.status = chat::MessageStatus::kStored;
     existing.created_at = 12345;
     message_repo.create_message_override = existing;
-    chat::ChatService chat_service(session_manager, message_repo);
+    chat::ChatService chat_service(session_manager, message_repo, user_repo);
 
     chat::ConnectionSession sender_session;
     sender_session.authenticated = true;
@@ -294,7 +377,8 @@ void TestSendMessageDeduplicatedConflict() {
 void TestSendMessageEmptyContent() {
     FakeSessionManager session_manager;
     FakeMessageRepository message_repo;
-    chat::ChatService chat_service(session_manager, message_repo);
+    FakeUserRepository user_repo;
+    chat::ChatService chat_service(session_manager, message_repo, user_repo);
 
     chat::SendMessageRequest req;
     req.client_msg_id = "msg_empty_content";
@@ -308,7 +392,8 @@ void TestSendMessageEmptyContent() {
 void TestSendMessageTooLongContent() {
     FakeSessionManager session_manager;
     FakeMessageRepository message_repo;
-    chat::ChatService chat_service(session_manager, message_repo);
+    FakeUserRepository user_repo;
+    chat::ChatService chat_service(session_manager, message_repo, user_repo);
 
     chat::SendMessageRequest req;
     req.client_msg_id = "msg_too_long";
@@ -322,7 +407,8 @@ void TestSendMessageTooLongContent() {
 void TestPullOfflineMessagesNotLoggedIn() {
     FakeSessionManager session_manager;
     FakeMessageRepository message_repo;
-    chat::ChatService chat_service(session_manager, message_repo);
+    FakeUserRepository user_repo;
+    chat::ChatService chat_service(session_manager, message_repo, user_repo);
 
     chat::PullOfflineMessagesRequest req;
     req.limit = 10;
@@ -334,7 +420,8 @@ void TestPullOfflineMessagesNotLoggedIn() {
 void TestPullOfflineMessagesSuccess() {
     FakeSessionManager session_manager;
     FakeMessageRepository message_repo;
-    chat::ChatService chat_service(session_manager, message_repo);
+    FakeUserRepository user_repo;
+    chat::ChatService chat_service(session_manager, message_repo, user_repo);
 
     // Setup user session
     chat::ConnectionSession user_session;
@@ -368,11 +455,52 @@ void TestPullOfflineMessagesSuccess() {
     assert(message_repo.last_since_message_id == "msg_last");
 }
 
+void TestPullOfflineMessagesFiltersToLoggedInUser() {
+    FakeSessionManager session_manager;
+    FakeMessageRepository message_repo;
+    FakeUserRepository user_repo;
+    chat::ChatService chat_service(session_manager, message_repo, user_repo);
+
+    chat::ConnectionSession user_session;
+    user_session.authenticated = true;
+    user_session.user_id = 1;
+    user_session.username = "user1";
+    session_manager.BindSession(100, user_session);
+
+    chat::MessageRecord own_message;
+    own_message.id = "m_own";
+    own_message.conversation_id = "conv_1_2";
+    own_message.client_msg_id = "c_own";
+    own_message.from_user_id = 2;
+    own_message.to_user_id = 1;
+    own_message.content = "for user1";
+    own_message.status = chat::MessageStatus::kStored;
+    own_message.created_at = 12345;
+    message_repo.created_messages.push_back(own_message);
+
+    chat::MessageRecord other_message = own_message;
+    other_message.id = "m_other";
+    other_message.client_msg_id = "c_other";
+    other_message.to_user_id = 2;
+    other_message.content = "for user2";
+    message_repo.created_messages.push_back(other_message);
+
+    chat::PullOfflineMessagesRequest req;
+    req.limit = 10;
+
+    auto result = chat_service.pullOfflineMessages(100, req);
+    assert(result.code == chat::ErrorCode::OK);
+    assert(result.messages.size() == 1);
+    assert(result.messages[0].message_id == "m_own");
+    assert(result.messages[0].to_user_id == 1);
+}
+
 void TestPullOfflineMessagesDoesNotMarkDeliveredBeforeClientAck() {
     FakeSessionManager session_manager;
     FakeMessageRepository message_repo;
+    FakeUserRepository user_repo;
     message_repo.mark_delivered_status = chat::RepositoryStatus::kQueryFailed;
-    chat::ChatService chat_service(session_manager, message_repo);
+    chat::ChatService chat_service(session_manager, message_repo, user_repo);
 
     chat::ConnectionSession user_session;
     user_session.authenticated = true;
@@ -404,8 +532,9 @@ void TestPullOfflineMessagesDoesNotMarkDeliveredBeforeClientAck() {
 void TestPullOfflineMessagesReturnsAllWithoutDeliveryMutation() {
     FakeSessionManager session_manager;
     FakeMessageRepository message_repo;
+    FakeUserRepository user_repo;
     message_repo.mark_delivered_fail_after = 1;
-    chat::ChatService chat_service(session_manager, message_repo);
+    chat::ChatService chat_service(session_manager, message_repo, user_repo);
 
     chat::ConnectionSession user_session;
     user_session.authenticated = true;
@@ -445,7 +574,8 @@ void TestPullOfflineMessagesReturnsAllWithoutDeliveryMutation() {
 void TestPullOfflineMessagesRejectsTwoCursors() {
     FakeSessionManager session_manager;
     FakeMessageRepository message_repo;
-    chat::ChatService chat_service(session_manager, message_repo);
+    FakeUserRepository user_repo;
+    chat::ChatService chat_service(session_manager, message_repo, user_repo);
 
     chat::ConnectionSession user_session;
     user_session.authenticated = true;
@@ -465,7 +595,8 @@ void TestPullOfflineMessagesRejectsTwoCursors() {
 void TestPullOfflineMessagesRejectsOversizedLimit() {
     FakeSessionManager session_manager;
     FakeMessageRepository message_repo;
-    chat::ChatService chat_service(session_manager, message_repo);
+    FakeUserRepository user_repo;
+    chat::ChatService chat_service(session_manager, message_repo, user_repo);
 
     chat::ConnectionSession user_session;
     user_session.authenticated = true;
@@ -485,17 +616,21 @@ void TestPullOfflineMessagesRejectsOversizedLimit() {
 int main() {
     TestSendMessageNotLoggedIn();
     TestSendMessageToSelf();
+    TestSendMessageTargetNotExists();
     TestSendMessageTargetNotOnline();
+    TestSendMessageStoreFailureReturnsError();
     TestSendMessageRejectsEmptyClientMsgId();
     TestSendMessageRejectsLongClientMsgId();
     TestSendMessageDoesNotMarkDeliveredBeforePushAck();
     TestSendMessageSuccess();
+    TestSendMessageDuplicateClientMsgIdReturnsSameMessage();
     TestSendMessageDeduplicatedDeliveredDoesNotPushAgain();
     TestSendMessageDeduplicatedConflict();
     TestSendMessageEmptyContent();
     TestSendMessageTooLongContent();
     TestPullOfflineMessagesNotLoggedIn();
     TestPullOfflineMessagesSuccess();
+    TestPullOfflineMessagesFiltersToLoggedInUser();
     TestPullOfflineMessagesDoesNotMarkDeliveredBeforeClientAck();
     TestPullOfflineMessagesReturnsAllWithoutDeliveryMutation();
     TestPullOfflineMessagesRejectsTwoCursors();

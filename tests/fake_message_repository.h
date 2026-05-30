@@ -54,13 +54,21 @@ class FakeMessageRepository : public chat::IMessageRepository {
         if (create_status != chat::RepositoryStatus::kOk) {
             return {.status = create_status};
         }
-        created_messages.push_back(message);
         if (create_message_override.has_value()) {
             return {.status = chat::RepositoryStatus::kOk,
                     .message_id = create_message_override->id,
                     .message = create_message_override,
                     .created = false};
         }
+        for (const auto& existing : created_messages) {
+            if (existing.from_user_id == message.from_user_id && existing.client_msg_id == message.client_msg_id) {
+                return {.status = chat::RepositoryStatus::kOk,
+                        .message_id = existing.id,
+                        .message = existing,
+                        .created = false};
+            }
+        }
+        created_messages.push_back(message);
         return {.status = chat::RepositoryStatus::kOk,
                 .message_id = message.id,
                 .message = message,
@@ -82,15 +90,36 @@ class FakeMessageRepository : public chat::IMessageRepository {
 
     chat::ListOfflineMessagesResult listOfflineMessages(chat::UserId to_user_id, int32_t limit,
                                                         const std::string& cursor) override {
-        (void)to_user_id;
-        (void)limit;
         last_since_message_id = cursor;
-        return list_result;
+        if (list_result.status != chat::RepositoryStatus::kOk || !list_result.messages.empty() ||
+            list_result.has_more) {
+            return list_result;
+        }
+
+        chat::ListOfflineMessagesResult result;
+        result.status = chat::RepositoryStatus::kOk;
+        bool after_cursor = cursor.empty();
+        for (const auto& msg : created_messages) {
+            if (!after_cursor) {
+                if (msg.id == cursor) {
+                    after_cursor = true;
+                }
+                continue;
+            }
+            if (msg.to_user_id != to_user_id || msg.status != chat::MessageStatus::kStored) {
+                continue;
+            }
+            if (static_cast<int32_t>(result.messages.size()) >= limit) {
+                result.has_more = true;
+                break;
+            }
+            result.messages.push_back(msg);
+        }
+        return result;
     }
 
     chat::MarkDeliveredResult markDelivered(chat::UserId to_user_id,
                                             const std::vector<std::string>& message_ids) override {
-        (void)to_user_id;
         if (mark_delivered_status != chat::RepositoryStatus::kOk) {
             return {.status = mark_delivered_status};
         }
@@ -101,7 +130,19 @@ class FakeMessageRepository : public chat::IMessageRepository {
                 static_cast<int>(delivered_message_ids.size()) > mark_delivered_fail_after) {
                 return {.status = chat::RepositoryStatus::kQueryFailed, .affected_rows = affected};
             }
-            affected++;
+            for (auto& msg : created_messages) {
+                if (msg.id == id && msg.to_user_id == to_user_id && msg.status == chat::MessageStatus::kStored) {
+                    msg.status = chat::MessageStatus::kDelivered;
+                    affected++;
+                    break;
+                }
+            }
+            for (auto& msg : list_result.messages) {
+                if (msg.id == id && msg.to_user_id == to_user_id && msg.status == chat::MessageStatus::kStored) {
+                    msg.status = chat::MessageStatus::kDelivered;
+                    break;
+                }
+            }
         }
         return {.status = chat::RepositoryStatus::kOk, .affected_rows = affected};
     }

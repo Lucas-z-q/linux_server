@@ -260,6 +260,54 @@ void TestSendMessageOverTcp() {
     close(fd_bob);
 }
 
+void TestOfflineMessagePullOverTcp() {
+    const int fd_alice = ConnectToServer();
+
+    const nlohmann::json login_alice = SendAndReceiveOnSocket(
+        fd_alice, R"({"msg_type":"login","seq":30,"token":"","data":{"username":"alice","password":"123456"}})");
+    ExpectCommonEnvelope(login_alice, "login_resp", 30, chat::ErrorCode::OK);
+
+    constexpr int kBobUserId = 10002;
+    const std::string send_msg_request =
+        R"({"msg_type":"send_message","seq":31,"token":"","data":{"client_msg_id":"cmsg_tcp_offline_31","to_user_id":)" +
+        std::to_string(kBobUserId) + R"(,"content":"offline hello bob"}})";
+    const nlohmann::json ack_resp = SendAndReceiveOnSocket(fd_alice, send_msg_request);
+    ExpectCommonEnvelope(ack_resp, "send_message_resp", 31, chat::ErrorCode::OK);
+    const std::string message_id = ack_resp["data"]["message_id"].get<std::string>();
+    assert(!message_id.empty());
+    close(fd_alice);
+
+    const int fd_bob = ConnectToServer();
+    const nlohmann::json login_bob = SendAndReceiveOnSocket(
+        fd_bob, R"({"msg_type":"login","seq":32,"token":"","data":{"username":"bob","password":"123456"}})");
+    ExpectCommonEnvelope(login_bob, "login_resp", 32, chat::ErrorCode::OK);
+    assert(login_bob["data"]["user_id"].get<int>() == kBobUserId);
+
+    const nlohmann::json pull_resp = SendAndReceiveOnSocket(
+        fd_bob, R"({"msg_type":"pull_offline_messages","seq":33,"token":"","data":{"limit":10}})");
+    ExpectCommonEnvelope(pull_resp, "pull_offline_messages_resp", 33, chat::ErrorCode::OK);
+    assert(pull_resp["data"]["messages"].is_array());
+    bool found_offline_message = false;
+    for (const auto& pulled : pull_resp["data"]["messages"]) {
+        if (pulled["message_id"].get<std::string>() != message_id) {
+            continue;
+        }
+        assert(pulled["from_user_id"].get<int>() == 10001);
+        assert(pulled["to_user_id"].get<int>() == kBobUserId);
+        assert(pulled["content"].get<std::string>() == "offline hello bob");
+        found_offline_message = true;
+    }
+    assert(found_offline_message);
+
+    const nlohmann::json second_pull_resp = SendAndReceiveOnSocket(
+        fd_bob, R"({"msg_type":"pull_offline_messages","seq":34,"token":"","data":{"limit":10}})");
+    ExpectCommonEnvelope(second_pull_resp, "pull_offline_messages_resp", 34, chat::ErrorCode::OK);
+    assert(second_pull_resp["data"]["messages"].is_array());
+    assert(second_pull_resp["data"]["messages"].empty());
+
+    close(fd_bob);
+}
+
 }  // namespace
 
 int main() {
@@ -272,6 +320,7 @@ int main() {
     TestLoginWrongPasswordOverTcp();
     TestWhoAmIAfterLoginAndLogoutOnSameConnection();
     TestSendMessageOverTcp();
+    TestOfflineMessagePullOverTcp();
 
     std::cout << "[PASS] auth integration tests passed\n";
     return 0;
