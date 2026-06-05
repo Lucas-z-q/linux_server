@@ -22,7 +22,8 @@ Response MakeInvalidParamResponse(const Message &msg, const std::string &message
 
 }  // namespace
 
-HandleResult MessageHandler::handle(const std::string &raw_request, chat::ConnectionId conn_id) {
+HandleResult MessageHandler::handle(const std::string &raw_request, const RequestContext &context) {
+    const ConnectionId conn_id = context.conn_id;
     Message msg;
     std::string err;
     if (!codec_.decodeMessage(raw_request, msg, err)) {
@@ -36,9 +37,9 @@ HandleResult MessageHandler::handle(const std::string &raw_request, chat::Connec
     user_service_.refreshPresence(conn_id);
 
     if (msg.msg_type == "register") {
-        return handleRegister(msg);
+        return handleRegister(msg, context.peer_ip);
     } else if (msg.msg_type == "login") {
-        return handleLogin(msg, conn_id);
+        return handleLogin(msg, conn_id, context.peer_ip);
     } else if (msg.msg_type == "logout") {
         return handleLogout(msg, conn_id);
     } else if (msg.msg_type == "heartbeat") {
@@ -56,7 +57,7 @@ HandleResult MessageHandler::handle(const std::string &raw_request, chat::Connec
 
 void MessageHandler::onConnectionClosed(chat::ConnectionId conn_id) { user_service_.clearSession(conn_id); }
 
-HandleResult MessageHandler::handleRegister(const Message &msg) {
+HandleResult MessageHandler::handleRegister(const Message &msg, const std::string &identity) {
     RegisterRequest req;
     std::string err;
     if (!codec_.parseRegisterRequest(msg, req, err)) {
@@ -66,13 +67,16 @@ HandleResult MessageHandler::handleRegister(const Message &msg) {
         return res;
     }
 
-    RegisterResult result = user_service_.registerUser(req);
+    RegisterResult result = user_service_.registerUser(req, identity);
 
     Response resp;
     resp.msg_type = msg.msg_type + "_resp";
     resp.seq = msg.seq;
     resp.code = result.code;
     resp.message = result.message;
+    if (result.code == ErrorCode::RATE_LIMITED) {
+        resp.data["retry_after_seconds"] = result.retry_after_seconds;
+    }
 
     if (result.code == ErrorCode::OK) {
         RegisterResponseData data;
@@ -85,7 +89,7 @@ HandleResult MessageHandler::handleRegister(const Message &msg) {
     return res;
 }
 
-HandleResult MessageHandler::handleLogin(const Message &msg, chat::ConnectionId conn_id) {
+HandleResult MessageHandler::handleLogin(const Message &msg, chat::ConnectionId conn_id, const std::string &identity) {
     LoginRequest req;
     std::string err;
     if (!codec_.parseLoginRequest(msg, req, err)) {
@@ -95,13 +99,16 @@ HandleResult MessageHandler::handleLogin(const Message &msg, chat::ConnectionId 
         return res;
     }
 
-    LoginResult result = user_service_.login(req, conn_id);
+    LoginResult result = user_service_.login(req, conn_id, identity);
 
     Response resp;
     resp.msg_type = msg.msg_type + "_resp";
     resp.seq = msg.seq;
     resp.code = result.code;
     resp.message = result.message;
+    if (result.code == ErrorCode::RATE_LIMITED) {
+        resp.data["retry_after_seconds"] = result.retry_after_seconds;
+    }
 
     HandleResult res;
     if (result.code == ErrorCode::OK) {
@@ -199,6 +206,9 @@ HandleResult MessageHandler::handleSendMessage(const Message &msg, chat::Connect
     ack.seq = msg.seq;
     ack.code = result.code;
     ack.message = result.message;
+    if (result.code == ErrorCode::RATE_LIMITED) {
+        ack.data["retry_after_seconds"] = result.retry_after_seconds;
+    }
 
     HandleResult handle_result;
     if (result.code == ErrorCode::OK) {

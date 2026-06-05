@@ -121,6 +121,24 @@ class FakeGlobalSessionStore : public chat::IGlobalSessionStore {
     }
 };
 
+class FakeRateLimiter : public chat::IRateLimiter {
+   public:
+    chat::RateLimitResult result;
+    int calls = 0;
+    std::string last_type;
+    std::string last_identity;
+
+    chat::RateLimitResult Allow(const std::string &type, const std::string &identity, std::uint32_t limit,
+                                std::uint32_t window_seconds) override {
+        (void)limit;
+        (void)window_seconds;
+        ++calls;
+        last_type = type;
+        last_identity = identity;
+        return result;
+    }
+};
+
 chat::RegisterRequest MakeRegisterRequest() {
     chat::RegisterRequest req;
     req.username = "alice";
@@ -476,6 +494,39 @@ void TestRegisterReturnsDbInsertFailedWhenConnectionUnavailableOnCreate() {
     assert(result.message == "create user failed");
 }
 
+void TestRegisterRateLimitReturnsRetryAfter() {
+    FakeUserRepository repo;
+    FakeSessionManager session_manager;
+    FakeRateLimiter limiter;
+    limiter.result = {.allowed = false, .retry_after_seconds = 42};
+    chat::UserService service(repo, session_manager, nullptr, &limiter);
+
+    const chat::RegisterResult result = service.registerUser(MakeRegisterRequest(), "10.0.0.8");
+
+    assert(result.code == chat::ErrorCode::RATE_LIMITED);
+    assert(result.retry_after_seconds == 42);
+    assert(limiter.calls == 1);
+    assert(limiter.last_type == "register");
+    assert(limiter.last_identity == "10.0.0.8");
+    assert(repo.last_username.empty());
+}
+
+void TestLoginRateLimitRunsBeforeRepositoryLookup() {
+    FakeUserRepository repo;
+    FakeSessionManager session_manager;
+    FakeRateLimiter limiter;
+    limiter.result = {.allowed = false, .retry_after_seconds = 8};
+    chat::UserService service(repo, session_manager, nullptr, &limiter);
+
+    const chat::LoginResult result = service.login(MakeLoginRequest(), 42, "10.0.0.9");
+
+    assert(result.code == chat::ErrorCode::RATE_LIMITED);
+    assert(result.retry_after_seconds == 8);
+    assert(limiter.last_type == "login");
+    assert(limiter.last_identity == "10.0.0.9");
+    assert(repo.last_username.empty());
+}
+
 }  // namespace
 
 int main() {
@@ -503,6 +554,8 @@ int main() {
     TestRegisterReturnsDbQueryFailedWhenConnectionUnavailable();
     TestRegisterReturnsDbQueryFailedWhenBorrowTimeout();
     TestRegisterReturnsDbInsertFailedWhenConnectionUnavailableOnCreate();
+    TestRegisterRateLimitReturnsRetryAfter();
+    TestLoginRateLimitRunsBeforeRepositoryLookup();
     std::cout << "[PASS] user service tests passed\n";
     return 0;
 }

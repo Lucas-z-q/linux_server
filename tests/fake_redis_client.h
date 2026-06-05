@@ -30,6 +30,7 @@ inline RedisReply IntegerReply(long long value) { return {.type = RedisReplyType
 class FakeRedisClient : public IRedisClient {
    public:
     RedisCommandResult Command(const std::vector<std::string> &args) override {
+        std::lock_guard<std::mutex> lock(command_mutex_);
         commands.push_back(args);
         if (fail_commands) {
             return RedisFailure(RedisError::kCommandFailed, "injected failure");
@@ -41,9 +42,23 @@ class FakeRedisClient : public IRedisClient {
             long long removed = 0;
             for (std::size_t i = 1; i < args.size(); ++i) {
                 removed += hashes.erase(args[i]);
+                removed += strings.erase(args[i]);
+                counters.erase(args[i]);
                 ttls.erase(args[i]);
             }
             return RedisOk(IntegerReply(removed));
+        }
+        if (args[0] == "GET") {
+            const auto value = strings.find(args[1]);
+            if (value == strings.end()) {
+                return RedisOk();
+            }
+            return RedisOk(StringReply(value->second));
+        }
+        if (args[0] == "SETEX") {
+            strings[args[1]] = args[3];
+            ttls[args[1]] = std::stoll(args[2]);
+            return RedisOk(StringReply("OK"));
         }
         if (args[0] == "HMGET") {
             RedisReply array;
@@ -61,6 +76,9 @@ class FakeRedisClient : public IRedisClient {
             return RedisOk(std::move(array));
         }
         if (args[0] == "EVAL") {
+            if (args[1].find("INCR") != std::string::npos) {
+                return EvalRateLimit(args);
+            }
             if (args[1].find("old_server") != std::string::npos) {
                 return EvalBind(args);
             }
@@ -73,11 +91,28 @@ class FakeRedisClient : public IRedisClient {
     }
 
     std::unordered_map<std::string, std::unordered_map<std::string, std::string>> hashes;
+    std::unordered_map<std::string, std::string> strings;
+    std::unordered_map<std::string, long long> counters;
     std::unordered_map<std::string, long long> ttls;
     std::vector<std::vector<std::string>> commands;
     bool fail_commands = false;
 
    private:
+    std::mutex command_mutex_;
+
+    RedisCommandResult EvalRateLimit(const std::vector<std::string> &args) {
+        const std::string &key = args[3];
+        const long long count = ++counters[key];
+        if (count == 1) {
+            ttls[key] = std::stoll(args[4]);
+        }
+        RedisReply reply;
+        reply.type = RedisReplyType::kArray;
+        reply.elements.push_back(IntegerReply(count));
+        reply.elements.push_back(IntegerReply(ttls[key]));
+        return RedisOk(std::move(reply));
+    }
+
     RedisCommandResult EvalBind(const std::vector<std::string> &args) {
         const std::string &token_key = args[3];
         const std::string &user_key = args[4];

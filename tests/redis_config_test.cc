@@ -47,7 +47,16 @@ std::vector<std::string> Names() {
             "CHAT_REDIS_KEY_PREFIX",
             "CHAT_SERVER_ID",
             "CHAT_SESSION_TTL_SECONDS",
-            "CHAT_PRESENCE_TTL_SECONDS"};
+            "CHAT_PRESENCE_TTL_SECONDS",
+            "CHAT_USER_CACHE_TTL_SECONDS",
+            "CHAT_USER_NOT_FOUND_TTL_SECONDS",
+            "CHAT_MESSAGE_DEDUP_TTL_SECONDS",
+            "CHAT_LOGIN_RATE_LIMIT",
+            "CHAT_LOGIN_RATE_WINDOW_SECONDS",
+            "CHAT_REGISTER_RATE_LIMIT",
+            "CHAT_REGISTER_RATE_WINDOW_SECONDS",
+            "CHAT_SEND_RATE_LIMIT",
+            "CHAT_SEND_RATE_WINDOW_SECONDS"};
 }
 
 void TestDefaults() {
@@ -64,6 +73,12 @@ void TestDefaults() {
     assert(result.config.server_id == "server-1");
     assert(result.config.session_ttl_seconds == 604800);
     assert(result.config.presence_ttl_seconds == 90);
+    assert(result.config.user_cache_ttl_seconds == 300);
+    assert(result.config.user_not_found_ttl_seconds == 30);
+    assert(result.config.message_dedup_ttl_seconds == 86400);
+    assert(result.config.login_rate_limit == 10);
+    assert(result.config.register_rate_limit == 5);
+    assert(result.config.send_rate_limit == 60);
 }
 
 void TestOverrides() {
@@ -79,6 +94,15 @@ void TestOverrides() {
     env.Set("CHAT_SERVER_ID", "server-a");
     env.Set("CHAT_SESSION_TTL_SECONDS", "60");
     env.Set("CHAT_PRESENCE_TTL_SECONDS", "30");
+    env.Set("CHAT_USER_CACHE_TTL_SECONDS", "45");
+    env.Set("CHAT_USER_NOT_FOUND_TTL_SECONDS", "9");
+    env.Set("CHAT_MESSAGE_DEDUP_TTL_SECONDS", "600");
+    env.Set("CHAT_LOGIN_RATE_LIMIT", "4");
+    env.Set("CHAT_LOGIN_RATE_WINDOW_SECONDS", "20");
+    env.Set("CHAT_REGISTER_RATE_LIMIT", "3");
+    env.Set("CHAT_REGISTER_RATE_WINDOW_SECONDS", "50");
+    env.Set("CHAT_SEND_RATE_LIMIT", "12");
+    env.Set("CHAT_SEND_RATE_WINDOW_SECONDS", "10");
     const auto result = chat::LoadRedisConfigFromEnv();
     assert(result.ok());
     assert(result.config.enabled);
@@ -90,6 +114,15 @@ void TestOverrides() {
     assert(result.config.command_timeout_ms == 200);
     assert(result.config.key_prefix == "test");
     assert(result.config.server_id == "server-a");
+    assert(result.config.user_cache_ttl_seconds == 45);
+    assert(result.config.user_not_found_ttl_seconds == 9);
+    assert(result.config.message_dedup_ttl_seconds == 600);
+    assert(result.config.login_rate_limit == 4);
+    assert(result.config.login_rate_window_seconds == 20);
+    assert(result.config.register_rate_limit == 3);
+    assert(result.config.register_rate_window_seconds == 50);
+    assert(result.config.send_rate_limit == 12);
+    assert(result.config.send_rate_window_seconds == 10);
 }
 
 void TestInvalidValues() {
@@ -111,6 +144,11 @@ void TestInvalidValues() {
     {
         EnvGuard env(Names());
         env.Set("CHAT_SERVER_ID", "bad:id");
+        assert(!chat::LoadRedisConfigFromEnv().ok());
+    }
+    {
+        EnvGuard env(Names());
+        env.Set("CHAT_SEND_RATE_LIMIT", "0");
         assert(!chat::LoadRedisConfigFromEnv().ok());
     }
 }

@@ -19,6 +19,8 @@ class FakeMessageRepository : public chat::IMessageRepository {
     chat::ListOfflineMessagesResult list_result;
     std::optional<chat::MessageRecord> create_message_override;
     bool create_result_created = true;
+    int create_message_calls = 0;
+    int find_by_client_msg_id_calls = 0;
     std::vector<chat::MessageRecord> created_messages;
     std::vector<std::string> delivered_message_ids;
     std::vector<std::string> read_message_ids;
@@ -51,6 +53,7 @@ class FakeMessageRepository : public chat::IMessageRepository {
     }
 
     chat::CreateMessageResult createMessage(const chat::MessageRecord& message) override {
+        ++create_message_calls;
         if (create_status != chat::RepositoryStatus::kOk) {
             return {.status = create_status};
         }
@@ -77,6 +80,7 @@ class FakeMessageRepository : public chat::IMessageRepository {
 
     chat::FindMessageResult findMessageByClientMsgId(chat::UserId from_user_id,
                                                      const std::string& client_msg_id) override {
+        ++find_by_client_msg_id_calls;
         if (find_by_client_msg_id_status != chat::RepositoryStatus::kOk) {
             return {.status = find_by_client_msg_id_status};
         }

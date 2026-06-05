@@ -71,8 +71,14 @@ RedisConfigResult ValidateRedisConfig(const RedisConfig &config) {
         return MakeError(RedisConfigError::kInvalidServerId, "server id must be non-empty and contain no colon",
                          config);
     }
-    if (config.session_ttl_seconds == 0 || config.presence_ttl_seconds == 0) {
+    if (config.session_ttl_seconds == 0 || config.presence_ttl_seconds == 0 || config.user_cache_ttl_seconds == 0 ||
+        config.user_not_found_ttl_seconds == 0 || config.message_dedup_ttl_seconds == 0) {
         return MakeError(RedisConfigError::kInvalidTtl, "redis TTL values must be positive", config);
+    }
+    if (config.login_rate_limit == 0 || config.login_rate_window_seconds == 0 || config.register_rate_limit == 0 ||
+        config.register_rate_window_seconds == 0 || config.send_rate_limit == 0 ||
+        config.send_rate_window_seconds == 0) {
+        return MakeError(RedisConfigError::kInvalidRateLimit, "redis rate limits must be positive", config);
     }
     return MakeSuccess(config);
 }
@@ -109,8 +115,19 @@ RedisConfigResult LoadRedisConfigFromEnv() {
         return MakeError(RedisConfigError::kInvalidTimeout, "invalid Redis timeout", config);
     }
     if (!ReadUnsignedEnv("CHAT_SESSION_TTL_SECONDS", &config.session_ttl_seconds) ||
-        !ReadUnsignedEnv("CHAT_PRESENCE_TTL_SECONDS", &config.presence_ttl_seconds)) {
+        !ReadUnsignedEnv("CHAT_PRESENCE_TTL_SECONDS", &config.presence_ttl_seconds) ||
+        !ReadUnsignedEnv("CHAT_USER_CACHE_TTL_SECONDS", &config.user_cache_ttl_seconds) ||
+        !ReadUnsignedEnv("CHAT_USER_NOT_FOUND_TTL_SECONDS", &config.user_not_found_ttl_seconds) ||
+        !ReadUnsignedEnv("CHAT_MESSAGE_DEDUP_TTL_SECONDS", &config.message_dedup_ttl_seconds)) {
         return MakeError(RedisConfigError::kInvalidTtl, "invalid Redis TTL", config);
+    }
+    if (!ReadUnsignedEnv("CHAT_LOGIN_RATE_LIMIT", &config.login_rate_limit) ||
+        !ReadUnsignedEnv("CHAT_LOGIN_RATE_WINDOW_SECONDS", &config.login_rate_window_seconds) ||
+        !ReadUnsignedEnv("CHAT_REGISTER_RATE_LIMIT", &config.register_rate_limit) ||
+        !ReadUnsignedEnv("CHAT_REGISTER_RATE_WINDOW_SECONDS", &config.register_rate_window_seconds) ||
+        !ReadUnsignedEnv("CHAT_SEND_RATE_LIMIT", &config.send_rate_limit) ||
+        !ReadUnsignedEnv("CHAT_SEND_RATE_WINDOW_SECONDS", &config.send_rate_window_seconds)) {
+        return MakeError(RedisConfigError::kInvalidRateLimit, "invalid Redis rate limit", config);
     }
     return ValidateRedisConfig(config);
 }

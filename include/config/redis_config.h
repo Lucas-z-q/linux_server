@@ -20,6 +20,15 @@ struct RedisConfig {
     std::string server_id = "server-1";
     std::uint32_t session_ttl_seconds = 604800;
     std::uint32_t presence_ttl_seconds = 90;
+    std::uint32_t user_cache_ttl_seconds = 300;
+    std::uint32_t user_not_found_ttl_seconds = 30;
+    std::uint32_t message_dedup_ttl_seconds = 86400;
+    std::uint32_t login_rate_limit = 10;
+    std::uint32_t login_rate_window_seconds = 60;
+    std::uint32_t register_rate_limit = 5;
+    std::uint32_t register_rate_window_seconds = 300;
+    std::uint32_t send_rate_limit = 60;
+    std::uint32_t send_rate_window_seconds = 60;
 };
 
 enum class RedisConfigError {
@@ -32,6 +41,7 @@ enum class RedisConfigError {
     kInvalidKeyPrefix,
     kInvalidServerId,
     kInvalidTtl,
+    kInvalidRateLimit,
 };
 
 struct RedisConfigResult {

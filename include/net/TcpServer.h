@@ -49,6 +49,7 @@ class TcpServer {
     struct RequestTask {
         std::weak_ptr<ConnectionContext> context;
         uint64_t conn_id;
+        std::string peer_ip;
         std::string request;
     };
 

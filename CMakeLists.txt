@@ -54,6 +54,9 @@ if(NOT MYSQLCLIENT_LIB)
 endif()
 
 add_library(redis_runtime
+    src/cache/cached_user_repository.cc
+    src/cache/message_dedup_cache.cc
+    src/cache/redis_rate_limiter.cc
     src/config/redis_config.cc
     src/redis/redis_connection.cc
     src/redis/redis_pool.cc
@@ -167,6 +170,15 @@ add_executable(chat_service_test
 target_include_directories(chat_service_test PRIVATE include third_party)
 add_test(NAME chat_service_test COMMAND chat_service_test)
 
+add_executable(chat_service_redis_test
+    tests/chat_service_redis_test.cc
+    src/service/chat_service.cc
+)
+
+target_include_directories(chat_service_redis_test PRIVATE include third_party tests)
+target_link_libraries(chat_service_redis_test PRIVATE redis_runtime)
+add_test(NAME chat_service_redis_test COMMAND chat_service_redis_test)
+
 add_executable(server_test_server
     tests/fake_server.cc
     src/app/main_runner.cc
@@ -260,6 +272,24 @@ add_executable(redis_pool_test tests/redis_pool_test.cc)
 target_include_directories(redis_pool_test PRIVATE include third_party tests)
 target_link_libraries(redis_pool_test PRIVATE redis_runtime)
 add_test(NAME redis_pool_test COMMAND redis_pool_test)
+
+add_executable(cached_user_repository_test tests/cached_user_repository_test.cc)
+
+target_include_directories(cached_user_repository_test PRIVATE include third_party tests)
+target_link_libraries(cached_user_repository_test PRIVATE redis_runtime)
+add_test(NAME cached_user_repository_test COMMAND cached_user_repository_test)
+
+add_executable(redis_rate_limiter_test tests/redis_rate_limiter_test.cc)
+
+target_include_directories(redis_rate_limiter_test PRIVATE include third_party tests)
+target_link_libraries(redis_rate_limiter_test PRIVATE redis_runtime)
+add_test(NAME redis_rate_limiter_test COMMAND redis_rate_limiter_test)
+
+add_executable(message_dedup_cache_test tests/message_dedup_cache_test.cc)
+
+target_include_directories(message_dedup_cache_test PRIVATE include third_party tests)
+target_link_libraries(message_dedup_cache_test PRIVATE redis_runtime)
+add_test(NAME message_dedup_cache_test COMMAND message_dedup_cache_test)
 
 add_executable(redis_connection_integration_test tests/redis_connection_integration_test.cc)
 

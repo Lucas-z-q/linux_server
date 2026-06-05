@@ -8,6 +8,7 @@
 #include <iomanip>
 #include <random>
 #include <sstream>
+#include <utility>
 
 namespace chat {
 
@@ -59,8 +60,14 @@ bool IsSameIdempotentMessage(const MessageRecord& expected, const MessageRecord&
 }  // namespace
 
 ChatService::ChatService(ISessionManager& session_manager, IMessageRepository& message_repository,
-                         IUserRepository& user_repository)
-    : session_manager_(session_manager), message_repository_(message_repository), user_repository_(user_repository) {}
+                         IUserRepository& user_repository, IRateLimiter* rate_limiter, IMessageDedupCache* dedup_cache,
+                         RedisConfig config)
+    : session_manager_(session_manager),
+      message_repository_(message_repository),
+      user_repository_(user_repository),
+      rate_limiter_(rate_limiter),
+      dedup_cache_(dedup_cache),
+      redis_config_(std::move(config)) {}
 
 SendMessageResult ChatService::sendMessage(ConnectionId from_conn_id, const SendMessageRequest& req) {
     // 0. 校验内容合法性（安全与业务兜底）
@@ -107,6 +114,18 @@ SendMessageResult ChatService::sendMessage(ConnectionId from_conn_id, const Send
         result.message = "Cannot send message to yourself";
         return result;
     }
+    if (rate_limiter_ != nullptr) {
+        const RateLimitResult limit =
+            rate_limiter_->Allow("send", std::to_string(from_session_opt->user_id), redis_config_.send_rate_limit,
+                                 redis_config_.send_rate_window_seconds);
+        if (!limit.allowed) {
+            SendMessageResult result;
+            result.code = ErrorCode::RATE_LIMITED;
+            result.message = "send message rate limit exceeded";
+            result.retry_after_seconds = limit.retry_after_seconds;
+            return result;
+        }
+    }
 
     const FindUserResult target_user = user_repository_.findById(req.to_user_id);
     if (target_user.status == RepositoryStatus::kNotFound ||
@@ -135,7 +154,25 @@ SendMessageResult ChatService::sendMessage(ConnectionId from_conn_id, const Send
     pending_message.status = MessageStatus::kStored;
     pending_message.created_at = now;
 
-    CreateMessageResult create_result = message_repository_.createMessage(pending_message);
+    CreateMessageResult create_result;
+    const std::optional<std::string> cached_message_id =
+        dedup_cache_ == nullptr ? std::nullopt : dedup_cache_->Lookup(from_session_opt->user_id, req.client_msg_id);
+    if (cached_message_id) {
+        const FindMessageResult existing =
+            message_repository_.findMessageByClientMsgId(from_session_opt->user_id, req.client_msg_id);
+        if (existing.status == RepositoryStatus::kOk && existing.message &&
+            existing.message->id == *cached_message_id) {
+            create_result = {.status = RepositoryStatus::kOk,
+                             .message_id = existing.message->id,
+                             .message = existing.message,
+                             .created = false};
+        } else {
+            dedup_cache_->Remove(from_session_opt->user_id, req.client_msg_id);
+        }
+    }
+    if (!create_result.message) {
+        create_result = message_repository_.createMessage(pending_message);
+    }
     if (create_result.status != RepositoryStatus::kOk || !create_result.message.has_value()) {
         SendMessageResult result;
         result.code = MapRepositoryError(create_result.status);
@@ -149,6 +186,9 @@ SendMessageResult ChatService::sendMessage(ConnectionId from_conn_id, const Send
         result.code = ErrorCode::IDEMPOTENCY_CONFLICT;
         result.message = "client_msg_id conflicts with existing message";
         return result;
+    }
+    if (dedup_cache_ != nullptr) {
+        dedup_cache_->Save(from_session_opt->user_id, req.client_msg_id, stored_message.id);
     }
 
     // 4. 获取接收方连接 ID

@@ -390,7 +390,7 @@ void TcpServer::onReadable(int fd) {
                 continue;
             }
 
-            RequestTask task{std::weak_ptr<ConnectionContext>(context), conn_id, packet};
+            RequestTask task{std::weak_ptr<ConnectionContext>(context), conn_id, context->meta().peer_ip, packet};
             if (context->startRequestOrQueue(packet) && !submitRequestTask(std::move(task))) {
                 closeClientFd(fd, "submit_request_task_failed");
                 return;
@@ -410,7 +410,7 @@ bool TcpServer::submitRequestTask(RequestTask task) {
                 // TODO(lzq): Some handlers, such as login, mutate session state before
                 // the I/O thread can revalidate that the connection is still alive.
                 // A stricter phase should move those side effects behind I/O-thread validation.
-                HandleResult result = handler_.handle(task.request, task.conn_id);
+                HandleResult result = handler_.handle(task.request, RequestContext{task.conn_id, task.peer_ip});
 
                 auto context = task.context.lock();
                 if (!context) {
@@ -463,7 +463,8 @@ bool TcpServer::finishCurrentRequestAndSubmitNext(const std::shared_ptr<Connecti
         return true;
     }
 
-    RequestTask next_task{std::weak_ptr<ConnectionContext>(context), conn_id, std::move(next_request)};
+    RequestTask next_task{std::weak_ptr<ConnectionContext>(context), conn_id, context->meta().peer_ip,
+                          std::move(next_request)};
     if (submitRequestTask(std::move(next_task))) {
         return true;
     }
@@ -478,7 +479,8 @@ bool TcpServer::submitNextQueuedRequestIfIdle(const std::shared_ptr<ConnectionCo
         return true;
     }
 
-    RequestTask next_task{std::weak_ptr<ConnectionContext>(context), conn_id, std::move(next_request)};
+    RequestTask next_task{std::weak_ptr<ConnectionContext>(context), conn_id, context->meta().peer_ip,
+                          std::move(next_request)};
     if (submitRequestTask(std::move(next_task))) {
         return true;
     }

@@ -9,6 +9,9 @@
 #include <memory>
 
 #include "app/main_runner.h"
+#include "cache/cached_user_repository.h"
+#include "cache/message_dedup_cache.h"
+#include "cache/redis_rate_limiter.h"
 #include "config/redis_config.h"
 #include "db/db_pool.h"
 #include "db/message_repository.h"
@@ -82,6 +85,8 @@ int main() {
     std::unique_ptr<chat::RedisPool> redis_pool;
     std::unique_ptr<chat::RedisClient> redis_client;
     std::unique_ptr<chat::RedisSessionStore> session_store;
+    std::unique_ptr<chat::RedisRateLimiter> rate_limiter;
+    std::unique_ptr<chat::MessageDedupCache> dedup_cache;
     if (redis_config_result.config.enabled) {
         redis_pool = std::make_unique<chat::RedisPool>(redis_config_result.config);
         const chat::RedisPoolInitResult redis_init = redis_pool->Init();
@@ -91,14 +96,25 @@ int main() {
         }
         redis_client = std::make_unique<chat::RedisClient>(redis_pool.get());
         session_store = std::make_unique<chat::RedisSessionStore>(redis_client.get(), redis_config_result.config);
+        rate_limiter = std::make_unique<chat::RedisRateLimiter>(redis_client.get(), redis_config_result.config);
+        dedup_cache = std::make_unique<chat::MessageDedupCache>(redis_client.get(), redis_config_result.config);
     }
 
     // 2. 依赖注入：Pool -> Repository/Store -> Service -> MessageHandler
     chat::UserRepository user_repo(&db_pool);
+    std::unique_ptr<chat::CachedUserRepository> cached_user_repo;
+    chat::IUserRepository* active_user_repo = &user_repo;
+    if (redis_client) {
+        cached_user_repo =
+            std::make_unique<chat::CachedUserRepository>(&user_repo, redis_client.get(), redis_config_result.config);
+        active_user_repo = cached_user_repo.get();
+    }
     chat::MessageRepository message_repo(&db_pool);
     chat::SessionManager session_manager;
-    chat::UserService user_service(user_repo, session_manager, session_store.get());
-    chat::ChatService chat_service(session_manager, message_repo, user_repo);
+    chat::UserService user_service(*active_user_repo, session_manager, session_store.get(), rate_limiter.get(),
+                                   redis_config_result.config);
+    chat::ChatService chat_service(session_manager, message_repo, *active_user_repo, rate_limiter.get(),
+                                   dedup_cache.get(), redis_config_result.config);
     chat::MessageHandler handler(user_service, chat_service);
 
     // 3. 启动服务器

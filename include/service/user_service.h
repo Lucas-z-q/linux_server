@@ -3,6 +3,7 @@
 
 #include <string>
 
+#include "cache/redis_rate_limiter.h"
 #include "common/error_code.h"
 #include "common/types.h"
 #include "db/user_repository.h"
@@ -27,6 +28,7 @@ struct RegisterResult {
 
     // 注册成功时返回的业务数据。
     RegisterResponseData data;
+    std::uint32_t retry_after_seconds = 0;
 };
 
 // 表示登录流程的执行结果。
@@ -42,6 +44,7 @@ struct LoginResult {
 
     // 登录成功时生成的会话状态，需交由网络层（I/O线程）完成绑定。
     ConnectionSession session;
+    std::uint32_t retry_after_seconds = 0;
 };
 
 // 表示登出流程的执行结果。
@@ -71,16 +74,17 @@ class UserService {
     // 使用外部注入的 Repository 和 SessionManager 构造，便于单元测试或替换实现。
     explicit UserService(IUserRepository &user_repository, ISessionManager &session_manager);
     UserService(IUserRepository &user_repository, ISessionManager &session_manager,
-                IGlobalSessionStore *global_session_store);
+                IGlobalSessionStore *global_session_store, IRateLimiter *rate_limiter = nullptr,
+                RedisConfig config = {});
 
     // 使用外部注入的 Repository 构造，便于单元测试或替换实现。
     explicit UserService(IUserRepository &user_repository);
 
     // 执行用户注册流程。
-    RegisterResult registerUser(const RegisterRequest &req);
+    RegisterResult registerUser(const RegisterRequest &req, const std::string &identity = "");
 
     // 执行用户登录流程，并关联当前连接 ID。
-    LoginResult login(const LoginRequest &req, ConnectionId conn_id);
+    LoginResult login(const LoginRequest &req, ConnectionId conn_id, const std::string &identity = "");
 
     // 执行用户登出流程，并解除当前连接上的登录态。
     LogoutResult logout(ConnectionId conn_id);
@@ -114,6 +118,8 @@ class UserService {
     ISessionManager *session_manager_ = &default_session_manager_;
 
     IGlobalSessionStore *global_session_store_ = nullptr;
+    IRateLimiter *rate_limiter_ = nullptr;
+    RedisConfig redis_config_;
 
     // 校验注册请求的字段完整性与基本合法性。
     bool validateRegisterRequest(const RegisterRequest &req, std::string &err) const;

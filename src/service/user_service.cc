@@ -6,6 +6,7 @@
 #include <chrono>
 #include <iomanip>
 #include <sstream>
+#include <utility>
 
 namespace chat {
 
@@ -15,18 +16,30 @@ UserService::UserService(IUserRepository &user_repository, ISessionManager &sess
     : user_repository_(&user_repository), session_manager_(&session_manager) {}
 
 UserService::UserService(IUserRepository &user_repository, ISessionManager &session_manager,
-                         IGlobalSessionStore *global_session_store)
+                         IGlobalSessionStore *global_session_store, IRateLimiter *rate_limiter, RedisConfig config)
     : user_repository_(&user_repository),
       session_manager_(&session_manager),
-      global_session_store_(global_session_store) {}
+      global_session_store_(global_session_store),
+      rate_limiter_(rate_limiter),
+      redis_config_(std::move(config)) {}
 
-RegisterResult UserService::registerUser(const RegisterRequest &req) {
+RegisterResult UserService::registerUser(const RegisterRequest &req, const std::string &identity) {
     RegisterResult result;
     std::string err;
     if (!validateRegisterRequest(req, err)) {
         result.code = ErrorCode::INVALID_PARAM;
         result.message = err;
         return result;
+    }
+    if (rate_limiter_ != nullptr && !identity.empty()) {
+        const RateLimitResult limit = rate_limiter_->Allow("register", identity, redis_config_.register_rate_limit,
+                                                           redis_config_.register_rate_window_seconds);
+        if (!limit.allowed) {
+            result.code = ErrorCode::RATE_LIMITED;
+            result.message = "register rate limit exceeded";
+            result.retry_after_seconds = limit.retry_after_seconds;
+            return result;
+        }
     }
 
     // 注册流程的第一步是查重；这里必须区分“没找到用户”和“查询失败”，
@@ -79,13 +92,23 @@ RegisterResult UserService::registerUser(const RegisterRequest &req) {
     return result;
 }
 
-LoginResult UserService::login(const LoginRequest &req, ConnectionId conn_id) {
+LoginResult UserService::login(const LoginRequest &req, ConnectionId conn_id, const std::string &identity) {
     LoginResult result;
     std::string err;
     if (!validateLoginRequest(req, err)) {
         result.code = ErrorCode::INVALID_PARAM;
         result.message = err;
         return result;
+    }
+    if (rate_limiter_ != nullptr && !identity.empty()) {
+        const RateLimitResult limit = rate_limiter_->Allow("login", identity, redis_config_.login_rate_limit,
+                                                           redis_config_.login_rate_window_seconds);
+        if (!limit.allowed) {
+            result.code = ErrorCode::RATE_LIMITED;
+            result.message = "login rate limit exceeded";
+            result.retry_after_seconds = limit.retry_after_seconds;
+            return result;
+        }
     }
 
     const FindUserResult find_result = user_repository_->findByUsername(req.username);

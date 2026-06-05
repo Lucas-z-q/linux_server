@@ -3,6 +3,8 @@
 
 #include <string>
 
+#include "cache/message_dedup_cache.h"
+#include "cache/redis_rate_limiter.h"
 #include "common/error_code.h"
 #include "common/types.h"
 #include "db/message_repository.h"
@@ -49,6 +51,7 @@ struct SendMessageResult {
 
     // 消息创建时间戳。
     Timestamp created_at = 0;
+    std::uint32_t retry_after_seconds = 0;
 };
 
 // 表示拉取离线消息的业务执行结果。
@@ -71,7 +74,8 @@ class ChatService {
    public:
     // 构造函数，注入会话管理器、消息仓储和用户仓储。
     ChatService(ISessionManager& session_manager, IMessageRepository& message_repository,
-                IUserRepository& user_repository);
+                IUserRepository& user_repository, IRateLimiter* rate_limiter = nullptr,
+                IMessageDedupCache* dedup_cache = nullptr, RedisConfig config = {});
 
     // 发送一条单聊消息。
     SendMessageResult sendMessage(ConnectionId from_conn_id, const SendMessageRequest& req);
@@ -86,6 +90,9 @@ class ChatService {
     ISessionManager& session_manager_;
     IMessageRepository& message_repository_;
     IUserRepository& user_repository_;
+    IRateLimiter* rate_limiter_;
+    IMessageDedupCache* dedup_cache_;
+    RedisConfig redis_config_;
 };
 
 }  // namespace chat
