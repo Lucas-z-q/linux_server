@@ -220,7 +220,7 @@ HandleResult MessageHandler::handleSendMessage(const Message &msg, chat::Connect
         ack_data.created_at = result.created_at;
         codec_.fillSendMessageAck(ack, ack_data);
 
-        if (result.to_conn_id != 0) {
+        if (result.to_conn_id != 0 || !result.remote_server_id.empty()) {
             Response push;
             push.msg_type = "message_push";
             push.seq = 0;
@@ -238,8 +238,12 @@ HandleResult MessageHandler::handleSendMessage(const Message &msg, chat::Connect
             push_data.server_time = result.server_time;
             codec_.fillMessagePush(push, push_data);
 
-            handle_result.pushes.push_back(
-                {result.to_conn_id, result.to_user_id, codec_.encodeResponse(push), result.message_id});
+            const std::string payload = codec_.encodeResponse(push);
+            if (result.to_conn_id != 0) {
+                handle_result.pushes.push_back({result.to_conn_id, result.to_user_id, payload, result.message_id});
+            } else {
+                chat_service_.publishRemotePush(result, payload);
+            }
         }
     }
 

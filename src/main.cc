@@ -3,6 +3,7 @@
 #include <sys/socket.h>
 #include <unistd.h>
 
+#include <chrono>
 #include <cstdlib>
 #include <cstring>
 #include <iostream>
@@ -24,6 +25,7 @@
 #include "server/session_manager.h"
 #include "service/chat_service.h"
 #include "service/user_service.h"
+#include "stream/redis_push_stream.h"
 
 /**
  * @file main.cc
@@ -87,6 +89,7 @@ int main() {
     std::unique_ptr<chat::RedisSessionStore> session_store;
     std::unique_ptr<chat::RedisRateLimiter> rate_limiter;
     std::unique_ptr<chat::MessageDedupCache> dedup_cache;
+    std::unique_ptr<chat::RedisPushStream> push_stream;
     if (redis_config_result.config.enabled) {
         redis_pool = std::make_unique<chat::RedisPool>(redis_config_result.config);
         const chat::RedisPoolInitResult redis_init = redis_pool->Init();
@@ -98,6 +101,11 @@ int main() {
         session_store = std::make_unique<chat::RedisSessionStore>(redis_client.get(), redis_config_result.config);
         rate_limiter = std::make_unique<chat::RedisRateLimiter>(redis_client.get(), redis_config_result.config);
         dedup_cache = std::make_unique<chat::MessageDedupCache>(redis_client.get(), redis_config_result.config);
+        push_stream = std::make_unique<chat::RedisPushStream>(redis_client.get(), redis_config_result.config);
+        if (!push_stream->Initialize()) {
+            std::cerr << "Failed to initialize Redis push stream" << std::endl;
+            return 1;
+        }
     }
 
     // 2. 依赖注入：Pool -> Repository/Store -> Service -> MessageHandler
@@ -114,10 +122,25 @@ int main() {
     chat::UserService user_service(*active_user_repo, session_manager, session_store.get(), rate_limiter.get(),
                                    redis_config_result.config);
     chat::ChatService chat_service(session_manager, message_repo, *active_user_repo, rate_limiter.get(),
-                                   dedup_cache.get(), redis_config_result.config);
+                                   dedup_cache.get(), redis_config_result.config, session_store.get(),
+                                   push_stream.get());
     chat::MessageHandler handler(user_service, chat_service);
 
     // 3. 启动服务器
     TcpServer server("127.0.0.1", 8080, handler);
-    return RunMain([&]() { return server.start(); });
+    if (push_stream) {
+        push_stream->SetDeliveryCallback([&server, &redis_config_result](const chat::RemotePushEvent& event) {
+            return server.deliverRemotePush(event,
+                                            std::chrono::milliseconds(redis_config_result.config.command_timeout_ms));
+        });
+        push_stream->SetMarkDeliveredCallback([&message_repo](chat::UserId user_id, const std::string& message_id) {
+            return message_repo.markDelivered(user_id, {message_id}).status == chat::RepositoryStatus::kOk;
+        });
+        push_stream->Start();
+    }
+    const int result = RunMain([&]() { return server.start(); });
+    if (push_stream) {
+        push_stream->Stop();
+    }
+    return result;
 }

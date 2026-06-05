@@ -1,6 +1,7 @@
 #ifndef LINUX_SERVER_TESTS_FAKE_REDIS_CLIENT_H_
 #define LINUX_SERVER_TESTS_FAKE_REDIS_CLIENT_H_
 
+#include <algorithm>
 #include <memory>
 #include <mutex>
 #include <string>
@@ -29,6 +30,13 @@ inline RedisReply IntegerReply(long long value) { return {.type = RedisReplyType
 // 提供测试所需的最小 Redis 语义，并允许直接注入命令失败。
 class FakeRedisClient : public IRedisClient {
    public:
+    struct StreamEntry {
+        std::string id;
+        std::vector<std::string> fields;
+        bool pending = false;
+        bool acked = false;
+    };
+
     RedisCommandResult Command(const std::vector<std::string> &args) override {
         std::lock_guard<std::mutex> lock(command_mutex_);
         commands.push_back(args);
@@ -59,6 +67,31 @@ class FakeRedisClient : public IRedisClient {
             strings[args[1]] = args[3];
             ttls[args[1]] = std::stoll(args[2]);
             return RedisOk(StringReply("OK"));
+        }
+        if (args[0] == "SET") {
+            if (args.size() >= 4 && args[3] == "NX" && strings.count(args[1]) != 0) {
+                return RedisFailure(RedisError::kNotFound, "not set");
+            }
+            strings[args[1]] = args[2];
+            if (args.size() >= 6 && args[4] == "EX") {
+                ttls[args[1]] = std::stoll(args[5]);
+            }
+            return RedisOk(StringReply("OK"));
+        }
+        if (args[0] == "XGROUP") {
+            return RedisOk(StringReply("OK"));
+        }
+        if (args[0] == "XADD") {
+            return XAdd(args);
+        }
+        if (args[0] == "XREADGROUP") {
+            return XReadGroup(args);
+        }
+        if (args[0] == "XAUTOCLAIM") {
+            return XAutoClaim(args);
+        }
+        if (args[0] == "XACK") {
+            return XAck(args);
         }
         if (args[0] == "HMGET") {
             RedisReply array;
@@ -94,11 +127,13 @@ class FakeRedisClient : public IRedisClient {
     std::unordered_map<std::string, std::string> strings;
     std::unordered_map<std::string, long long> counters;
     std::unordered_map<std::string, long long> ttls;
+    std::unordered_map<std::string, std::vector<StreamEntry>> streams;
     std::vector<std::vector<std::string>> commands;
     bool fail_commands = false;
 
    private:
     std::mutex command_mutex_;
+    long long next_stream_id_ = 0;
 
     RedisCommandResult EvalRateLimit(const std::vector<std::string> &args) {
         const std::string &key = args[3];
@@ -111,6 +146,84 @@ class FakeRedisClient : public IRedisClient {
         reply.elements.push_back(IntegerReply(count));
         reply.elements.push_back(IntegerReply(ttls[key]));
         return RedisOk(std::move(reply));
+    }
+
+    RedisReply BuildStreamEntries(const std::vector<StreamEntry *> &entries) {
+        RedisReply array;
+        array.type = RedisReplyType::kArray;
+        for (const StreamEntry *entry : entries) {
+            RedisReply item;
+            item.type = RedisReplyType::kArray;
+            item.elements.push_back(StringReply(entry->id));
+            RedisReply fields;
+            fields.type = RedisReplyType::kArray;
+            for (const std::string &field : entry->fields) {
+                fields.elements.push_back(StringReply(field));
+            }
+            item.elements.push_back(std::move(fields));
+            array.elements.push_back(std::move(item));
+        }
+        return array;
+    }
+
+    RedisCommandResult XAdd(const std::vector<std::string> &args) {
+        const std::string id = std::to_string(++next_stream_id_) + "-0";
+        StreamEntry entry;
+        entry.id = id;
+        entry.fields.assign(args.begin() + 3, args.end());
+        streams[args[1]].push_back(std::move(entry));
+        return RedisOk(StringReply(id));
+    }
+
+    RedisCommandResult XReadGroup(const std::vector<std::string> &args) {
+        auto streams_arg = std::find(args.begin(), args.end(), "STREAMS");
+        if (streams_arg == args.end() || streams_arg + 1 == args.end()) {
+            return RedisFailure(RedisError::kCommandFailed, "missing stream");
+        }
+        const std::string &stream_name = *(streams_arg + 1);
+        std::vector<StreamEntry *> available;
+        for (StreamEntry &entry : streams[stream_name]) {
+            if (!entry.pending && !entry.acked) {
+                entry.pending = true;
+                available.push_back(&entry);
+            }
+        }
+        if (available.empty()) {
+            return RedisFailure(RedisError::kNotFound, "no entries");
+        }
+        RedisReply stream;
+        stream.type = RedisReplyType::kArray;
+        stream.elements.push_back(StringReply(stream_name));
+        stream.elements.push_back(BuildStreamEntries(available));
+        RedisReply root;
+        root.type = RedisReplyType::kArray;
+        root.elements.push_back(std::move(stream));
+        return RedisOk(std::move(root));
+    }
+
+    RedisCommandResult XAutoClaim(const std::vector<std::string> &args) {
+        std::vector<StreamEntry *> pending;
+        for (StreamEntry &entry : streams[args[1]]) {
+            if (entry.pending && !entry.acked) {
+                pending.push_back(&entry);
+            }
+        }
+        RedisReply root;
+        root.type = RedisReplyType::kArray;
+        root.elements.push_back(StringReply("0-0"));
+        root.elements.push_back(BuildStreamEntries(pending));
+        return RedisOk(std::move(root));
+    }
+
+    RedisCommandResult XAck(const std::vector<std::string> &args) {
+        long long count = 0;
+        for (StreamEntry &entry : streams[args[1]]) {
+            if (entry.id == args[3] && !entry.acked) {
+                entry.acked = true;
+                ++count;
+            }
+        }
+        return RedisOk(IntegerReply(count));
     }
 
     RedisCommandResult EvalBind(const std::vector<std::string> &args) {

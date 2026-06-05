@@ -61,13 +61,16 @@ bool IsSameIdempotentMessage(const MessageRecord& expected, const MessageRecord&
 
 ChatService::ChatService(ISessionManager& session_manager, IMessageRepository& message_repository,
                          IUserRepository& user_repository, IRateLimiter* rate_limiter, IMessageDedupCache* dedup_cache,
-                         RedisConfig config)
+                         RedisConfig config, IGlobalSessionStore* global_session_store,
+                         IRemotePushPublisher* remote_push_publisher)
     : session_manager_(session_manager),
       message_repository_(message_repository),
       user_repository_(user_repository),
       rate_limiter_(rate_limiter),
       dedup_cache_(dedup_cache),
-      redis_config_(std::move(config)) {}
+      redis_config_(std::move(config)),
+      global_session_store_(global_session_store),
+      remote_push_publisher_(remote_push_publisher) {}
 
 SendMessageResult ChatService::sendMessage(ConnectionId from_conn_id, const SendMessageRequest& req) {
     // 0. 校验内容合法性（安全与业务兜底）
@@ -191,12 +194,22 @@ SendMessageResult ChatService::sendMessage(ConnectionId from_conn_id, const Send
         dedup_cache_->Save(from_session_opt->user_id, req.client_msg_id, stored_message.id);
     }
 
-    // 4. 获取接收方连接 ID
-    auto target_conn_id_opt = session_manager_.GetConnectionId(stored_message.to_user_id);
-
     const bool can_attempt_push = create_result.created || stored_message.status == MessageStatus::kStored;
-    if (!can_attempt_push) {
-        target_conn_id_opt.reset();
+    std::optional<ConnectionId> target_conn_id;
+    std::optional<StoredUserPresence> presence;
+    if (can_attempt_push && global_session_store_ != nullptr) {
+        presence = global_session_store_->GetPresence(stored_message.to_user_id);
+    }
+    if (can_attempt_push && presence) {
+        if (presence->server_id == redis_config_.server_id) {
+            target_conn_id = session_manager_.GetConnectionId(stored_message.to_user_id);
+            if (target_conn_id != presence->connection_id) {
+                target_conn_id.reset();
+            }
+        }
+    } else if (can_attempt_push) {
+        // Redis 不可用或未启用时保留原有单进程推送路径。
+        target_conn_id = session_manager_.GetConnectionId(stored_message.to_user_id);
     }
 
     // 6. 返回发送方、接收方、目标连接、消息内容等信息
@@ -206,7 +219,11 @@ SendMessageResult ChatService::sendMessage(ConnectionId from_conn_id, const Send
     result.from_user_id = from_session_opt->user_id;
     result.from_username = from_session_opt->username;
     result.to_user_id = stored_message.to_user_id;
-    result.to_conn_id = target_conn_id_opt.value_or(0);
+    result.to_conn_id = target_conn_id.value_or(0);
+    if (can_attempt_push && presence && presence->server_id != redis_config_.server_id) {
+        result.remote_server_id = presence->server_id;
+        result.remote_conn_id = presence->connection_id;
+    }
     result.content = stored_message.content;
     result.server_time = now;
     result.message_id = stored_message.id;
@@ -215,6 +232,21 @@ SendMessageResult ChatService::sendMessage(ConnectionId from_conn_id, const Send
     result.created_at = stored_message.created_at;
 
     return result;
+}
+
+bool ChatService::publishRemotePush(const SendMessageResult& result, const std::string& payload) {
+    if (remote_push_publisher_ == nullptr || result.remote_server_id.empty() || result.remote_conn_id == 0 ||
+        result.message_id.empty() || payload.empty()) {
+        return false;
+    }
+    RemotePushEvent event;
+    event.event_id = result.message_id;
+    event.message_id = result.message_id;
+    event.from_user_id = result.from_user_id;
+    event.to_user_id = result.to_user_id;
+    event.target_connection_id = result.remote_conn_id;
+    event.payload = payload;
+    return remote_push_publisher_->Publish(result.remote_server_id, event);
 }
 
 PullOfflineMessagesResult ChatService::pullOfflineMessages(ConnectionId from_conn_id,

@@ -62,6 +62,7 @@ add_library(redis_runtime
     src/redis/redis_pool.cc
     src/redis/redis_client.cc
     src/server/redis_session_store.cc
+    src/stream/redis_push_stream.cc
 )
 target_include_directories(redis_runtime PUBLIC include third_party)
 target_link_libraries(redis_runtime PUBLIC hiredis::hiredis Threads::Threads)
@@ -291,12 +292,34 @@ target_include_directories(message_dedup_cache_test PRIVATE include third_party 
 target_link_libraries(message_dedup_cache_test PRIVATE redis_runtime)
 add_test(NAME message_dedup_cache_test COMMAND message_dedup_cache_test)
 
+add_executable(redis_push_stream_test tests/redis_push_stream_test.cc)
+
+target_include_directories(redis_push_stream_test PRIVATE include third_party tests)
+target_link_libraries(redis_push_stream_test PRIVATE redis_runtime)
+add_test(NAME redis_push_stream_test COMMAND redis_push_stream_test)
+
+add_executable(cross_server_push_router_test
+    tests/cross_server_push_router_test.cc
+    src/service/chat_service.cc
+)
+
+target_include_directories(cross_server_push_router_test PRIVATE include third_party tests)
+target_link_libraries(cross_server_push_router_test PRIVATE redis_runtime)
+add_test(NAME cross_server_push_router_test COMMAND cross_server_push_router_test)
+
 add_executable(redis_connection_integration_test tests/redis_connection_integration_test.cc)
 
 target_include_directories(redis_connection_integration_test PRIVATE include third_party)
 target_link_libraries(redis_connection_integration_test PRIVATE redis_runtime)
 add_test(NAME redis_connection_integration_test COMMAND redis_connection_integration_test)
 set_tests_properties(redis_connection_integration_test PROPERTIES LABELS redis_integration)
+
+add_executable(redis_push_stream_integration_test tests/redis_push_stream_integration_test.cc)
+
+target_include_directories(redis_push_stream_integration_test PRIVATE include third_party)
+target_link_libraries(redis_push_stream_integration_test PRIVATE redis_runtime)
+add_test(NAME redis_push_stream_integration_test COMMAND redis_push_stream_integration_test)
+set_tests_properties(redis_push_stream_integration_test PROPERTIES LABELS redis_integration)
 
 add_executable(user_repository_test
     tests/user_repository_test.cc
@@ -351,6 +374,20 @@ target_link_libraries(server_shutdown_test PRIVATE
 )
 
 add_test(NAME server_shutdown_test COMMAND server_shutdown_test)
+
+add_executable(remote_push_io_test
+    tests/remote_push_io_test.cc
+    src/TcpServer.cc
+    src/TcpConnection.cc
+    src/ConnectionContext.cc
+    src/concurrency/thread_pool.cc
+    src/codec/packet_codec.cc
+)
+
+target_include_directories(remote_push_io_test PRIVATE include third_party)
+target_link_libraries(remote_push_io_test PRIVATE Threads::Threads)
+add_test(NAME remote_push_io_test COMMAND remote_push_io_test)
+set_tests_properties(remote_push_io_test PROPERTIES TIMEOUT 10)
 
 add_executable(db_connection_test
     tests/db_connection_test.cc
