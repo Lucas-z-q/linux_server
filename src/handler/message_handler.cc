@@ -32,6 +32,9 @@ HandleResult MessageHandler::handle(const std::string &raw_request, chat::Connec
         return res;
     }
 
+    // 任意合法请求都可维持已认证连接的在线状态。
+    user_service_.refreshPresence(conn_id);
+
     if (msg.msg_type == "register") {
         return handleRegister(msg);
     } else if (msg.msg_type == "login") {

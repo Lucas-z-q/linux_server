@@ -36,7 +36,7 @@ class MessageHandler : public IMessageHandler {
         user_service_.bindSession(conn_id, session);
     }
 
-    void applyUnbindSession(chat::ConnectionId conn_id) override { user_service_.clearSession(conn_id); }
+    void applyUnbindSession(chat::ConnectionId conn_id) override { user_service_.logoutSession(conn_id); }
 
     bool isConnectionBoundToUser(chat::ConnectionId conn_id, chat::UserId user_id) override {
         return user_service_.isConnectionBoundToUser(conn_id, user_id);

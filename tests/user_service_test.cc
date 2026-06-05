@@ -78,6 +78,49 @@ class FakeSessionManager : public chat::ISessionManager {
     }
 };
 
+class FakeGlobalSessionStore : public chat::IGlobalSessionStore {
+   public:
+    bool bind_result = true;
+    int bind_count = 0;
+    int refresh_count = 0;
+    int clear_count = 0;
+    int revoke_count = 0;
+
+    bool Bind(chat::ConnectionId connection_id, const chat::ConnectionSession &session,
+              chat::Timestamp issued_at) override {
+        (void)connection_id;
+        (void)session;
+        (void)issued_at;
+        ++bind_count;
+        return bind_result;
+    }
+    bool Refresh(chat::ConnectionId connection_id, const chat::ConnectionSession &session) override {
+        (void)connection_id;
+        (void)session;
+        ++refresh_count;
+        return true;
+    }
+    bool ClearPresence(chat::ConnectionId connection_id, const chat::ConnectionSession &session) override {
+        (void)connection_id;
+        (void)session;
+        ++clear_count;
+        return true;
+    }
+    bool RevokeToken(const std::string &token) override {
+        (void)token;
+        ++revoke_count;
+        return true;
+    }
+    std::optional<chat::StoredSessionToken> GetToken(const std::string &token) override {
+        (void)token;
+        return std::nullopt;
+    }
+    std::optional<chat::StoredUserPresence> GetPresence(chat::UserId user_id) override {
+        (void)user_id;
+        return std::nullopt;
+    }
+};
+
 chat::RegisterRequest MakeRegisterRequest() {
     chat::RegisterRequest req;
     req.username = "alice";
@@ -262,13 +305,14 @@ void TestLoginSuccessReturnsUserDataTokenAndPendingSession() {
     assert(result.message == "login success");
     assert(result.data.user_id == 10001);
     assert(result.data.nickname == "Alice");
-    assert(result.data.token == "token_10001");
+    assert(result.data.token.size() == 64);
+    assert(result.data.token.find("token_") != 0);
     assert(repo.last_username == "alice");
     assert(!session_manager.bind_called);
     assert(result.session.authenticated);
     assert(result.session.user_id == 10001);
     assert(result.session.username == "alice");
-    assert(result.session.token == "token_10001");
+    assert(result.session.token == result.data.token);
 }
 
 void TestBindSessionAppliesPendingSession() {
@@ -289,6 +333,40 @@ void TestBindSessionAppliesPendingSession() {
     assert(session_manager.last_session.user_id == 10001);
     assert(session_manager.last_session.username == "alice");
     assert(session_manager.last_session.token == "token_10001");
+}
+
+void TestRedisFailureDoesNotUndoLocalBind() {
+    FakeSessionManager session_manager;
+    FakeGlobalSessionStore global_store;
+    global_store.bind_result = false;
+    FakeUserRepository repo;
+    chat::UserService service(repo, session_manager, &global_store);
+    chat::ConnectionSession session{true, 10001, "alice", "token"};
+
+    service.bindSession(42, session);
+
+    assert(session_manager.GetSession(42).has_value());
+    assert(global_store.bind_count == 1);
+}
+
+void TestLogoutRevokesTokenButDisconnectKeepsIt() {
+    FakeSessionManager session_manager;
+    FakeGlobalSessionStore global_store;
+    FakeUserRepository repo;
+    chat::UserService service(repo, session_manager, &global_store);
+    chat::ConnectionSession session{true, 10001, "alice", "token"};
+
+    session_manager.BindSession(42, session);
+    service.refreshPresence(42);
+    assert(global_store.refresh_count == 1);
+    service.clearSession(42);
+    assert(global_store.clear_count == 1);
+    assert(global_store.revoke_count == 0);
+
+    session_manager.BindSession(77, session);
+    service.logoutSession(77);
+    assert(global_store.clear_count == 2);
+    assert(global_store.revoke_count == 1);
 }
 
 void TestWhoAmIReturnsUserNotLoggedInWhenSessionMissing() {
@@ -415,6 +493,8 @@ int main() {
     TestLoginReturnsWrongPasswordWhenHashDoesNotMatch();
     TestLoginSuccessReturnsUserDataTokenAndPendingSession();
     TestBindSessionAppliesPendingSession();
+    TestRedisFailureDoesNotUndoLocalBind();
+    TestLogoutRevokesTokenButDisconnectKeepsIt();
     TestWhoAmIReturnsUserNotLoggedInWhenSessionMissing();
     TestWhoAmIReturnsSessionDataWhenLoggedIn();
     TestLogoutReturnsUserNotLoggedInWhenSessionMissing();

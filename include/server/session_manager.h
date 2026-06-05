@@ -3,8 +3,8 @@
 
 // Declares a lightweight in-memory session manager.
 //
-// The current implementation maintains the mapping between user IDs,
-// authentication tokens, and connection IDs for long-lived TCP connections.
+// This component only owns process-local connection state. Global token and
+// presence state belong to RedisSessionStore.
 #include <mutex>
 #include <optional>
 #include <unordered_map>
@@ -12,7 +12,6 @@
 #include "common/types.h"
 #include "model/connection_session.h"
 // TODO(lzq): 增加单点登录与多端登录策略设计。
-// TODO(lzq): 评估是否需要将会话状态持久化到 Redis。
 
 namespace chat {
 class ISessionManager {

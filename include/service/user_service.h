@@ -7,6 +7,7 @@
 #include "common/types.h"
 #include "db/user_repository.h"
 #include "protocol/auth_messages.h"
+#include "server/redis_session_store.h"
 #include "server/session_manager.h"
 
 // 本文件声明用户服务层接口。
@@ -69,6 +70,8 @@ class UserService {
    public:
     // 使用外部注入的 Repository 和 SessionManager 构造，便于单元测试或替换实现。
     explicit UserService(IUserRepository &user_repository, ISessionManager &session_manager);
+    UserService(IUserRepository &user_repository, ISessionManager &session_manager,
+                IGlobalSessionStore *global_session_store);
 
     // 使用外部注入的 Repository 构造，便于单元测试或替换实现。
     explicit UserService(IUserRepository &user_repository);
@@ -88,8 +91,14 @@ class UserService {
     // 供I/O线程调用的Session绑定方法
     void bindSession(ConnectionId conn_id, const ConnectionSession &session);
 
-    // 在连接断开时静默清理会话，不向客户端返回业务结果。
+    // 显式登出同时撤销 token。
+    void logoutSession(ConnectionId conn_id);
+
+    // 连接断开只清理在线状态，token 继续存活到 TTL 到期。
     void clearSession(ConnectionId conn_id);
+
+    // 有效请求用于续期在线状态；失败时保留本地会话。
+    void refreshPresence(ConnectionId conn_id);
 
     // 检查指定连接当前是否仍属于目标用户。
     bool isConnectionBoundToUser(ConnectionId conn_id, UserId user_id) const;
@@ -104,6 +113,8 @@ class UserService {
     // Service 通过抽象接口访问会话管理器，避免业务逻辑绑定具体实现。
     ISessionManager *session_manager_ = &default_session_manager_;
 
+    IGlobalSessionStore *global_session_store_ = nullptr;
+
     // 校验注册请求的字段完整性与基本合法性。
     bool validateRegisterRequest(const RegisterRequest &req, std::string &err) const;
 
@@ -114,7 +125,7 @@ class UserService {
     std::string hashPassword(const std::string &password) const;
 
     // 为指定用户生成认证令牌。
-    std::string generateToken(UserId user_id) const;
+    std::string generateToken() const;
 };
 
 }  // namespace chat

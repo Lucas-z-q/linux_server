@@ -164,7 +164,7 @@ void TestLoginSuccessOverTcp() {
     assert(resp["message"].get<std::string>() == "login success");
     assert(resp["data"]["user_id"].get<int>() == 10001);
     assert(resp["data"]["nickname"].get<std::string>() == "Alice");
-    assert(resp["data"]["token"].get<std::string>() == "token_10001");
+    assert(resp["data"]["token"].get<std::string>().size() == 64);
 }
 
 void TestLoginWrongPasswordOverTcp() {
@@ -181,13 +181,14 @@ void TestWhoAmIAfterLoginAndLogoutOnSameConnection() {
     const nlohmann::json login_resp = SendAndReceiveOnSocket(
         fd, R"({"msg_type":"login","seq":5,"token":"","data":{"username":"alice","password":"123456"}})");
     ExpectCommonEnvelope(login_resp, "login_resp", 5, chat::ErrorCode::OK);
+    const std::string login_token = login_resp["data"]["token"].get<std::string>();
 
     const nlohmann::json whoami_resp =
         SendAndReceiveOnSocket(fd, R"({"msg_type":"whoami","seq":6,"token":"","data":{}})");
     ExpectCommonEnvelope(whoami_resp, "whoami_resp", 6, chat::ErrorCode::OK);
     assert(whoami_resp["data"]["user_id"].get<int>() == 10001);
     assert(whoami_resp["data"]["username"].get<std::string>() == "alice");
-    assert(whoami_resp["data"]["token"].get<std::string>() == "token_10001");
+    assert(whoami_resp["data"]["token"].get<std::string>() == login_token);
 
     const nlohmann::json logout_resp =
         SendAndReceiveOnSocket(fd, R"({"msg_type":"logout","seq":7,"token":"","data":{}})");

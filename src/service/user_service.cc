@@ -1,11 +1,24 @@
 #include "service/user_service.h"
 
+#include <sys/random.h>
+
+#include <array>
+#include <chrono>
+#include <iomanip>
+#include <sstream>
+
 namespace chat {
 
 UserService::UserService(IUserRepository &user_repository) : user_repository_(&user_repository) {}
 
 UserService::UserService(IUserRepository &user_repository, ISessionManager &session_manager)
     : user_repository_(&user_repository), session_manager_(&session_manager) {}
+
+UserService::UserService(IUserRepository &user_repository, ISessionManager &session_manager,
+                         IGlobalSessionStore *global_session_store)
+    : user_repository_(&user_repository),
+      session_manager_(&session_manager),
+      global_session_store_(global_session_store) {}
 
 RegisterResult UserService::registerUser(const RegisterRequest &req) {
     RegisterResult result;
@@ -102,7 +115,12 @@ LoginResult UserService::login(const LoginRequest &req, ConnectionId conn_id) {
         return result;
     }
 
-    const std::string token = generateToken(user.id);
+    const std::string token = generateToken();
+    if (token.empty()) {
+        result.code = ErrorCode::INTERNAL_ERROR;
+        result.message = "generate token failed";
+        return result;
+    }
     ConnectionSession session;
     session.authenticated = true;
     session.user_id = user.id;
@@ -148,10 +166,43 @@ WhoAmIResult UserService::whoami(ConnectionId conn_id) {
 }
 
 void UserService::bindSession(ConnectionId conn_id, const ConnectionSession &session) {
-    session_manager_->BindSession(conn_id, session);
+    if (!session_manager_->BindSession(conn_id, session) || global_session_store_ == nullptr) {
+        return;
+    }
+    const Timestamp issued_at = std::chrono::system_clock::to_time_t(std::chrono::system_clock::now());
+    // Redis 是全局加速层。运行期失败不能撤销已经建立的本地连接态。
+    global_session_store_->Bind(conn_id, session, issued_at);
 }
 
-void UserService::clearSession(ConnectionId conn_id) { session_manager_->ClearSession(conn_id); }
+void UserService::logoutSession(ConnectionId conn_id) {
+    const std::optional<ConnectionSession> session = session_manager_->GetSession(conn_id);
+    if (!session) {
+        return;
+    }
+    session_manager_->ClearSession(conn_id);
+    if (global_session_store_ != nullptr) {
+        global_session_store_->ClearPresence(conn_id, *session);
+        global_session_store_->RevokeToken(session->token);
+    }
+}
+
+void UserService::clearSession(ConnectionId conn_id) {
+    const std::optional<ConnectionSession> session = session_manager_->GetSession(conn_id);
+    if (!session) {
+        return;
+    }
+    session_manager_->ClearSession(conn_id);
+    if (global_session_store_ != nullptr) {
+        global_session_store_->ClearPresence(conn_id, *session);
+    }
+}
+
+void UserService::refreshPresence(ConnectionId conn_id) {
+    const std::optional<ConnectionSession> session = session_manager_->GetSession(conn_id);
+    if (session && global_session_store_ != nullptr) {
+        global_session_store_->Refresh(conn_id, *session);
+    }
+}
 
 bool UserService::isConnectionBoundToUser(ConnectionId conn_id, UserId user_id) const {
     auto session_opt = session_manager_->GetSession(conn_id);
@@ -186,6 +237,23 @@ std::string UserService::hashPassword(const std::string &password) const {
     return std::to_string(std::hash<std::string>{}(password));
 }
 
-std::string UserService::generateToken(UserId user_id) const { return "token_" + std::to_string(user_id); }
+std::string UserService::generateToken() const {
+    std::array<unsigned char, 32> bytes{};
+    std::size_t offset = 0;
+    while (offset < bytes.size()) {
+        const ssize_t count = getrandom(bytes.data() + offset, bytes.size() - offset, 0);
+        if (count <= 0) {
+            return "";
+        }
+        offset += static_cast<std::size_t>(count);
+    }
+
+    std::ostringstream token;
+    token << std::hex << std::setfill('0');
+    for (unsigned char byte : bytes) {
+        token << std::setw(2) << static_cast<int>(byte);
+    }
+    return token.str();
+}
 
 }  // namespace chat
