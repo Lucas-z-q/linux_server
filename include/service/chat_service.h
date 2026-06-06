@@ -3,12 +3,16 @@
 
 #include <string>
 
+#include "cache/message_dedup_cache.h"
+#include "cache/redis_rate_limiter.h"
 #include "common/error_code.h"
 #include "common/types.h"
 #include "db/message_repository.h"
 #include "db/user_repository.h"
 #include "protocol/chat_messages.h"
+#include "server/redis_session_store.h"
 #include "server/session_manager.h"
+#include "stream/remote_push.h"
 
 namespace chat {
 
@@ -32,6 +36,10 @@ struct SendMessageResult {
     // 接收方当前所在的连接 ID。
     ConnectionId to_conn_id = 0;
 
+    // 远端在线时由 Handler 构造协议 payload 后发布到目标 server。
+    std::string remote_server_id;
+    ConnectionId remote_conn_id = 0;
+
     // 消息文本内容。
     std::string content;
 
@@ -49,6 +57,7 @@ struct SendMessageResult {
 
     // 消息创建时间戳。
     Timestamp created_at = 0;
+    std::uint32_t retry_after_seconds = 0;
 };
 
 // 表示拉取离线消息的业务执行结果。
@@ -71,10 +80,16 @@ class ChatService {
    public:
     // 构造函数，注入会话管理器、消息仓储和用户仓储。
     ChatService(ISessionManager& session_manager, IMessageRepository& message_repository,
-                IUserRepository& user_repository);
+                IUserRepository& user_repository, IRateLimiter* rate_limiter = nullptr,
+                IMessageDedupCache* dedup_cache = nullptr, RedisConfig config = {},
+                IGlobalSessionStore* global_session_store = nullptr,
+                IRemotePushPublisher* remote_push_publisher = nullptr);
 
     // 发送一条单聊消息。
     SendMessageResult sendMessage(ConnectionId from_conn_id, const SendMessageRequest& req);
+
+    // Stream 发布失败不改变发送成功语义，消息仍可通过离线拉取恢复。
+    bool publishRemotePush(const SendMessageResult& result, const std::string& payload);
 
     // 拉取离线消息。
     PullOfflineMessagesResult pullOfflineMessages(ConnectionId from_conn_id, const PullOfflineMessagesRequest& req);
@@ -86,6 +101,11 @@ class ChatService {
     ISessionManager& session_manager_;
     IMessageRepository& message_repository_;
     IUserRepository& user_repository_;
+    IRateLimiter* rate_limiter_;
+    IMessageDedupCache* dedup_cache_;
+    RedisConfig redis_config_;
+    IGlobalSessionStore* global_session_store_;
+    IRemotePushPublisher* remote_push_publisher_;
 };
 
 }  // namespace chat

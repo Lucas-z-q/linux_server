@@ -176,14 +176,15 @@ void TestHandleLoginThenWhoAmIThenLogoutOnSameConnection() {
     const nlohmann::json login_resp = ParseResponse(login_result);
     ExpectCommonEnvelope(login_resp, "login_resp", 6, ErrorCode::OK);
     assert(login_resp["data"]["user_id"].get<int>() == 10001);
-    assert(login_resp["data"]["token"].get<std::string>() == "token_10001");
+    const std::string login_token = login_resp["data"]["token"].get<std::string>();
+    assert(login_token.size() == 64);
 
     const nlohmann::json whoami_resp =
         ParseResponse(DispatchAndApply(handler, R"({"msg_type":"whoami","seq":7,"token":"","data":{}})", 42));
     ExpectCommonEnvelope(whoami_resp, "whoami_resp", 7, ErrorCode::OK);
     assert(whoami_resp["data"]["user_id"].get<int>() == 10001);
     assert(whoami_resp["data"]["username"].get<std::string>() == "alice");
-    assert(whoami_resp["data"]["token"].get<std::string>() == "token_10001");
+    assert(whoami_resp["data"]["token"].get<std::string>() == login_token);
 
     const nlohmann::json other_conn_resp =
         ParseResponse(DispatchAndApply(handler, R"({"msg_type":"whoami","seq":8,"token":"","data":{}})", 77));

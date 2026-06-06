@@ -92,6 +92,45 @@ void TcpServer::stop() {
     }
 }
 
+chat::RemoteDeliveryOutcome TcpServer::deliverRemotePush(const chat::RemotePushEvent &event,
+                                                         std::chrono::milliseconds timeout) {
+    if (stopping_.load() || event.target_connection_id == 0 || event.to_user_id <= 0 || event.payload.empty()) {
+        return chat::RemoteDeliveryOutcome::kInvalidTarget;
+    }
+
+    auto completion = std::make_shared<std::promise<chat::RemoteDeliveryOutcome>>();
+    auto state = std::make_shared<std::atomic<int>>(0);
+    std::future<chat::RemoteDeliveryOutcome> result = completion->get_future();
+    {
+        std::lock_guard<std::mutex> event_fd_lock(worker_event_fd_mutex_);
+        if (worker_event_fd_ == -1) {
+            return chat::RemoteDeliveryOutcome::kRetry;
+        }
+        {
+            std::lock_guard<std::mutex> task_lock(remote_push_tasks_mutex_);
+            remote_push_tasks_.push_back({event, completion, state});
+        }
+        const uint64_t notify_value = 1;
+        if (write(worker_event_fd_, &notify_value, sizeof(notify_value)) < 0 && errno != EAGAIN &&
+            errno != EWOULDBLOCK) {
+            int pending = 0;
+            if (state->compare_exchange_strong(pending, 2)) {
+                return chat::RemoteDeliveryOutcome::kRetry;
+            }
+        }
+    }
+
+    if (result.wait_for(timeout) != std::future_status::ready) {
+        int pending = 0;
+        if (state->compare_exchange_strong(pending, 2)) {
+            return chat::RemoteDeliveryOutcome::kRetry;
+        }
+        // I/O 线程已经认领任务，等待其完成可避免超时后重复投递正文。
+        result.wait();
+    }
+    return result.get();
+}
+
 bool TcpServer::set_nonblocking(int fd) {
     int flags = fcntl(fd, F_GETFL, 0);
     if (flags == -1) {
@@ -390,7 +429,7 @@ void TcpServer::onReadable(int fd) {
                 continue;
             }
 
-            RequestTask task{std::weak_ptr<ConnectionContext>(context), conn_id, packet};
+            RequestTask task{std::weak_ptr<ConnectionContext>(context), conn_id, context->meta().peer_ip, packet};
             if (context->startRequestOrQueue(packet) && !submitRequestTask(std::move(task))) {
                 closeClientFd(fd, "submit_request_task_failed");
                 return;
@@ -410,7 +449,7 @@ bool TcpServer::submitRequestTask(RequestTask task) {
                 // TODO(lzq): Some handlers, such as login, mutate session state before
                 // the I/O thread can revalidate that the connection is still alive.
                 // A stricter phase should move those side effects behind I/O-thread validation.
-                HandleResult result = handler_.handle(task.request, task.conn_id);
+                HandleResult result = handler_.handle(task.request, RequestContext{task.conn_id, task.peer_ip});
 
                 auto context = task.context.lock();
                 if (!context) {
@@ -463,7 +502,8 @@ bool TcpServer::finishCurrentRequestAndSubmitNext(const std::shared_ptr<Connecti
         return true;
     }
 
-    RequestTask next_task{std::weak_ptr<ConnectionContext>(context), conn_id, std::move(next_request)};
+    RequestTask next_task{std::weak_ptr<ConnectionContext>(context), conn_id, context->meta().peer_ip,
+                          std::move(next_request)};
     if (submitRequestTask(std::move(next_task))) {
         return true;
     }
@@ -478,7 +518,8 @@ bool TcpServer::submitNextQueuedRequestIfIdle(const std::shared_ptr<ConnectionCo
         return true;
     }
 
-    RequestTask next_task{std::weak_ptr<ConnectionContext>(context), conn_id, std::move(next_request)};
+    RequestTask next_task{std::weak_ptr<ConnectionContext>(context), conn_id, context->meta().peer_ip,
+                          std::move(next_request)};
     if (submitRequestTask(std::move(next_task))) {
         return true;
     }
@@ -567,6 +608,38 @@ void TcpServer::onWorkerResultReadable() {
                 }
                 break;
             }
+        }
+    }
+
+    std::vector<RemotePushTask> remote_push_tasks;
+    {
+        std::lock_guard<std::mutex> lock(remote_push_tasks_mutex_);
+        remote_push_tasks.swap(remote_push_tasks_);
+    }
+    for (RemotePushTask &task : remote_push_tasks) {
+        int pending = 0;
+        if (!task.state->compare_exchange_strong(pending, 1)) {
+            continue;
+        }
+        chat::RemoteDeliveryOutcome outcome = chat::RemoteDeliveryOutcome::kInvalidTarget;
+        if (handler_.isConnectionBoundToUser(task.event.target_connection_id, task.event.to_user_id)) {
+            std::shared_ptr<ConnectionContext> target_context =
+                getConnectionContextById(task.event.target_connection_id);
+            if (target_context) {
+                chat::PacketCodec codec;
+                target_context->appendPendingSend(codec.encode(task.event.payload));
+                if (enableWritableEvent(target_context->fd())) {
+                    outcome = chat::RemoteDeliveryOutcome::kDelivered;
+                } else {
+                    closeClientFd(target_context->fd(), "enable_remote_push_write_failed");
+                    outcome = chat::RemoteDeliveryOutcome::kRetry;
+                }
+            }
+        }
+        try {
+            task.completion->set_value(outcome);
+        } catch (const std::future_error &) {
+            // 调用方超时不会取消任务，promise 仍可能正常完成。
         }
     }
 

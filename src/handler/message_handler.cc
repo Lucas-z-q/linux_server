@@ -22,7 +22,8 @@ Response MakeInvalidParamResponse(const Message &msg, const std::string &message
 
 }  // namespace
 
-HandleResult MessageHandler::handle(const std::string &raw_request, chat::ConnectionId conn_id) {
+HandleResult MessageHandler::handle(const std::string &raw_request, const RequestContext &context) {
+    const ConnectionId conn_id = context.conn_id;
     Message msg;
     std::string err;
     if (!codec_.decodeMessage(raw_request, msg, err)) {
@@ -32,10 +33,13 @@ HandleResult MessageHandler::handle(const std::string &raw_request, chat::Connec
         return res;
     }
 
+    // 任意合法请求都可维持已认证连接的在线状态。
+    user_service_.refreshPresence(conn_id);
+
     if (msg.msg_type == "register") {
-        return handleRegister(msg);
+        return handleRegister(msg, context.peer_ip);
     } else if (msg.msg_type == "login") {
-        return handleLogin(msg, conn_id);
+        return handleLogin(msg, conn_id, context.peer_ip);
     } else if (msg.msg_type == "logout") {
         return handleLogout(msg, conn_id);
     } else if (msg.msg_type == "heartbeat") {
@@ -53,7 +57,7 @@ HandleResult MessageHandler::handle(const std::string &raw_request, chat::Connec
 
 void MessageHandler::onConnectionClosed(chat::ConnectionId conn_id) { user_service_.clearSession(conn_id); }
 
-HandleResult MessageHandler::handleRegister(const Message &msg) {
+HandleResult MessageHandler::handleRegister(const Message &msg, const std::string &identity) {
     RegisterRequest req;
     std::string err;
     if (!codec_.parseRegisterRequest(msg, req, err)) {
@@ -63,13 +67,16 @@ HandleResult MessageHandler::handleRegister(const Message &msg) {
         return res;
     }
 
-    RegisterResult result = user_service_.registerUser(req);
+    RegisterResult result = user_service_.registerUser(req, identity);
 
     Response resp;
     resp.msg_type = msg.msg_type + "_resp";
     resp.seq = msg.seq;
     resp.code = result.code;
     resp.message = result.message;
+    if (result.code == ErrorCode::RATE_LIMITED) {
+        resp.data["retry_after_seconds"] = result.retry_after_seconds;
+    }
 
     if (result.code == ErrorCode::OK) {
         RegisterResponseData data;
@@ -82,7 +89,7 @@ HandleResult MessageHandler::handleRegister(const Message &msg) {
     return res;
 }
 
-HandleResult MessageHandler::handleLogin(const Message &msg, chat::ConnectionId conn_id) {
+HandleResult MessageHandler::handleLogin(const Message &msg, chat::ConnectionId conn_id, const std::string &identity) {
     LoginRequest req;
     std::string err;
     if (!codec_.parseLoginRequest(msg, req, err)) {
@@ -92,13 +99,16 @@ HandleResult MessageHandler::handleLogin(const Message &msg, chat::ConnectionId 
         return res;
     }
 
-    LoginResult result = user_service_.login(req, conn_id);
+    LoginResult result = user_service_.login(req, conn_id, identity);
 
     Response resp;
     resp.msg_type = msg.msg_type + "_resp";
     resp.seq = msg.seq;
     resp.code = result.code;
     resp.message = result.message;
+    if (result.code == ErrorCode::RATE_LIMITED) {
+        resp.data["retry_after_seconds"] = result.retry_after_seconds;
+    }
 
     HandleResult res;
     if (result.code == ErrorCode::OK) {
@@ -196,6 +206,9 @@ HandleResult MessageHandler::handleSendMessage(const Message &msg, chat::Connect
     ack.seq = msg.seq;
     ack.code = result.code;
     ack.message = result.message;
+    if (result.code == ErrorCode::RATE_LIMITED) {
+        ack.data["retry_after_seconds"] = result.retry_after_seconds;
+    }
 
     HandleResult handle_result;
     if (result.code == ErrorCode::OK) {
@@ -207,7 +220,7 @@ HandleResult MessageHandler::handleSendMessage(const Message &msg, chat::Connect
         ack_data.created_at = result.created_at;
         codec_.fillSendMessageAck(ack, ack_data);
 
-        if (result.to_conn_id != 0) {
+        if (result.to_conn_id != 0 || !result.remote_server_id.empty()) {
             Response push;
             push.msg_type = "message_push";
             push.seq = 0;
@@ -225,8 +238,12 @@ HandleResult MessageHandler::handleSendMessage(const Message &msg, chat::Connect
             push_data.server_time = result.server_time;
             codec_.fillMessagePush(push, push_data);
 
-            handle_result.pushes.push_back(
-                {result.to_conn_id, result.to_user_id, codec_.encodeResponse(push), result.message_id});
+            const std::string payload = codec_.encodeResponse(push);
+            if (result.to_conn_id != 0) {
+                handle_result.pushes.push_back({result.to_conn_id, result.to_user_id, payload, result.message_id});
+            } else {
+                chat_service_.publishRemotePush(result, payload);
+            }
         }
     }
 

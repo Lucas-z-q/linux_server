@@ -21,6 +21,27 @@ if(NOT GTest_FOUND)
     FetchContent_MakeAvailable(googletest)
 endif()
 
+find_path(HIREDIS_INCLUDE_DIR NAMES hiredis.h PATH_SUFFIXES hiredis)
+find_library(HIREDIS_LIB NAMES hiredis)
+if(HIREDIS_INCLUDE_DIR AND HIREDIS_LIB)
+    add_library(hiredis_external UNKNOWN IMPORTED)
+    set_target_properties(hiredis_external PROPERTIES
+        IMPORTED_LOCATION "${HIREDIS_LIB}"
+        INTERFACE_INCLUDE_DIRECTORIES "${HIREDIS_INCLUDE_DIR}"
+    )
+    add_library(hiredis::hiredis ALIAS hiredis_external)
+else()
+    set(BUILD_SHARED_LIBS OFF CACHE BOOL "" FORCE)
+    set(DISABLE_TESTS ON CACHE BOOL "" FORCE)
+    set(ENABLE_SSL OFF CACHE BOOL "" FORCE)
+    FetchContent_Declare(
+        hiredis
+        URL https://github.com/redis/hiredis/archive/refs/tags/v1.3.0.tar.gz
+        DOWNLOAD_EXTRACT_TIMESTAMP TRUE
+    )
+    FetchContent_MakeAvailable(hiredis)
+endif()
+
 find_library(MYSQLCLIENT_LIB
     NAMES mysqlclient
     PATHS /usr/lib/x86_64-linux-gnu /lib/x86_64-linux-gnu
@@ -31,6 +52,20 @@ endif()
 if(NOT MYSQLCLIENT_LIB)
     message(FATAL_ERROR "mysqlclient library not found")
 endif()
+
+add_library(redis_runtime
+    src/cache/cached_user_repository.cc
+    src/cache/message_dedup_cache.cc
+    src/cache/redis_rate_limiter.cc
+    src/config/redis_config.cc
+    src/redis/redis_connection.cc
+    src/redis/redis_pool.cc
+    src/redis/redis_client.cc
+    src/server/redis_session_store.cc
+    src/stream/redis_push_stream.cc
+)
+target_include_directories(redis_runtime PUBLIC include third_party)
+target_link_libraries(redis_runtime PUBLIC hiredis::hiredis Threads::Threads)
 
 add_executable(server
     src/app/main_runner.cc
@@ -54,7 +89,7 @@ add_executable(server
 )
 
 target_include_directories(server PRIVATE include third_party)
-target_link_libraries(server PRIVATE ${MYSQLCLIENT_LIB} Threads::Threads)
+target_link_libraries(server PRIVATE ${MYSQLCLIENT_LIB} Threads::Threads redis_runtime)
 
 add_executable(client
     client/client.cc
@@ -114,6 +149,7 @@ add_executable(message_handler_test
 )
 
 target_include_directories(message_handler_test PRIVATE include third_party)
+target_link_libraries(message_handler_test PRIVATE redis_runtime)
 add_test(NAME message_handler_test COMMAND message_handler_test)
 
 add_executable(user_service_test
@@ -123,6 +159,7 @@ add_executable(user_service_test
 )
 
 target_include_directories(user_service_test PRIVATE include third_party)
+target_link_libraries(user_service_test PRIVATE redis_runtime)
 add_test(NAME user_service_test COMMAND user_service_test)
 
 add_executable(chat_service_test
@@ -133,6 +170,15 @@ add_executable(chat_service_test
 
 target_include_directories(chat_service_test PRIVATE include third_party)
 add_test(NAME chat_service_test COMMAND chat_service_test)
+
+add_executable(chat_service_redis_test
+    tests/chat_service_redis_test.cc
+    src/service/chat_service.cc
+)
+
+target_include_directories(chat_service_redis_test PRIVATE include third_party tests)
+target_link_libraries(chat_service_redis_test PRIVATE redis_runtime)
+add_test(NAME chat_service_redis_test COMMAND chat_service_redis_test)
 
 add_executable(server_test_server
     tests/fake_server.cc
@@ -204,6 +250,77 @@ add_executable(session_manager_test
 target_include_directories(session_manager_test PRIVATE include third_party)
 add_test(NAME session_manager_test COMMAND session_manager_test)
 
+add_executable(redis_session_store_test tests/redis_session_store_test.cc)
+
+target_include_directories(redis_session_store_test PRIVATE include third_party tests)
+target_link_libraries(redis_session_store_test PRIVATE redis_runtime)
+add_test(NAME redis_session_store_test COMMAND redis_session_store_test)
+
+add_executable(redis_config_test tests/redis_config_test.cc)
+
+target_include_directories(redis_config_test PRIVATE include third_party)
+target_link_libraries(redis_config_test PRIVATE redis_runtime)
+add_test(NAME redis_config_test COMMAND redis_config_test)
+
+add_executable(redis_connection_test tests/redis_connection_test.cc)
+
+target_include_directories(redis_connection_test PRIVATE include third_party tests)
+target_link_libraries(redis_connection_test PRIVATE redis_runtime)
+add_test(NAME redis_connection_test COMMAND redis_connection_test)
+
+add_executable(redis_pool_test tests/redis_pool_test.cc)
+
+target_include_directories(redis_pool_test PRIVATE include third_party tests)
+target_link_libraries(redis_pool_test PRIVATE redis_runtime)
+add_test(NAME redis_pool_test COMMAND redis_pool_test)
+
+add_executable(cached_user_repository_test tests/cached_user_repository_test.cc)
+
+target_include_directories(cached_user_repository_test PRIVATE include third_party tests)
+target_link_libraries(cached_user_repository_test PRIVATE redis_runtime)
+add_test(NAME cached_user_repository_test COMMAND cached_user_repository_test)
+
+add_executable(redis_rate_limiter_test tests/redis_rate_limiter_test.cc)
+
+target_include_directories(redis_rate_limiter_test PRIVATE include third_party tests)
+target_link_libraries(redis_rate_limiter_test PRIVATE redis_runtime)
+add_test(NAME redis_rate_limiter_test COMMAND redis_rate_limiter_test)
+
+add_executable(message_dedup_cache_test tests/message_dedup_cache_test.cc)
+
+target_include_directories(message_dedup_cache_test PRIVATE include third_party tests)
+target_link_libraries(message_dedup_cache_test PRIVATE redis_runtime)
+add_test(NAME message_dedup_cache_test COMMAND message_dedup_cache_test)
+
+add_executable(redis_push_stream_test tests/redis_push_stream_test.cc)
+
+target_include_directories(redis_push_stream_test PRIVATE include third_party tests)
+target_link_libraries(redis_push_stream_test PRIVATE redis_runtime)
+add_test(NAME redis_push_stream_test COMMAND redis_push_stream_test)
+
+add_executable(cross_server_push_router_test
+    tests/cross_server_push_router_test.cc
+    src/service/chat_service.cc
+)
+
+target_include_directories(cross_server_push_router_test PRIVATE include third_party tests)
+target_link_libraries(cross_server_push_router_test PRIVATE redis_runtime)
+add_test(NAME cross_server_push_router_test COMMAND cross_server_push_router_test)
+
+add_executable(redis_connection_integration_test tests/redis_connection_integration_test.cc)
+
+target_include_directories(redis_connection_integration_test PRIVATE include third_party)
+target_link_libraries(redis_connection_integration_test PRIVATE redis_runtime)
+add_test(NAME redis_connection_integration_test COMMAND redis_connection_integration_test)
+set_tests_properties(redis_connection_integration_test PROPERTIES LABELS redis_integration)
+
+add_executable(redis_push_stream_integration_test tests/redis_push_stream_integration_test.cc)
+
+target_include_directories(redis_push_stream_integration_test PRIVATE include third_party)
+target_link_libraries(redis_push_stream_integration_test PRIVATE redis_runtime)
+add_test(NAME redis_push_stream_integration_test COMMAND redis_push_stream_integration_test)
+set_tests_properties(redis_push_stream_integration_test PROPERTIES LABELS redis_integration)
+
 add_executable(user_repository_test
     tests/user_repository_test.cc
     src/db/user_repository.cc
@@ -257,6 +374,20 @@ target_link_libraries(server_shutdown_test PRIVATE
 )
 
 add_test(NAME server_shutdown_test COMMAND server_shutdown_test)
+
+add_executable(remote_push_io_test
+    tests/remote_push_io_test.cc
+    src/TcpServer.cc
+    src/TcpConnection.cc
+    src/ConnectionContext.cc
+    src/concurrency/thread_pool.cc
+    src/codec/packet_codec.cc
+)
+
+target_include_directories(remote_push_io_test PRIVATE include third_party)
+target_link_libraries(remote_push_io_test PRIVATE Threads::Threads)
+add_test(NAME remote_push_io_test COMMAND remote_push_io_test)
+set_tests_properties(remote_push_io_test PROPERTIES TIMEOUT 10)
 
 add_executable(db_connection_test
     tests/db_connection_test.cc

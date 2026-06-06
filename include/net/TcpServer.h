@@ -2,8 +2,10 @@
 #define LINUX_SERVER_INCLUDE_NET_TCP_SERVER_H_
 
 #include <atomic>
+#include <chrono>
 #include <cstddef>
 #include <cstdint>
+#include <future>
 #include <memory>
 #include <mutex>
 #include <queue>
@@ -16,6 +18,7 @@
 #include "concurrency/thread_pool.h"
 #include "net/ConnectionContext.h"
 #include "net/ResponseTask.h"
+#include "stream/remote_push.h"
 
 // 本文件声明基于 epoll 的 TCP 服务器。
 // 该类负责连接生命周期管理、事件循环以及收发缓冲协调。
@@ -43,18 +46,29 @@ class TcpServer {
     // 获取实际绑定的端口（如果配置了 0 端口，可通过此方法获取分配的端口）。
     uint16_t getPort() const { return port_.load(); }
 
+    // Redis 消费线程通过此入口等待 I/O 线程完成连接校验和发送队列写入。
+    chat::RemoteDeliveryOutcome deliverRemotePush(const chat::RemotePushEvent &event,
+                                                  std::chrono::milliseconds timeout);
+
    private:
     static constexpr size_t kDefaultWorkerThreads = 4;
 
     struct RequestTask {
         std::weak_ptr<ConnectionContext> context;
         uint64_t conn_id;
+        std::string peer_ip;
         std::string request;
     };
 
     struct PostDeliveryEvent {
         uint64_t conn_id = 0;
         bool finish_current_request = false;
+    };
+
+    struct RemotePushTask {
+        chat::RemotePushEvent event;
+        std::shared_ptr<std::promise<chat::RemoteDeliveryOutcome>> completion;
+        std::shared_ptr<std::atomic<int>> state;
     };
 
     // 创建监听 socket。
@@ -159,6 +173,9 @@ class TcpServer {
     std::mutex completed_tasks_mutex_;
     std::queue<ResponseTask> completed_tasks_;
     std::atomic<uint64_t> next_response_task_id_{1};
+
+    std::mutex remote_push_tasks_mutex_;
+    std::vector<RemotePushTask> remote_push_tasks_;
 
     // 标记服务器正在停止，停止后拒绝新的请求任务投递。
     std::atomic<bool> stopping_{false};

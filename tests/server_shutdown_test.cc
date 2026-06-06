@@ -15,7 +15,8 @@
 // 一个模拟工作线程被慢速业务阻塞的 Handler
 class SlowHandler : public IMessageHandler {
    public:
-    HandleResult handle(const std::string& request, uint64_t conn_id) override {
+    HandleResult handle(const std::string& request, const RequestContext& context) override {
+        (void)context;
         // 刻意让 worker 线程沉睡，以便触发在处理期间调用 server.stop()
         std::this_thread::sleep_for(std::chrono::milliseconds(100));
         HandleResult result;
@@ -138,13 +139,13 @@ class PushTestHandler : public IMessageHandler {
     std::atomic<bool> bound_result{true};
     std::atomic<bool> push_checked{false};
 
-    HandleResult handle(const std::string& request, uint64_t conn_id) override {
+    HandleResult handle(const std::string& request, const RequestContext& context) override {
         (void)request;
         HandleResult result;
         result.response = "ack";
 
         OutboundMessage push;
-        push.target_conn_id = conn_id;
+        push.target_conn_id = context.conn_id;
         push.target_user_id = 999;
         push.payload = "pushed_msg";
         result.pushes.push_back(push);
