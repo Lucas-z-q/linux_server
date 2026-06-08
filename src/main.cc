@@ -1,13 +1,9 @@
-#include <arpa/inet.h>
-#include <netinet/in.h>
-#include <sys/socket.h>
-#include <unistd.h>
-
-#include <cstdlib>
-#include <cstring>
 #include <iostream>
+#include <variant>
 
 #include "app/main_runner.h"
+#include "config/config_loader.h"
+#include "config/server_config.h"
 #include "db/db_pool.h"
 #include "db/message_repository.h"
 #include "db/user_repository.h"
@@ -19,48 +15,29 @@
 
 /**
  * @file main.cc
- * @brief Entry point for starting the TCP echo server.
+ * @brief Entry point for the chat server.
+ *
+ * 启动流程：
+ *   1. 解析 --config 参数，加载并校验 ServerConfig。
+ *   2. 使用配置初始化 DbPool（含连接池参数）。
+ *   3. 依赖注入：Repository -> Service -> MessageHandler。
+ *   4. 启动 TcpServer（使用配置中的 IP、端口和推送超时）。
  */
+int main(int argc, char* argv[]) {
+    // 1. 加载配置
+    std::string config_path = chat::ParseConfigPathArg(argc, argv);
+    chat::ConfigResult config_result = chat::ConfigLoader::Load(config_path);
+    if (std::holds_alternative<chat::ConfigError>(config_result)) {
+        std::cerr << "Config error: " << std::get<chat::ConfigError>(config_result).message << std::endl;
+        return 1;
+    }
+    const chat::ServerConfig& cfg = std::get<chat::ServerConfig>(config_result);
 
-// 从环境变量装载数据库配置
-chat::DbConfig LoadDbConfigFromEnv() {
-    chat::DbConfig config;
-    if (const char* host = std::getenv("CHAT_DB_HOST"))
-        config.host = host;
-    else
-        config.host = "127.0.0.1";
+    // 输出脱敏配置（用于启动确认日志）
+    std::cout << "Starting server with config:\n" << cfg.ToSafeString() << std::endl;
 
-    if (const char* port = std::getenv("CHAT_DB_PORT"))
-        config.port = std::atoi(port);
-    else
-        config.port = 3306;
-
-    if (const char* user = std::getenv("CHAT_DB_USER"))
-        config.username = user;
-    else
-        config.username = "root";
-
-    if (const char* pwd = std::getenv("CHAT_DB_PASSWORD"))
-        config.password = pwd;
-    else
-        config.password = "123456";
-
-    if (const char* db = std::getenv("CHAT_DB_NAME"))
-        config.database = db;
-    else
-        config.database = "chat";
-
-    return config;
-}
-
-/**
- * @brief Creates and runs the TCP server.
- * @return 0 on success, non-zero on startup failure.
- */
-int main() {
-    // 1. 初始化数据库配置与连接池
-    chat::DbConfig db_config = LoadDbConfigFromEnv();
-    chat::DbPool db_pool(db_config);
+    // 2. 初始化数据库连接池（传入连接池配置使其真正生效）
+    chat::DbPool db_pool(cfg.mysql, cfg.mysql_pool);
     auto db_init_res = db_pool.init();
     if (!db_init_res.success) {
         std::cerr << "Failed to initialize DbPool: " << db_init_res.message
@@ -68,7 +45,7 @@ int main() {
         return 1;
     }
 
-    // 2. 依赖注入：DbPool -> Repository -> Service -> MessageHandler
+    // 3. 依赖注入：DbPool -> Repository -> Service -> MessageHandler
     chat::UserRepository user_repo(&db_pool);
     chat::MessageRepository message_repo(&db_pool);
     chat::SessionManager session_manager;
@@ -76,7 +53,7 @@ int main() {
     chat::ChatService chat_service(session_manager, message_repo, user_repo);
     chat::MessageHandler handler(user_service, chat_service);
 
-    // 3. 启动服务器
-    TcpServer server("127.0.0.1", 8080, handler);
+    // 4. 启动服务器
+    TcpServer server(cfg.server.listen_ip, cfg.server.listen_port, handler);
     return RunMain([&]() { return server.start(); });
 }

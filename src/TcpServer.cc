@@ -45,22 +45,46 @@ bool TcpServer::createListenSocket() {
 }
 
 bool TcpServer::bindAddress() {
-    struct sockaddr_in server_addr;
-    memset(&server_addr, 0, sizeof(server_addr));
-    server_addr.sin_family = AF_INET;
-    server_addr.sin_addr.s_addr = INADDR_ANY;
     const uint16_t requested_port = port_.load();
-    server_addr.sin_port = htons(requested_port);
 
-    if (bind(listen_fd_, (struct sockaddr *)&server_addr, sizeof(server_addr)) < 0) {
+    // 尝试 IPv4，失败时尝试 IPv6，使配置中的 IP 真正生效。
+    struct sockaddr_in addr4;
+    memset(&addr4, 0, sizeof(addr4));
+    addr4.sin_family = AF_INET;
+    addr4.sin_port = htons(requested_port);
+
+    struct sockaddr_in6 addr6;
+    memset(&addr6, 0, sizeof(addr6));
+    addr6.sin6_family = AF_INET6;
+    addr6.sin6_port = htons(requested_port);
+
+    struct sockaddr* bind_addr = nullptr;
+    socklen_t bind_len = 0;
+
+    if (inet_pton(AF_INET, ip_.c_str(), &addr4.sin_addr) == 1) {
+        bind_addr = reinterpret_cast<struct sockaddr*>(&addr4);
+        bind_len = sizeof(addr4);
+    } else if (inet_pton(AF_INET6, ip_.c_str(), &addr6.sin6_addr) == 1) {
+        bind_addr = reinterpret_cast<struct sockaddr*>(&addr6);
+        bind_len = sizeof(addr6);
+    } else {
+        std::cerr << "bindAddress: invalid IP address: " << ip_ << std::endl;
+        return false;
+    }
+
+    if (bind(listen_fd_, bind_addr, bind_len) < 0) {
         perror("Bind failed.");
         return false;
     }
 
     if (requested_port == 0) {
-        socklen_t len = sizeof(server_addr);
-        if (getsockname(listen_fd_, (struct sockaddr *)&server_addr, &len) == 0) {
-            port_.store(ntohs(server_addr.sin_port));
+        socklen_t len = bind_len;
+        if (getsockname(listen_fd_, bind_addr, &len) == 0) {
+            if (bind_addr->sa_family == AF_INET) {
+                port_.store(ntohs(reinterpret_cast<struct sockaddr_in*>(bind_addr)->sin_port));
+            } else {
+                port_.store(ntohs(reinterpret_cast<struct sockaddr_in6*>(bind_addr)->sin6_port));
+            }
         }
     }
     return true;

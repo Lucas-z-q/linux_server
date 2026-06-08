@@ -41,6 +41,7 @@ add_executable(server
     src/TcpServer.cc
     src/codec/json_codec.cc
     src/codec/packet_codec.cc
+    src/config/config_loader.cc
     src/db/db_pool.cc
     src/db/db_connection.cc
     src/db/user_repository.cc
@@ -285,3 +286,15 @@ target_link_libraries(db_pool_test PRIVATE
     Threads::Threads
 )
 add_test(NAME db_pool_test COMMAND db_pool_test)
+
+add_executable(config_loader_test
+    tests/config_loader_test.cc
+    src/config/config_loader.cc
+)
+
+target_include_directories(config_loader_test PRIVATE include third_party)
+target_link_libraries(config_loader_test PRIVATE
+    GTest::gtest
+    GTest::gtest_main
+)
+add_test(NAME config_loader_test COMMAND config_loader_test)
