@@ -6,6 +6,7 @@
 #include <charconv>
 #include <cstdlib>
 #include <fstream>
+#include <limits>
 #include <sstream>
 #include <string>
 
@@ -23,7 +24,8 @@ namespace {
 // 严格整型转换，替代 atoi()，解析失败时返回 false。
 template <typename T>
 bool StrictParseInt(const char* str, T& out) {
-    if (!str || *str == '\0') return false;
+    if (!str || *str == '\0')
+        return false;
     auto [ptr, ec] = std::from_chars(str, str + std::strlen(str), out);
     return ec == std::errc{} && ptr == str + std::strlen(str);
 }
@@ -49,7 +51,8 @@ std::string ReadFile(const std::string& path, std::string& err_msg) {
 
 // 从 JSON 对象安全取字符串字段；类型不匹配时设 err 并返回 false。
 bool GetStr(const nlohmann::json& obj, const char* key, std::string& out, std::string& err) {
-    if (!obj.contains(key)) return true;
+    if (!obj.contains(key))
+        return true;
     if (!obj[key].is_string()) {
         err = std::string(key) + " must be a string";
         return false;
@@ -60,7 +63,8 @@ bool GetStr(const nlohmann::json& obj, const char* key, std::string& out, std::s
 
 // 从 JSON 对象安全取布尔字段；类型不匹配时设 err 并返回 false。
 bool GetBool(const nlohmann::json& obj, const char* key, bool& out, std::string& err) {
-    if (!obj.contains(key)) return true;
+    if (!obj.contains(key))
+        return true;
     if (!obj[key].is_boolean()) {
         err = std::string(key) + " must be a boolean";
         return false;
@@ -69,27 +73,45 @@ bool GetBool(const nlohmann::json& obj, const char* key, bool& out, std::string&
     return true;
 }
 
-// 从 JSON 对象安全取无符号整型字段；类型不匹配时设 err 并返回 false。
+// 从 JSON 对象安全取无符号整型字段并校验范围；类型不匹配或值超出 T 的表示范围时设 err 并返回 false。
 template <typename T>
 bool GetUInt(const nlohmann::json& obj, const char* key, T& out, const std::string& field_path, std::string& err) {
-    if (!obj.contains(key)) return true;
+    if (!obj.contains(key))
+        return true;
     if (!obj[key].is_number_unsigned()) {
         err = field_path + " must be an unsigned integer";
         return false;
     }
-    out = obj[key].get<T>();
+    // 先以 uint64_t 读取，再校验是否能装进目标类型，避免静默截断。
+    uint64_t raw = obj[key].get<uint64_t>();
+    if (raw > static_cast<uint64_t>(std::numeric_limits<T>::max())) {
+        err = field_path + " value " + std::to_string(raw) + " overflows (max " +
+              std::to_string(std::numeric_limits<T>::max()) + ")";
+        return false;
+    }
+    out = static_cast<T>(raw);
     return true;
 }
 
-// 从 JSON 对象安全取有符号整型字段；类型不匹配时设 err 并返回 false。
+// 从 JSON 对象安全取有符号整型字段并校验范围；类型不匹配或值超出 T 的表示范围时设 err 并返回 false。
 template <typename T>
 bool GetInt(const nlohmann::json& obj, const char* key, T& out, const std::string& field_path, std::string& err) {
-    if (!obj.contains(key)) return true;
+    if (!obj.contains(key))
+        return true;
     if (!obj[key].is_number_integer()) {
         err = field_path + " must be an integer";
         return false;
     }
-    out = obj[key].get<T>();
+    // 先以 int64_t 读取，再校验是否能装进目标类型，避免静默截断。
+    int64_t raw = obj[key].get<int64_t>();
+    if (raw < static_cast<int64_t>(std::numeric_limits<T>::min()) ||
+        raw > static_cast<int64_t>(std::numeric_limits<T>::max())) {
+        err = field_path + " value " + std::to_string(raw) + " out of range [" +
+              std::to_string(std::numeric_limits<T>::min()) + ", " + std::to_string(std::numeric_limits<T>::max()) +
+              "]";
+        return false;
+    }
+    out = static_cast<T>(raw);
     return true;
 }
 
@@ -97,7 +119,8 @@ bool GetInt(const nlohmann::json& obj, const char* key, T& out, const std::strin
 // 这样可以在截断成 uint16_t 之前捕获 65537 之类的溢出值。
 bool GetPort(const nlohmann::json& obj, const char* key, uint16_t& out, const std::string& field_path,
              std::string& err) {
-    if (!obj.contains(key)) return true;
+    if (!obj.contains(key))
+        return true;
     if (!obj[key].is_number_unsigned()) {
         err = field_path + " must be an unsigned integer";
         return false;
@@ -113,61 +136,90 @@ bool GetPort(const nlohmann::json& obj, const char* key, uint16_t& out, const st
 
 // 解析 "server" 段。
 std::string ParseServer(const nlohmann::json& root, ServerSection& cfg) {
-    if (!root.contains("server")) return "";
+    if (!root.contains("server"))
+        return "";
     const auto& s = root["server"];
-    if (!s.is_object()) return "server must be an object";
+    if (!s.is_object())
+        return "server must be an object";
     std::string err;
-    if (!GetStr(s, "listen_ip", cfg.listen_ip, err)) return "server." + err;
+    if (!GetStr(s, "listen_ip", cfg.listen_ip, err))
+        return "server." + err;
     // 使用 GetPort 在截断前校验范围，防止 65537 -> 1 的静默溢出。
-    if (!GetPort(s, "listen_port", cfg.listen_port, "server.listen_port", err)) return err;
+    if (!GetPort(s, "listen_port", cfg.listen_port, "server.listen_port", err))
+        return err;
     return "";
 }
 
 // 解析 "mysql" 段。
 std::string ParseMysql(const nlohmann::json& root, DbConfig& cfg, DbPoolConfig& pool) {
-    if (!root.contains("mysql")) return "";
+    if (!root.contains("mysql"))
+        return "";
     const auto& m = root["mysql"];
-    if (!m.is_object()) return "mysql must be an object";
+    if (!m.is_object())
+        return "mysql must be an object";
     std::string err;
 
-    if (!GetStr(m, "host", cfg.host, err)) return "mysql." + err;
-    if (!GetStr(m, "username", cfg.username, err)) return "mysql." + err;
-    if (!GetStr(m, "password", cfg.password, err)) return "mysql." + err;
-    if (!GetStr(m, "database", cfg.database, err)) return "mysql." + err;
+    if (!GetStr(m, "host", cfg.host, err))
+        return "mysql." + err;
+    if (!GetStr(m, "username", cfg.username, err))
+        return "mysql." + err;
+    if (!GetStr(m, "password", cfg.password, err))
+        return "mysql." + err;
+    if (!GetStr(m, "database", cfg.database, err))
+        return "mysql." + err;
     // 使用 GetPort 在截断前校验范围，防止 99999 之类的值静默成为合法端口。
-    if (!GetPort(m, "port", cfg.port, "mysql.port", err)) return err;
+    if (!GetPort(m, "port", cfg.port, "mysql.port", err))
+        return err;
     if (!GetUInt(m, "connect_timeout_seconds", cfg.connect_timeout_seconds, "mysql.connect_timeout_seconds", err))
         return err;
-    if (!GetUInt(m, "read_timeout_seconds", cfg.read_timeout_seconds, "mysql.read_timeout_seconds", err)) return err;
-    if (!GetUInt(m, "write_timeout_seconds", cfg.write_timeout_seconds, "mysql.write_timeout_seconds", err)) return err;
+    if (!GetUInt(m, "read_timeout_seconds", cfg.read_timeout_seconds, "mysql.read_timeout_seconds", err))
+        return err;
+    if (!GetUInt(m, "write_timeout_seconds", cfg.write_timeout_seconds, "mysql.write_timeout_seconds", err))
+        return err;
 
-    if (!m.contains("pool")) return "";
+    if (!m.contains("pool"))
+        return "";
     const auto& p = m["pool"];
-    if (!p.is_object()) return "mysql.pool must be an object";
-    if (!GetUInt(p, "min_connections", pool.min_connections, "mysql.pool.min_connections", err)) return err;
-    if (!GetUInt(p, "max_connections", pool.max_connections, "mysql.pool.max_connections", err)) return err;
-    if (!GetUInt(p, "borrow_timeout_ms", pool.borrow_timeout_ms, "mysql.pool.borrow_timeout_ms", err)) return err;
+    if (!p.is_object())
+        return "mysql.pool must be an object";
+    if (!GetUInt(p, "min_connections", pool.min_connections, "mysql.pool.min_connections", err))
+        return err;
+    if (!GetUInt(p, "max_connections", pool.max_connections, "mysql.pool.max_connections", err))
+        return err;
+    if (!GetUInt(p, "borrow_timeout_ms", pool.borrow_timeout_ms, "mysql.pool.borrow_timeout_ms", err))
+        return err;
     return "";
 }
 
 // 解析 "redis" 段。
 std::string ParseRedis(const nlohmann::json& root, RedisConfig& cfg) {
-    if (!root.contains("redis")) return "";
+    if (!root.contains("redis"))
+        return "";
     const auto& r = root["redis"];
-    if (!r.is_object()) return "redis must be an object";
+    if (!r.is_object())
+        return "redis must be an object";
     std::string err;
 
-    if (!GetBool(r, "enabled", cfg.enabled, err)) return "redis." + err;
-    if (!GetStr(r, "host", cfg.host, err)) return "redis." + err;
-    if (!GetStr(r, "password", cfg.password, err)) return "redis." + err;
-    if (!GetStr(r, "key_prefix", cfg.key_prefix, err)) return "redis." + err;
+    if (!GetBool(r, "enabled", cfg.enabled, err))
+        return "redis." + err;
+    if (!GetStr(r, "host", cfg.host, err))
+        return "redis." + err;
+    if (!GetStr(r, "password", cfg.password, err))
+        return "redis." + err;
+    if (!GetStr(r, "key_prefix", cfg.key_prefix, err))
+        return "redis." + err;
 
     // 使用 GetPort 在截断前校验范围。
-    if (!GetPort(r, "port", cfg.port, "redis.port", err)) return err;
-    if (!GetInt(r, "database", cfg.database, "redis.database", err)) return err;
-    if (!GetInt(r, "pool_size", cfg.pool_size, "redis.pool_size", err)) return err;
-    if (!GetInt(r, "connect_timeout_ms", cfg.connect_timeout_ms, "redis.connect_timeout_ms", err)) return err;
-    if (!GetInt(r, "session_ttl_seconds", cfg.session_ttl_seconds, "redis.session_ttl_seconds", err)) return err;
+    if (!GetPort(r, "port", cfg.port, "redis.port", err))
+        return err;
+    if (!GetInt(r, "database", cfg.database, "redis.database", err))
+        return err;
+    if (!GetInt(r, "pool_size", cfg.pool_size, "redis.pool_size", err))
+        return err;
+    if (!GetInt(r, "connect_timeout_ms", cfg.connect_timeout_ms, "redis.connect_timeout_ms", err))
+        return err;
+    if (!GetInt(r, "session_ttl_seconds", cfg.session_ttl_seconds, "redis.session_ttl_seconds", err))
+        return err;
     if (!GetInt(r, "rate_limit_window_seconds", cfg.rate_limit_window_seconds, "redis.rate_limit_window_seconds", err))
         return err;
     if (!GetInt(r, "rate_limit_max_requests", cfg.rate_limit_max_requests, "redis.rate_limit_max_requests", err))
@@ -177,23 +229,31 @@ std::string ParseRedis(const nlohmann::json& root, RedisConfig& cfg) {
 
 // 解析 "log" 段。
 std::string ParseLog(const nlohmann::json& root, LogConfig& cfg) {
-    if (!root.contains("log")) return "";
+    if (!root.contains("log"))
+        return "";
     const auto& l = root["log"];
-    if (!l.is_object()) return "log must be an object";
+    if (!l.is_object())
+        return "log must be an object";
     std::string err;
-    if (!GetStr(l, "level", cfg.level, err)) return "log." + err;
-    if (!GetStr(l, "path", cfg.path, err)) return "log." + err;
-    if (!GetBool(l, "console", cfg.console, err)) return "log." + err;
+    if (!GetStr(l, "level", cfg.level, err))
+        return "log." + err;
+    if (!GetStr(l, "path", cfg.path, err))
+        return "log." + err;
+    if (!GetBool(l, "console", cfg.console, err))
+        return "log." + err;
     return "";
 }
 
 // 解析 "timeout" 段。
 std::string ParseTimeout(const nlohmann::json& root, TimeoutConfig& cfg) {
-    if (!root.contains("timeout")) return "";
+    if (!root.contains("timeout"))
+        return "";
     const auto& t = root["timeout"];
-    if (!t.is_object()) return "timeout must be an object";
+    if (!t.is_object())
+        return "timeout must be an object";
     std::string err;
-    if (!GetUInt(t, "remote_push_ms", cfg.remote_push_ms, "timeout.remote_push_ms", err)) return err;
+    if (!GetUInt(t, "remote_push_ms", cfg.remote_push_ms, "timeout.remote_push_ms", err))
+        return err;
     return "";
 }
 
@@ -240,27 +300,34 @@ ConfigResult ConfigLoader::ParseAndValidate(const std::string& json_str) {
     std::string field_err;
 
     field_err = ParseServer(root, config.server);
-    if (!field_err.empty()) return ConfigError{field_err};
+    if (!field_err.empty())
+        return ConfigError{field_err};
 
     field_err = ParseMysql(root, config.mysql, config.mysql_pool);
-    if (!field_err.empty()) return ConfigError{field_err};
+    if (!field_err.empty())
+        return ConfigError{field_err};
 
     field_err = ParseRedis(root, config.redis);
-    if (!field_err.empty()) return ConfigError{field_err};
+    if (!field_err.empty())
+        return ConfigError{field_err};
 
     field_err = ParseLog(root, config.log);
-    if (!field_err.empty()) return ConfigError{field_err};
+    if (!field_err.empty())
+        return ConfigError{field_err};
 
     field_err = ParseTimeout(root, config.timeout);
-    if (!field_err.empty()) return ConfigError{field_err};
+    if (!field_err.empty())
+        return ConfigError{field_err};
 
     // 3. 环境变量覆盖（非法值立即报错，不静默跳过）
     std::string env_err = ApplyEnvOverrides(config);
-    if (!env_err.empty()) return ConfigError{env_err};
+    if (!env_err.empty())
+        return ConfigError{env_err};
 
     // 4. 全量校验
     std::string validation_err = Validate(config);
-    if (!validation_err.empty()) return ConfigError{validation_err};
+    if (!validation_err.empty())
+        return ConfigError{validation_err};
 
     return config;
 }
@@ -269,10 +336,14 @@ ConfigResult ConfigLoader::ParseAndValidate(const std::string& json_str) {
 // 非法格式（如 "abc"）或超出范围（如 "65537"）均视为错误，而不是静默跳过。
 std::string ConfigLoader::ApplyEnvOverrides(ServerConfig& config) {
     // MySQL 覆盖
-    if (const char* v = Env("CHAT_DB_HOST")) config.mysql.host = v;
-    if (const char* v = Env("CHAT_DB_USER")) config.mysql.username = v;
-    if (const char* v = Env("CHAT_DB_PASSWORD")) config.mysql.password = v;
-    if (const char* v = Env("CHAT_DB_NAME")) config.mysql.database = v;
+    if (const char* v = Env("CHAT_DB_HOST"))
+        config.mysql.host = v;
+    if (const char* v = Env("CHAT_DB_USER"))
+        config.mysql.username = v;
+    if (const char* v = Env("CHAT_DB_PASSWORD"))
+        config.mysql.password = v;
+    if (const char* v = Env("CHAT_DB_NAME"))
+        config.mysql.database = v;
     if (const char* v = Env("CHAT_DB_PORT")) {
         uint32_t raw = 0;
         if (!StrictParseInt(v, raw) || raw < 1 || raw > 65535) {
@@ -282,8 +353,10 @@ std::string ConfigLoader::ApplyEnvOverrides(ServerConfig& config) {
     }
 
     // Redis 覆盖
-    if (const char* v = Env("CHAT_REDIS_HOST")) config.redis.host = v;
-    if (const char* v = Env("CHAT_REDIS_PASSWORD")) config.redis.password = v;
+    if (const char* v = Env("CHAT_REDIS_HOST"))
+        config.redis.host = v;
+    if (const char* v = Env("CHAT_REDIS_PASSWORD"))
+        config.redis.password = v;
     if (const char* v = Env("CHAT_REDIS_PORT")) {
         uint32_t raw = 0;
         if (!StrictParseInt(v, raw) || raw < 1 || raw > 65535) {
@@ -317,35 +390,55 @@ std::string ConfigLoader::Validate(const ServerConfig& config) {
 
     // mysql 段
     {
-        if (config.mysql.host.empty()) return "mysql.host must not be empty";
-        if (config.mysql.username.empty()) return "mysql.username must not be empty";
-        if (config.mysql.database.empty()) return "mysql.database must not be empty";
-        if (config.mysql.port < 1) return "mysql.port must be in range 1..65535";
-        if (config.mysql.connect_timeout_seconds == 0) return "mysql.connect_timeout_seconds must be positive";
-        if (config.mysql.read_timeout_seconds == 0) return "mysql.read_timeout_seconds must be positive";
-        if (config.mysql.write_timeout_seconds == 0) return "mysql.write_timeout_seconds must be positive";
+        if (config.mysql.host.empty())
+            return "mysql.host must not be empty";
+        if (config.mysql.username.empty())
+            return "mysql.username must not be empty";
+        if (config.mysql.database.empty())
+            return "mysql.database must not be empty";
+        if (config.mysql.port < 1)
+            return "mysql.port must be in range 1..65535";
+        if (config.mysql.connect_timeout_seconds == 0)
+            return "mysql.connect_timeout_seconds must be positive";
+        if (config.mysql.read_timeout_seconds == 0)
+            return "mysql.read_timeout_seconds must be positive";
+        if (config.mysql.write_timeout_seconds == 0)
+            return "mysql.write_timeout_seconds must be positive";
     }
 
     // mysql pool 段
     {
-        if (config.mysql_pool.max_connections == 0) return "mysql.pool.max_connections must be positive";
+        if (config.mysql_pool.max_connections == 0)
+            return "mysql.pool.max_connections must be positive";
         if (config.mysql_pool.min_connections > config.mysql_pool.max_connections)
             return "mysql.pool.min_connections must be <= mysql.pool.max_connections";
-        if (config.mysql_pool.borrow_timeout_ms == 0) return "mysql.pool.borrow_timeout_ms must be positive";
+        if (config.mysql_pool.borrow_timeout_ms == 0)
+            return "mysql.pool.borrow_timeout_ms must be positive";
     }
 
     // redis 段（仅在 enabled 时强制校验连接参数）
     if (config.redis.enabled) {
-        if (config.redis.host.empty()) return "redis.host must not be empty";
-        if (config.redis.port < 1) return "redis.port must be in range 1..65535";
-        if (config.redis.pool_size <= 0) return "redis.pool_size must be positive";
-        if (config.redis.session_ttl_seconds <= 0) return "redis.session_ttl_seconds must be positive";
-        if (config.redis.rate_limit_window_seconds <= 0) return "redis.rate_limit_window_seconds must be positive";
-        if (config.redis.rate_limit_max_requests <= 0) return "redis.rate_limit_max_requests must be positive";
+        if (config.redis.host.empty())
+            return "redis.host must not be empty";
+        if (config.redis.port < 1)
+            return "redis.port must be in range 1..65535";
+        if (config.redis.pool_size <= 0)
+            return "redis.pool_size must be positive";
+        if (config.redis.database < 0)
+            return "redis.database must be >= 0";
+        if (config.redis.connect_timeout_ms <= 0)
+            return "redis.connect_timeout_ms must be positive";
+        if (config.redis.session_ttl_seconds <= 0)
+            return "redis.session_ttl_seconds must be positive";
+        if (config.redis.rate_limit_window_seconds <= 0)
+            return "redis.rate_limit_window_seconds must be positive";
+        if (config.redis.rate_limit_max_requests <= 0)
+            return "redis.rate_limit_max_requests must be positive";
     }
 
     // timeout 段
-    if (config.timeout.remote_push_ms == 0) return "timeout.remote_push_ms must be positive";
+    if (config.timeout.remote_push_ms == 0)
+        return "timeout.remote_push_ms must be positive";
 
     return "";
 }

@@ -69,14 +69,14 @@ bool TcpServer::bindAddress() {
     addr6.sin6_family = AF_INET6;
     addr6.sin6_port = htons(requested_port);
 
-    struct sockaddr* bind_addr = nullptr;
+    struct sockaddr *bind_addr = nullptr;
     socklen_t bind_len = 0;
 
     if (inet_pton(AF_INET, ip_.c_str(), &addr4.sin_addr) == 1) {
-        bind_addr = reinterpret_cast<struct sockaddr*>(&addr4);
+        bind_addr = reinterpret_cast<struct sockaddr *>(&addr4);
         bind_len = sizeof(addr4);
     } else if (inet_pton(AF_INET6, ip_.c_str(), &addr6.sin6_addr) == 1) {
-        bind_addr = reinterpret_cast<struct sockaddr*>(&addr6);
+        bind_addr = reinterpret_cast<struct sockaddr *>(&addr6);
         bind_len = sizeof(addr6);
     } else {
         std::cerr << "bindAddress: invalid IP address: " << ip_ << std::endl;
@@ -92,9 +92,9 @@ bool TcpServer::bindAddress() {
         socklen_t len = bind_len;
         if (getsockname(listen_fd_, bind_addr, &len) == 0) {
             if (bind_addr->sa_family == AF_INET) {
-                port_.store(ntohs(reinterpret_cast<struct sockaddr_in*>(bind_addr)->sin_port));
+                port_.store(ntohs(reinterpret_cast<struct sockaddr_in *>(bind_addr)->sin_port));
             } else {
-                port_.store(ntohs(reinterpret_cast<struct sockaddr_in6*>(bind_addr)->sin6_port));
+                port_.store(ntohs(reinterpret_cast<struct sockaddr_in6 *>(bind_addr)->sin6_port));
             }
         }
     }
@@ -234,7 +234,8 @@ bool TcpServer::start() {
 void TcpServer::acceptLoop(int epoll_fd) {
     constexpr int kMaxEvents = 1024;
     struct epoll_event events[kMaxEvents];
-    struct sockaddr_in client_addr;
+    // 使用 sockaddr_storage 同时支持 IPv4 和 IPv6 客户端地址。
+    struct sockaddr_storage client_addr;
 
     while (!stopping_.load()) {
         int n = epoll_wait(epoll_fd, events, kMaxEvents, -1);
@@ -286,7 +287,7 @@ void TcpServer::acceptLoop(int epoll_fd) {
             // listen_fd_ is readable: accept all pending connections.
             while (true) {
                 socklen_t client_len = sizeof(client_addr);
-                int client_fd = accept(listen_fd_, (struct sockaddr *)&client_addr, &client_len);
+                int client_fd = accept(listen_fd_, reinterpret_cast<struct sockaddr *>(&client_addr), &client_len);
                 if (client_fd < 0) {
                     if (errno == EAGAIN || errno == EWOULDBLOCK) {
                         break;
@@ -311,7 +312,22 @@ void TcpServer::acceptLoop(int epoll_fd) {
                     continue;
                 }
 
-                registerConnection(client_fd, inet_ntoa(client_addr.sin_addr), ntohs(client_addr.sin_port));
+                registerConnection(
+                    client_fd,
+                    [&]() -> std::string {
+                        char buf[INET6_ADDRSTRLEN] = {};
+                        if (client_addr.ss_family == AF_INET6) {
+                            const auto *a6 = reinterpret_cast<const struct sockaddr_in6 *>(&client_addr);
+                            inet_ntop(AF_INET6, &a6->sin6_addr, buf, sizeof(buf));
+                        } else {
+                            const auto *a4 = reinterpret_cast<const struct sockaddr_in *>(&client_addr);
+                            inet_ntop(AF_INET, &a4->sin_addr, buf, sizeof(buf));
+                        }
+                        return buf;
+                    }(),
+                    client_addr.ss_family == AF_INET6
+                        ? ntohs(reinterpret_cast<const struct sockaddr_in6 *>(&client_addr)->sin6_port)
+                        : ntohs(reinterpret_cast<const struct sockaddr_in *>(&client_addr)->sin_port));
             }
         }
     }

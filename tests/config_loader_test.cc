@@ -2,6 +2,11 @@
 
 #include <gtest/gtest.h>
 
+#include <cstdlib>
+#include <optional>
+#include <string>
+#include <vector>
+
 #include "config/server_config.h"
 #include "nlohmann/json.hpp"
 
@@ -9,6 +14,56 @@
 
 namespace chat {
 namespace {
+
+// ── RAII 环境变量隔离 ─────────────────────────────────────────────────────────
+
+// 在构造时保存并清除指定的环境变量，在析构时恢复原值。
+// 用于防止宿主环境的 CHAT_* 变量干扰测试结果。
+class EnvGuard {
+   public:
+    explicit EnvGuard(std::vector<const char*> names) : names_(std::move(names)) {
+        for (const char* n : names_) {
+            const char* v = std::getenv(n);
+            saved_.push_back(v ? std::optional<std::string>{v} : std::nullopt);
+            ::unsetenv(n);
+        }
+    }
+    ~EnvGuard() {
+        for (std::size_t i = 0; i < names_.size(); ++i) {
+            if (saved_[i].has_value()) {
+                ::setenv(names_[i], saved_[i]->c_str(), 1);
+            } else {
+                ::unsetenv(names_[i]);
+            }
+        }
+    }
+
+    EnvGuard(const EnvGuard&) = delete;
+    EnvGuard& operator=(const EnvGuard&) = delete;
+
+   private:
+    std::vector<const char*> names_;
+    std::vector<std::optional<std::string>> saved_;
+};
+
+// 覆盖所有可能影响 ConfigLoader 的环境变量名。
+static const std::vector<const char*> kChatEnvVars = {
+    "CHAT_DB_HOST",    "CHAT_DB_PORT",    "CHAT_DB_USER",        "CHAT_DB_PASSWORD", "CHAT_DB_NAME",
+    "CHAT_REDIS_HOST", "CHAT_REDIS_PORT", "CHAT_REDIS_PASSWORD", "CHAT_REDIS_DB",    "CHAT_CONFIG_PATH",
+};
+
+// ── 测试 Fixture ──────────────────────────────────────────────────────────────
+
+// 所有 ConfigLoaderTest 用例均通过该 Fixture 运行，确保 CHAT_* 环境变量在
+// 每个测试开始前被清除，测试结束后恢复，不受宿主 CI 环境影响。
+class ConfigLoaderTest : public ::testing::Test {
+   protected:
+    void SetUp() override { guard_ = std::make_unique<EnvGuard>(kChatEnvVars); }
+    void TearDown() override { guard_.reset(); }
+
+   private:
+    std::unique_ptr<EnvGuard> guard_;
+};
 
 // ── 辅助函数 ──────────────────────────────────────────────────────────────────
 
@@ -20,7 +75,8 @@ const ServerConfig& OkConfig(const ConfigResult& result) {
 }
 
 std::string ErrMsg(const ConfigResult& result) {
-    if (std::holds_alternative<ConfigError>(result)) return std::get<ConfigError>(result).message;
+    if (std::holds_alternative<ConfigError>(result))
+        return std::get<ConfigError>(result).message;
     return "";
 }
 
@@ -39,7 +95,7 @@ constexpr const char* kMinimalValid = R"({
 
 // ── 基础解析 ──────────────────────────────────────────────────────────────────
 
-TEST(ConfigLoaderTest, LoadFromString_MinimalValid) {
+TEST_F(ConfigLoaderTest, LoadFromString_MinimalValid) {
     auto result = ConfigLoader::LoadFromString(kMinimalValid);
     const auto& cfg = OkConfig(result);
     EXPECT_EQ(cfg.server.listen_ip, "127.0.0.1");
@@ -50,7 +106,7 @@ TEST(ConfigLoaderTest, LoadFromString_MinimalValid) {
     EXPECT_EQ(cfg.timeout.remote_push_ms, 500u);
 }
 
-TEST(ConfigLoaderTest, LoadFromString_DefaultsApplied) {
+TEST_F(ConfigLoaderTest, LoadFromString_DefaultsApplied) {
     // 完全空对象，依赖结构体默认值
     // mysql 字段 host/username/database 有默认值，但 username/database 为空会校验失败
     // 这里测试 server 和 timeout 的默认值
@@ -68,13 +124,13 @@ TEST(ConfigLoaderTest, LoadFromString_DefaultsApplied) {
 
 // ── JSON 错误 ─────────────────────────────────────────────────────────────────
 
-TEST(ConfigLoaderTest, InvalidJson_ReturnsParseError) {
+TEST_F(ConfigLoaderTest, InvalidJson_ReturnsParseError) {
     auto result = ConfigLoader::LoadFromString("{invalid json}");
     ASSERT_TRUE(IsError(result));
     EXPECT_NE(ErrMsg(result).find("JSON parse error"), std::string::npos);
 }
 
-TEST(ConfigLoaderTest, RootNotObject_ReturnsError) {
+TEST_F(ConfigLoaderTest, RootNotObject_ReturnsError) {
     auto result = ConfigLoader::LoadFromString("[1, 2, 3]");
     ASSERT_TRUE(IsError(result));
     EXPECT_NE(ErrMsg(result).find("root"), std::string::npos);
@@ -82,7 +138,7 @@ TEST(ConfigLoaderTest, RootNotObject_ReturnsError) {
 
 // ── 字段类型错误 ──────────────────────────────────────────────────────────────
 
-TEST(ConfigLoaderTest, TypeError_ListenPort) {
+TEST_F(ConfigLoaderTest, TypeError_ListenPort) {
     const char* json = R"({
       "server": { "listen_ip": "127.0.0.1", "listen_port": "not_a_number" },
       "mysql": { "host": "h", "username": "u", "database": "d" }
@@ -92,7 +148,7 @@ TEST(ConfigLoaderTest, TypeError_ListenPort) {
     EXPECT_NE(ErrMsg(result).find("listen_port"), std::string::npos);
 }
 
-TEST(ConfigLoaderTest, TypeError_MysqlHost) {
+TEST_F(ConfigLoaderTest, TypeError_MysqlHost) {
     const char* json = R"({
       "mysql": { "host": 123, "username": "u", "database": "d" }
     })";
@@ -101,7 +157,7 @@ TEST(ConfigLoaderTest, TypeError_MysqlHost) {
     EXPECT_NE(ErrMsg(result).find("host"), std::string::npos);
 }
 
-TEST(ConfigLoaderTest, TypeError_PoolMaxConnections) {
+TEST_F(ConfigLoaderTest, TypeError_PoolMaxConnections) {
     const char* json = R"({
       "mysql": {
         "host": "h", "username": "u", "database": "d",
@@ -116,7 +172,7 @@ TEST(ConfigLoaderTest, TypeError_PoolMaxConnections) {
 
 // ── 校验规则 ──────────────────────────────────────────────────────────────────
 
-TEST(ConfigLoaderTest, Validate_InvalidListenIp) {
+TEST_F(ConfigLoaderTest, Validate_InvalidListenIp) {
     const char* json = R"({
       "server": { "listen_ip": "not_an_ip" },
       "mysql": { "host": "h", "username": "u", "database": "d" }
@@ -126,7 +182,7 @@ TEST(ConfigLoaderTest, Validate_InvalidListenIp) {
     EXPECT_NE(ErrMsg(result).find("listen_ip"), std::string::npos);
 }
 
-TEST(ConfigLoaderTest, Validate_IPv6ListenIp) {
+TEST_F(ConfigLoaderTest, Validate_IPv6ListenIp) {
     // IPv6 地址应被接受
     const char* json = R"({
       "server": { "listen_ip": "::1", "listen_port": 9000 },
@@ -138,7 +194,7 @@ TEST(ConfigLoaderTest, Validate_IPv6ListenIp) {
     EXPECT_EQ(std::get<ServerConfig>(result).server.listen_ip, "::1");
 }
 
-TEST(ConfigLoaderTest, Validate_MysqlEmptyHost) {
+TEST_F(ConfigLoaderTest, Validate_MysqlEmptyHost) {
     const char* json = R"({
       "mysql": { "host": "", "username": "u", "database": "d" }
     })";
@@ -147,7 +203,7 @@ TEST(ConfigLoaderTest, Validate_MysqlEmptyHost) {
     EXPECT_NE(ErrMsg(result).find("mysql.host"), std::string::npos);
 }
 
-TEST(ConfigLoaderTest, Validate_MysqlEmptyUsername) {
+TEST_F(ConfigLoaderTest, Validate_MysqlEmptyUsername) {
     const char* json = R"({
       "mysql": { "host": "h", "username": "", "database": "d" }
     })";
@@ -156,7 +212,7 @@ TEST(ConfigLoaderTest, Validate_MysqlEmptyUsername) {
     EXPECT_NE(ErrMsg(result).find("mysql.username"), std::string::npos);
 }
 
-TEST(ConfigLoaderTest, Validate_MysqlEmptyDatabase) {
+TEST_F(ConfigLoaderTest, Validate_MysqlEmptyDatabase) {
     const char* json = R"({
       "mysql": { "host": "h", "username": "u", "database": "" }
     })";
@@ -165,7 +221,7 @@ TEST(ConfigLoaderTest, Validate_MysqlEmptyDatabase) {
     EXPECT_NE(ErrMsg(result).find("mysql.database"), std::string::npos);
 }
 
-TEST(ConfigLoaderTest, Validate_PoolMaxZero) {
+TEST_F(ConfigLoaderTest, Validate_PoolMaxZero) {
     const char* json = R"({
       "mysql": {
         "host": "h", "username": "u", "database": "d",
@@ -177,7 +233,7 @@ TEST(ConfigLoaderTest, Validate_PoolMaxZero) {
     EXPECT_NE(ErrMsg(result).find("mysql.pool.max_connections"), std::string::npos);
 }
 
-TEST(ConfigLoaderTest, Validate_PoolMinGtMax) {
+TEST_F(ConfigLoaderTest, Validate_PoolMinGtMax) {
     const char* json = R"({
       "mysql": {
         "host": "h", "username": "u", "database": "d",
@@ -189,7 +245,7 @@ TEST(ConfigLoaderTest, Validate_PoolMinGtMax) {
     EXPECT_NE(ErrMsg(result).find("min_connections"), std::string::npos);
 }
 
-TEST(ConfigLoaderTest, Validate_RemotePushMsZero) {
+TEST_F(ConfigLoaderTest, Validate_RemotePushMsZero) {
     const char* json = R"({
       "mysql": { "host": "h", "username": "u", "database": "d" },
       "timeout": { "remote_push_ms": 0 }
@@ -199,7 +255,7 @@ TEST(ConfigLoaderTest, Validate_RemotePushMsZero) {
     EXPECT_NE(ErrMsg(result).find("timeout.remote_push_ms"), std::string::npos);
 }
 
-TEST(ConfigLoaderTest, Validate_ConnectTimeoutZero) {
+TEST_F(ConfigLoaderTest, Validate_ConnectTimeoutZero) {
     const char* json = R"({
       "mysql": { "host": "h", "username": "u", "database": "d", "connect_timeout_seconds": 0 }
     })";
@@ -210,7 +266,7 @@ TEST(ConfigLoaderTest, Validate_ConnectTimeoutZero) {
 
 // ── Redis 校验（仅 enabled=true 时生效）────────────────────────────────────
 
-TEST(ConfigLoaderTest, Validate_RedisDisabledSkipsValidation) {
+TEST_F(ConfigLoaderTest, Validate_RedisDisabledSkipsValidation) {
     // Redis disabled 时，仅跳过语义校验（host 非空、pool_size > 0 等），
     // 但端口值仍需合法（GetPort 在解析阶段校验）。
     // 这里传入 host 为空、pool_size 为 0 ——这些只在 enabled=true 时校验。
@@ -222,7 +278,7 @@ TEST(ConfigLoaderTest, Validate_RedisDisabledSkipsValidation) {
     ASSERT_FALSE(IsError(result)) << ErrMsg(result);
 }
 
-TEST(ConfigLoaderTest, Validate_RedisEnabledEmptyHost) {
+TEST_F(ConfigLoaderTest, Validate_RedisEnabledEmptyHost) {
     const char* json = R"({
       "mysql": { "host": "h", "username": "u", "database": "d" },
       "redis": { "enabled": true, "host": "", "port": 6379, "pool_size": 4 }
@@ -234,7 +290,7 @@ TEST(ConfigLoaderTest, Validate_RedisEnabledEmptyHost) {
 
 // ── 脱敏输出 ──────────────────────────────────────────────────────────────────
 
-TEST(ConfigLoaderTest, ToSafeString_RedactsPasswords) {
+TEST_F(ConfigLoaderTest, ToSafeString_RedactsPasswords) {
     const char* json = R"({
       "mysql": {
         "host": "db.internal", "username": "admin",
@@ -259,7 +315,7 @@ TEST(ConfigLoaderTest, ToSafeString_RedactsPasswords) {
     EXPECT_NE(safe.find("admin"), std::string::npos);
 }
 
-TEST(ConfigLoaderTest, ToSafeString_ValidJson) {
+TEST_F(ConfigLoaderTest, ToSafeString_ValidJson) {
     auto result = ConfigLoader::LoadFromString(kMinimalValid);
     const auto& cfg = OkConfig(result);
     std::string safe = cfg.ToSafeString();
@@ -269,7 +325,7 @@ TEST(ConfigLoaderTest, ToSafeString_ValidJson) {
 
 // ── 完整配置 JSON ─────────────────────────────────────────────────────────────
 
-TEST(ConfigLoaderTest, FullConfig_AllFieldsParsed) {
+TEST_F(ConfigLoaderTest, FullConfig_AllFieldsParsed) {
     const char* json = R"({
       "server": { "listen_ip": "0.0.0.0", "listen_port": 9090 },
       "mysql": {
@@ -347,7 +403,7 @@ TEST(ParseConfigPathArgTest, ConfigArgAtEnd_ReturnsEmpty) {
 // ── P1 回归测试 ───────────────────────────────────────────────────────────────
 
 // Bug: 端口溢出 —— 65537 截断成 uint16_t 变成 1，没有报错。
-TEST(ConfigLoaderTest, P1_PortOverflow_ServerListenPort) {
+TEST_F(ConfigLoaderTest, P1_PortOverflow_ServerListenPort) {
     const char* json = R"({
       "server": { "listen_ip": "127.0.0.1", "listen_port": 65537 },
       "mysql": { "host": "h", "username": "u", "database": "d" }
@@ -357,7 +413,7 @@ TEST(ConfigLoaderTest, P1_PortOverflow_ServerListenPort) {
     EXPECT_NE(ErrMsg(result).find("listen_port"), std::string::npos) << ErrMsg(result);
 }
 
-TEST(ConfigLoaderTest, P1_PortOverflow_MysqlPort) {
+TEST_F(ConfigLoaderTest, P1_PortOverflow_MysqlPort) {
     const char* json = R"({
       "mysql": { "host": "h", "username": "u", "database": "d", "port": 99999 }
     })";
@@ -376,7 +432,7 @@ TEST(ConfigLoaderTest, P1_PortOverflow_MysqlPort) {
     EXPECT_NE(ErrMsg(result).find("port"), std::string::npos) << ErrMsg(result);
 }
 
-TEST(ConfigLoaderTest, P1_PortOverflow_RedisPort) {
+TEST_F(ConfigLoaderTest, P1_PortOverflow_RedisPort) {
     const char* json = R"({
       "mysql": { "host": "h", "username": "u", "database": "d" },
       "redis": { "enabled": true, "host": "r", "port": 70000, "pool_size": 4,
@@ -389,7 +445,7 @@ TEST(ConfigLoaderTest, P1_PortOverflow_RedisPort) {
 }
 
 // Bug: 非法环境变量被忽略 —— CHAT_DB_PORT=abc 应报错而非静默跳过。
-TEST(ConfigLoaderTest, P1_BadEnvPort_ReturnsError) {
+TEST_F(ConfigLoaderTest, P1_BadEnvPort_ReturnsError) {
     // 先设置非法环境变量
     ::setenv("CHAT_DB_PORT", "abc", 1);
     const char* json = R"({
@@ -402,7 +458,7 @@ TEST(ConfigLoaderTest, P1_BadEnvPort_ReturnsError) {
     EXPECT_NE(ErrMsg(result).find("CHAT_DB_PORT"), std::string::npos) << ErrMsg(result);
 }
 
-TEST(ConfigLoaderTest, P1_BadEnvPort_Overflow_ReturnsError) {
+TEST_F(ConfigLoaderTest, P1_BadEnvPort_Overflow_ReturnsError) {
     ::setenv("CHAT_DB_PORT", "65537", 1);
     const char* json = R"({
       "mysql": { "host": "h", "username": "u", "database": "d" }
@@ -414,7 +470,7 @@ TEST(ConfigLoaderTest, P1_BadEnvPort_Overflow_ReturnsError) {
     EXPECT_NE(ErrMsg(result).find("CHAT_DB_PORT"), std::string::npos) << ErrMsg(result);
 }
 
-TEST(ConfigLoaderTest, P1_BadEnvRedisPort_ReturnsError) {
+TEST_F(ConfigLoaderTest, P1_BadEnvRedisPort_ReturnsError) {
     ::setenv("CHAT_REDIS_PORT", "not_a_port", 1);
     const char* json = R"({
       "mysql": { "host": "h", "username": "u", "database": "d" }
@@ -426,7 +482,7 @@ TEST(ConfigLoaderTest, P1_BadEnvRedisPort_ReturnsError) {
     EXPECT_NE(ErrMsg(result).find("CHAT_REDIS_PORT"), std::string::npos) << ErrMsg(result);
 }
 
-TEST(ConfigLoaderTest, P1_BadEnvRedisDb_ReturnsError) {
+TEST_F(ConfigLoaderTest, P1_BadEnvRedisDb_ReturnsError) {
     ::setenv("CHAT_REDIS_DB", "two", 1);
     const char* json = R"({
       "mysql": { "host": "h", "username": "u", "database": "d" }
@@ -439,7 +495,7 @@ TEST(ConfigLoaderTest, P1_BadEnvRedisDb_ReturnsError) {
 }
 
 // 合法环境变量不应报错
-TEST(ConfigLoaderTest, P1_ValidEnvPort_Accepted) {
+TEST_F(ConfigLoaderTest, P1_ValidEnvPort_Accepted) {
     ::setenv("CHAT_DB_PORT", "5432", 1);
     const char* json = R"({
       "mysql": { "host": "h", "username": "u", "database": "d" }
@@ -449,6 +505,109 @@ TEST(ConfigLoaderTest, P1_ValidEnvPort_Accepted) {
 
     ASSERT_FALSE(IsError(result)) << ErrMsg(result);
     EXPECT_EQ(std::get<ServerConfig>(result).mysql.port, 5432);
+}
+
+// ── P1 非端口整数溢出回归测试 ─────────────────────────────────────────────────
+
+// remote_push_ms: 4294967297 (2^32+1) 截断成 uint32_t 变成 1，应报错。
+TEST_F(ConfigLoaderTest, P1_UIntOverflow_RemotePushMs) {
+    const char* json = R"({
+      "mysql": { "host": "h", "username": "u", "database": "d" },
+      "timeout": { "remote_push_ms": 4294967297 }
+    })";
+    auto result = ConfigLoader::LoadFromString(json);
+    ASSERT_TRUE(IsError(result)) << "Expected overflow error for remote_push_ms=4294967297";
+    EXPECT_NE(ErrMsg(result).find("remote_push_ms"), std::string::npos) << ErrMsg(result);
+}
+
+// min_connections: 2^32+1 截断成 size_t 可能变成 1，应报错。
+TEST_F(ConfigLoaderTest, P1_UIntOverflow_PoolMinConnections) {
+    const char* json = R"({
+      "mysql": {
+        "host": "h", "username": "u", "database": "d",
+        "pool": { "min_connections": 4294967297, "max_connections": 4 }
+      }
+    })";
+    auto result = ConfigLoader::LoadFromString(json);
+    ASSERT_TRUE(IsError(result)) << "Expected overflow error for min_connections=4294967297";
+    EXPECT_NE(ErrMsg(result).find("min_connections"), std::string::npos) << ErrMsg(result);
+}
+
+// connect_timeout_seconds: 0xFFFFFFFFFF 超出 uint32_t，应报错。
+TEST_F(ConfigLoaderTest, P1_UIntOverflow_ConnectTimeout) {
+    const char* json = R"({
+      "mysql": {
+        "host": "h", "username": "u", "database": "d",
+        "connect_timeout_seconds": 1099511627775
+      }
+    })";
+    auto result = ConfigLoader::LoadFromString(json);
+    ASSERT_TRUE(IsError(result)) << "Expected overflow error for connect_timeout_seconds=1099511627775";
+    EXPECT_NE(ErrMsg(result).find("connect_timeout_seconds"), std::string::npos) << ErrMsg(result);
+}
+
+// ── P2a Redis 校验回归测试 ────────────────────────────────────────────────────
+
+TEST_F(ConfigLoaderTest, P2a_RedisNegativeDatabase_ReturnsError) {
+    const char* json = R"({
+      "mysql": { "host": "h", "username": "u", "database": "d" },
+      "redis": {
+        "enabled": true, "host": "r", "port": 6379, "pool_size": 4,
+        "database": -1, "connect_timeout_ms": 3000,
+        "session_ttl_seconds": 3600, "rate_limit_window_seconds": 60,
+        "rate_limit_max_requests": 100
+      }
+    })";
+    auto result = ConfigLoader::LoadFromString(json);
+    ASSERT_TRUE(IsError(result)) << "Expected error for redis.database=-1";
+    EXPECT_NE(ErrMsg(result).find("redis.database"), std::string::npos) << ErrMsg(result);
+}
+
+TEST_F(ConfigLoaderTest, P2a_RedisZeroConnectTimeout_ReturnsError) {
+    const char* json = R"({
+      "mysql": { "host": "h", "username": "u", "database": "d" },
+      "redis": {
+        "enabled": true, "host": "r", "port": 6379, "pool_size": 4,
+        "database": 0, "connect_timeout_ms": 0,
+        "session_ttl_seconds": 3600, "rate_limit_window_seconds": 60,
+        "rate_limit_max_requests": 100
+      }
+    })";
+    auto result = ConfigLoader::LoadFromString(json);
+    ASSERT_TRUE(IsError(result)) << "Expected error for redis.connect_timeout_ms=0";
+    EXPECT_NE(ErrMsg(result).find("connect_timeout_ms"), std::string::npos) << ErrMsg(result);
+}
+
+TEST_F(ConfigLoaderTest, P2a_RedisNegativeConnectTimeout_ReturnsError) {
+    const char* json = R"({
+      "mysql": { "host": "h", "username": "u", "database": "d" },
+      "redis": {
+        "enabled": true, "host": "r", "port": 6379, "pool_size": 4,
+        "database": 0, "connect_timeout_ms": -500,
+        "session_ttl_seconds": 3600, "rate_limit_window_seconds": 60,
+        "rate_limit_max_requests": 100
+      }
+    })";
+    auto result = ConfigLoader::LoadFromString(json);
+    ASSERT_TRUE(IsError(result)) << "Expected error for redis.connect_timeout_ms=-500";
+    EXPECT_NE(ErrMsg(result).find("connect_timeout_ms"), std::string::npos) << ErrMsg(result);
+}
+
+// ── P2c 环境隔离验证 ──────────────────────────────────────────────────────────
+
+// 确认 fixture 确实清除了外部环境变量：即使宿主机设置了 CHAT_DB_HOST，
+// 测试看到的应是 JSON 中的值而不是环境变量值。
+TEST_F(ConfigLoaderTest, P2c_ExternalEnvDoesNotAffectTest) {
+    // fixture 已在 SetUp 中清除 CHAT_DB_HOST，此处再 setenv 模拟"测试内设置"
+    ::setenv("CHAT_DB_HOST", "env-host.internal", 1);
+    const char* json = R"({
+      "mysql": { "host": "json-host", "username": "u", "database": "d" }
+    })";
+    auto result = ConfigLoader::LoadFromString(json);
+    ASSERT_FALSE(IsError(result)) << ErrMsg(result);
+    // env 覆盖应生效
+    EXPECT_EQ(std::get<ServerConfig>(result).mysql.host, "env-host.internal");
+    // TearDown 会还原 CHAT_DB_HOST
 }
 
 }  // namespace
