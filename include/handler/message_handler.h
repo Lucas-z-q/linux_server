@@ -47,7 +47,7 @@ class MessageHandler : public IMessageHandler {
         return user_service_.isConnectionBoundToUser(conn_id, user_id);
     }
 
-    void onMessagesDelivered(chat::UserId user_id, const std::vector<std::string>& message_ids) override;
+    void onMessagesDelivered(chat::UserId user_id, const std::vector<std::string> &message_ids) override;
 
    private:
     // 处理注册请求。

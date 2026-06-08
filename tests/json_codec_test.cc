@@ -55,6 +55,18 @@ void TestRejectMissingRequiredField() {
     assert(!parse_ok);
 }
 
+void TestRejectInvalidTokenType() {
+    JsonCodec codec;
+    const std::string bad_token_json = R"({"msg_type":"heartbeat","seq":5,"token":123,"data":{}})";
+    Message msg;
+    std::string err;
+
+    const bool decode_ok = codec.decodeMessage(bad_token_json, msg, err);
+
+    assert(!decode_ok);
+    assert(err.find("token") != std::string::npos);
+}
+
 void TestEncodeResponseReturnsPureJson() {
     JsonCodec codec;
     Response resp;
@@ -420,6 +432,7 @@ int main() {
     TestDecodeAndParseLoginRequest();
     TestRejectInvalidJson();
     TestRejectMissingRequiredField();
+    TestRejectInvalidTokenType();
     TestEncodeResponseReturnsPureJson();
     TestSendMessageRequest();
     TestPullOfflineMessages();

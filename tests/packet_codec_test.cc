@@ -80,6 +80,35 @@ void TestFeedRejectsOversizedBufferedPacket() {
     assert(packets[0] == "ok");
 }
 
+void TestFeedAcceptsManySmallPacketsBeyondBufferLimit() {
+    PacketCodec codec;
+    std::vector<std::string> packets;
+    std::string chunk;
+    const std::size_t packet_count = PacketCodec::kMaxPacketSize / 2 + 10;
+    for (std::size_t i = 0; i < packet_count; ++i) {
+        chunk += "x\n";
+    }
+
+    const bool ok = codec.feed(chunk, packets);
+
+    assert(ok);
+    assert(packets.size() == packet_count);
+    for (const std::string& packet : packets) {
+        assert(packet == "x");
+    }
+}
+
+void TestFeedRejectsOversizedCompletePacket() {
+    PacketCodec codec;
+    std::vector<std::string> packets;
+    const std::string oversized(PacketCodec::kMaxPacketSize + 1, 'x');
+
+    const bool ok = codec.feed(oversized + "\n", packets);
+
+    assert(!ok);
+    assert(packets.empty());
+}
+
 }  // namespace
 
 int main() {
@@ -89,6 +118,8 @@ int main() {
     TestFeedReturnsEmptyPacketForBlankLine();
     TestFeedStripsTrailingCarriageReturnForCrlfPackets();
     TestFeedRejectsOversizedBufferedPacket();
+    TestFeedAcceptsManySmallPacketsBeyondBufferLimit();
+    TestFeedRejectsOversizedCompletePacket();
     std::cout << "[PASS] packet codec tests passed\n";
     return 0;
 }

@@ -279,7 +279,7 @@ HandleResult MessageHandler::handlePullOfflineMessages(const Message &msg, chat:
         if (!result.messages.empty()) {
             handle_result.delivered_user_id = result.messages[0].to_user_id;
             handle_result.delivered_message_ids.reserve(result.messages.size());
-            for (const auto& m : result.messages) {
+            for (const auto &m : result.messages) {
                 handle_result.delivered_message_ids.push_back(m.message_id);
             }
         }
@@ -288,7 +288,7 @@ HandleResult MessageHandler::handlePullOfflineMessages(const Message &msg, chat:
     handle_result.response = codec_.encodeResponse(resp);
     return handle_result;
 }
-void MessageHandler::onMessagesDelivered(chat::UserId user_id, const std::vector<std::string>& message_ids) {
+void MessageHandler::onMessagesDelivered(chat::UserId user_id, const std::vector<std::string> &message_ids) {
     chat_service_.markMessagesDelivered(user_id, message_ids);
 }
 
