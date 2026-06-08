@@ -93,6 +93,24 @@ bool GetInt(const nlohmann::json& obj, const char* key, T& out, const std::strin
     return true;
 }
 
+// 从 JSON 对象读取端口字段（uint32_t），并在赋值前严格校验范围 1..65535。
+// 这样可以在截断成 uint16_t 之前捕获 65537 之类的溢出值。
+bool GetPort(const nlohmann::json& obj, const char* key, uint16_t& out, const std::string& field_path,
+             std::string& err) {
+    if (!obj.contains(key)) return true;
+    if (!obj[key].is_number_unsigned()) {
+        err = field_path + " must be an unsigned integer";
+        return false;
+    }
+    uint64_t raw = obj[key].get<uint64_t>();
+    if (raw < 1 || raw > 65535) {
+        err = field_path + " must be in range 1..65535 (got " + std::to_string(raw) + ")";
+        return false;
+    }
+    out = static_cast<uint16_t>(raw);
+    return true;
+}
+
 // 解析 "server" 段。
 std::string ParseServer(const nlohmann::json& root, ServerSection& cfg) {
     if (!root.contains("server")) return "";
@@ -100,9 +118,8 @@ std::string ParseServer(const nlohmann::json& root, ServerSection& cfg) {
     if (!s.is_object()) return "server must be an object";
     std::string err;
     if (!GetStr(s, "listen_ip", cfg.listen_ip, err)) return "server." + err;
-    uint32_t port = cfg.listen_port;
-    if (!GetUInt(s, "listen_port", port, "server.listen_port", err)) return err;
-    cfg.listen_port = static_cast<uint16_t>(port);
+    // 使用 GetPort 在截断前校验范围，防止 65537 -> 1 的静默溢出。
+    if (!GetPort(s, "listen_port", cfg.listen_port, "server.listen_port", err)) return err;
     return "";
 }
 
@@ -117,7 +134,8 @@ std::string ParseMysql(const nlohmann::json& root, DbConfig& cfg, DbPoolConfig& 
     if (!GetStr(m, "username", cfg.username, err)) return "mysql." + err;
     if (!GetStr(m, "password", cfg.password, err)) return "mysql." + err;
     if (!GetStr(m, "database", cfg.database, err)) return "mysql." + err;
-    if (!GetUInt(m, "port", cfg.port, "mysql.port", err)) return err;
+    // 使用 GetPort 在截断前校验范围，防止 99999 之类的值静默成为合法端口。
+    if (!GetPort(m, "port", cfg.port, "mysql.port", err)) return err;
     if (!GetUInt(m, "connect_timeout_seconds", cfg.connect_timeout_seconds, "mysql.connect_timeout_seconds", err))
         return err;
     if (!GetUInt(m, "read_timeout_seconds", cfg.read_timeout_seconds, "mysql.read_timeout_seconds", err)) return err;
@@ -144,9 +162,8 @@ std::string ParseRedis(const nlohmann::json& root, RedisConfig& cfg) {
     if (!GetStr(r, "password", cfg.password, err)) return "redis." + err;
     if (!GetStr(r, "key_prefix", cfg.key_prefix, err)) return "redis." + err;
 
-    uint32_t port = cfg.port;
-    if (!GetUInt(r, "port", port, "redis.port", err)) return err;
-    cfg.port = static_cast<uint16_t>(port);
+    // 使用 GetPort 在截断前校验范围。
+    if (!GetPort(r, "port", cfg.port, "redis.port", err)) return err;
     if (!GetInt(r, "database", cfg.database, "redis.database", err)) return err;
     if (!GetInt(r, "pool_size", cfg.pool_size, "redis.pool_size", err)) return err;
     if (!GetInt(r, "connect_timeout_ms", cfg.connect_timeout_ms, "redis.connect_timeout_ms", err)) return err;
@@ -237,8 +254,9 @@ ConfigResult ConfigLoader::ParseAndValidate(const std::string& json_str) {
     field_err = ParseTimeout(root, config.timeout);
     if (!field_err.empty()) return ConfigError{field_err};
 
-    // 3. 环境变量覆盖
-    ApplyEnvOverrides(config);
+    // 3. 环境变量覆盖（非法值立即报错，不静默跳过）
+    std::string env_err = ApplyEnvOverrides(config);
+    if (!env_err.empty()) return ConfigError{env_err};
 
     // 4. 全量校验
     std::string validation_err = Validate(config);
@@ -247,28 +265,40 @@ ConfigResult ConfigLoader::ParseAndValidate(const std::string& json_str) {
     return config;
 }
 
-void ConfigLoader::ApplyEnvOverrides(ServerConfig& config) {
+// 返回首个环境变量解析错误；全部成功时返回空字符串。
+// 非法格式（如 "abc"）或超出范围（如 "65537"）均视为错误，而不是静默跳过。
+std::string ConfigLoader::ApplyEnvOverrides(ServerConfig& config) {
     // MySQL 覆盖
     if (const char* v = Env("CHAT_DB_HOST")) config.mysql.host = v;
     if (const char* v = Env("CHAT_DB_USER")) config.mysql.username = v;
     if (const char* v = Env("CHAT_DB_PASSWORD")) config.mysql.password = v;
     if (const char* v = Env("CHAT_DB_NAME")) config.mysql.database = v;
     if (const char* v = Env("CHAT_DB_PORT")) {
-        uint16_t port = 0;
-        if (StrictParseInt(v, port)) config.mysql.port = port;
+        uint32_t raw = 0;
+        if (!StrictParseInt(v, raw) || raw < 1 || raw > 65535) {
+            return std::string("CHAT_DB_PORT is not a valid port number: ") + v;
+        }
+        config.mysql.port = static_cast<uint16_t>(raw);
     }
 
     // Redis 覆盖
     if (const char* v = Env("CHAT_REDIS_HOST")) config.redis.host = v;
     if (const char* v = Env("CHAT_REDIS_PASSWORD")) config.redis.password = v;
     if (const char* v = Env("CHAT_REDIS_PORT")) {
-        uint16_t port = 0;
-        if (StrictParseInt(v, port)) config.redis.port = port;
+        uint32_t raw = 0;
+        if (!StrictParseInt(v, raw) || raw < 1 || raw > 65535) {
+            return std::string("CHAT_REDIS_PORT is not a valid port number: ") + v;
+        }
+        config.redis.port = static_cast<uint16_t>(raw);
     }
     if (const char* v = Env("CHAT_REDIS_DB")) {
         int db = 0;
-        if (StrictParseInt(v, db)) config.redis.database = db;
+        if (!StrictParseInt(v, db)) {
+            return std::string("CHAT_REDIS_DB is not a valid integer: ") + v;
+        }
+        config.redis.database = db;
     }
+    return "";
 }
 
 std::string ConfigLoader::Validate(const ServerConfig& config) {

@@ -37,7 +37,18 @@ TcpServer::TcpServer(const std::string &ip, uint16_t port, IMessageHandler &hand
 TcpServer::~TcpServer() { stop(); }
 
 bool TcpServer::createListenSocket() {
-    listen_fd_ = socket(AF_INET, SOCK_STREAM, 0);
+    // 根据 ip_ 確定地址族，使 socket 类型与 bindAddress() 一致。
+    struct in_addr addr4;
+    struct in6_addr addr6;
+    int af = AF_INET;  // 默认 IPv4
+    if (inet_pton(AF_INET6, ip_.c_str(), &addr6) == 1) {
+        af = AF_INET6;
+    } else if (inet_pton(AF_INET, ip_.c_str(), &addr4) != 1) {
+        // ip_ 应已由 ConfigLoader 校验，此分支理论上不会进入。
+        std::cerr << "createListenSocket: invalid IP address: " << ip_ << std::endl;
+        return false;
+    }
+    listen_fd_ = socket(af, SOCK_STREAM, 0);
     if (listen_fd_ == -1) {
         return false;
     }

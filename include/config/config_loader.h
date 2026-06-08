@@ -40,7 +40,8 @@ class ConfigLoader {
     static ConfigResult ParseAndValidate(const std::string& json_str);
 
     // 用环境变量覆盖敏感字段（CHAT_DB_PASSWORD、CHAT_REDIS_PASSWORD 等）。
-    static void ApplyEnvOverrides(ServerConfig& config);
+    // 非法格式或超出范围时返回错误字符串，而不是静默跳过。
+    static std::string ApplyEnvOverrides(ServerConfig& config);
 
     // 全量校验配置，返回首个校验错误；通过则返回空字符串。
     static std::string Validate(const ServerConfig& config);

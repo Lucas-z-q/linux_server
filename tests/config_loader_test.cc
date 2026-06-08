@@ -211,13 +211,14 @@ TEST(ConfigLoaderTest, Validate_ConnectTimeoutZero) {
 // ── Redis 校验（仅 enabled=true 时生效）────────────────────────────────────
 
 TEST(ConfigLoaderTest, Validate_RedisDisabledSkipsValidation) {
-    // Redis disabled，即使 host 为空也不应报错
+    // Redis disabled 时，仅跳过语义校验（host 非空、pool_size > 0 等），
+    // 但端口值仍需合法（GetPort 在解析阶段校验）。
+    // 这里传入 host 为空、pool_size 为 0 ——这些只在 enabled=true 时校验。
     const char* json = R"({
       "mysql": { "host": "h", "username": "u", "database": "d" },
-      "redis": { "enabled": false, "host": "", "port": 0, "pool_size": 0 }
+      "redis": { "enabled": false, "host": "", "port": 6379, "pool_size": 0 }
     })";
     auto result = ConfigLoader::LoadFromString(json);
-    // 端口 0 不影响 redis 禁用时的校验
     ASSERT_FALSE(IsError(result)) << ErrMsg(result);
 }
 
@@ -341,6 +342,113 @@ TEST(ParseConfigPathArgTest, ConfigArgAtEnd_ReturnsEmpty) {
     int argc = 2;
     std::string path = ParseConfigPathArg(argc, const_cast<char**>(args));
     EXPECT_TRUE(path.empty());
+}
+
+// ── P1 回归测试 ───────────────────────────────────────────────────────────────
+
+// Bug: 端口溢出 —— 65537 截断成 uint16_t 变成 1，没有报错。
+TEST(ConfigLoaderTest, P1_PortOverflow_ServerListenPort) {
+    const char* json = R"({
+      "server": { "listen_ip": "127.0.0.1", "listen_port": 65537 },
+      "mysql": { "host": "h", "username": "u", "database": "d" }
+    })";
+    auto result = ConfigLoader::LoadFromString(json);
+    ASSERT_TRUE(IsError(result)) << "Expected error for port 65537, got OK";
+    EXPECT_NE(ErrMsg(result).find("listen_port"), std::string::npos) << ErrMsg(result);
+}
+
+TEST(ConfigLoaderTest, P1_PortOverflow_MysqlPort) {
+    const char* json = R"({
+      "mysql": { "host": "h", "username": "u", "database": "d", "port": 99999 }
+    })";
+    // mysql.port 使用 GetUInt 读到 uint16_t，但 GetPort 还未应用到 mysql.port；
+    // 该字段由 Validate() 的 mysql.port < 1 兜底，但大值可能截断后变成合法小端口。
+    // 本测试确认 99999 不会悄悄成为端口 34463。
+    // mysql.port 的 JSON 字段目前用 GetUInt<uint16_t>，nlohmann 会把 99999 截断，
+    // 所以应改用 GetPort，否则此测试会失败以暴露问题。
+    //
+    // 注意：mysql.port 当前字段类型是 uint16_t，GetUInt<uint16_t> 直接截断。
+    // 本测试用来追踪该行为：若值被截断并通过校验，则视为 bug。
+    auto result = ConfigLoader::LoadFromString(json);
+    // 正确行为：99999 超出范围，应报错。
+    ASSERT_TRUE(IsError(result)) << "Expected error for mysql.port 99999, got port "
+                                 << (IsError(result) ? 0 : std::get<ServerConfig>(result).mysql.port);
+    EXPECT_NE(ErrMsg(result).find("port"), std::string::npos) << ErrMsg(result);
+}
+
+TEST(ConfigLoaderTest, P1_PortOverflow_RedisPort) {
+    const char* json = R"({
+      "mysql": { "host": "h", "username": "u", "database": "d" },
+      "redis": { "enabled": true, "host": "r", "port": 70000, "pool_size": 4,
+                 "session_ttl_seconds": 3600, "rate_limit_window_seconds": 60,
+                 "rate_limit_max_requests": 100 }
+    })";
+    auto result = ConfigLoader::LoadFromString(json);
+    ASSERT_TRUE(IsError(result)) << "Expected error for redis.port 70000";
+    EXPECT_NE(ErrMsg(result).find("port"), std::string::npos) << ErrMsg(result);
+}
+
+// Bug: 非法环境变量被忽略 —— CHAT_DB_PORT=abc 应报错而非静默跳过。
+TEST(ConfigLoaderTest, P1_BadEnvPort_ReturnsError) {
+    // 先设置非法环境变量
+    ::setenv("CHAT_DB_PORT", "abc", 1);
+    const char* json = R"({
+      "mysql": { "host": "h", "username": "u", "database": "d" }
+    })";
+    auto result = ConfigLoader::LoadFromString(json);
+    ::unsetenv("CHAT_DB_PORT");
+
+    ASSERT_TRUE(IsError(result)) << "Expected error for CHAT_DB_PORT=abc";
+    EXPECT_NE(ErrMsg(result).find("CHAT_DB_PORT"), std::string::npos) << ErrMsg(result);
+}
+
+TEST(ConfigLoaderTest, P1_BadEnvPort_Overflow_ReturnsError) {
+    ::setenv("CHAT_DB_PORT", "65537", 1);
+    const char* json = R"({
+      "mysql": { "host": "h", "username": "u", "database": "d" }
+    })";
+    auto result = ConfigLoader::LoadFromString(json);
+    ::unsetenv("CHAT_DB_PORT");
+
+    ASSERT_TRUE(IsError(result)) << "Expected error for CHAT_DB_PORT=65537";
+    EXPECT_NE(ErrMsg(result).find("CHAT_DB_PORT"), std::string::npos) << ErrMsg(result);
+}
+
+TEST(ConfigLoaderTest, P1_BadEnvRedisPort_ReturnsError) {
+    ::setenv("CHAT_REDIS_PORT", "not_a_port", 1);
+    const char* json = R"({
+      "mysql": { "host": "h", "username": "u", "database": "d" }
+    })";
+    auto result = ConfigLoader::LoadFromString(json);
+    ::unsetenv("CHAT_REDIS_PORT");
+
+    ASSERT_TRUE(IsError(result)) << "Expected error for CHAT_REDIS_PORT=not_a_port";
+    EXPECT_NE(ErrMsg(result).find("CHAT_REDIS_PORT"), std::string::npos) << ErrMsg(result);
+}
+
+TEST(ConfigLoaderTest, P1_BadEnvRedisDb_ReturnsError) {
+    ::setenv("CHAT_REDIS_DB", "two", 1);
+    const char* json = R"({
+      "mysql": { "host": "h", "username": "u", "database": "d" }
+    })";
+    auto result = ConfigLoader::LoadFromString(json);
+    ::unsetenv("CHAT_REDIS_DB");
+
+    ASSERT_TRUE(IsError(result)) << "Expected error for CHAT_REDIS_DB=two";
+    EXPECT_NE(ErrMsg(result).find("CHAT_REDIS_DB"), std::string::npos) << ErrMsg(result);
+}
+
+// 合法环境变量不应报错
+TEST(ConfigLoaderTest, P1_ValidEnvPort_Accepted) {
+    ::setenv("CHAT_DB_PORT", "5432", 1);
+    const char* json = R"({
+      "mysql": { "host": "h", "username": "u", "database": "d" }
+    })";
+    auto result = ConfigLoader::LoadFromString(json);
+    ::unsetenv("CHAT_DB_PORT");
+
+    ASSERT_FALSE(IsError(result)) << ErrMsg(result);
+    EXPECT_EQ(std::get<ServerConfig>(result).mysql.port, 5432);
 }
 
 }  // namespace
