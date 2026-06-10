@@ -98,15 +98,23 @@ class ConnectionContext {
     // 递减跨连接推送未完成投递计数。
     void decrementPendingDeliveryMarks() { pending_delivery_marks_.fetch_sub(1); }
 
+    // 判断连接是否有请求、待发送数据或投递围栏，超时扫描应暂缓关闭。
+    bool shouldDeferTimeout();
+
     // 在接收到数据后更新元数据。
     // 递增接收次数，并将 `bytes` 累加到接收总字节数中。
-    // 同时更新最后活跃时间戳。
     void touchOnRecv(size_t bytes);
+
+    // 在解析出完整非空协议包后更新协议活跃时间。
+    void touchOnPacket();
 
     // 在发送数据后更新元数据。
     // 递增发送次数，并将 `bytes` 累加到发送总字节数中。
-    // 同时更新最后活跃时间戳。
     void touchOnSend(size_t bytes);
+
+    // 设置或清除当前连接绑定的认证用户 ID。
+    void setAuthenticatedUserId(chat::UserId user_id);
+    void clearAuthenticatedUserId();
 
     // 将连接状态标记为 CLOSING（正在关闭）。
     void markClosing();

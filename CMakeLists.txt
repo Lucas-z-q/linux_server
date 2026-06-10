@@ -385,6 +385,27 @@ target_link_libraries(server_shutdown_test PRIVATE
 
 add_test(NAME server_shutdown_test COMMAND server_shutdown_test)
 
+add_executable(server_timeout_test
+    tests/server_timeout_test.cc
+    src/TcpServer.cc
+    src/TcpConnection.cc
+    src/ConnectionContext.cc
+    src/concurrency/thread_pool.cc
+    src/codec/packet_codec.cc
+)
+
+target_include_directories(server_timeout_test PRIVATE include third_party tests)
+target_link_libraries(server_timeout_test PRIVATE
+    chat_logger
+    redis_runtime
+    GTest::gtest
+    GTest::gtest_main
+    Threads::Threads
+)
+
+add_test(NAME server_timeout_test COMMAND server_timeout_test)
+set_tests_properties(server_timeout_test PROPERTIES TIMEOUT 15)
+
 add_executable(remote_push_io_test
     tests/remote_push_io_test.cc
     src/TcpServer.cc

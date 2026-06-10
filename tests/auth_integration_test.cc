@@ -7,6 +7,8 @@
 #include <unistd.h>
 
 #include <cassert>
+#include <cerrno>
+#include <chrono>
 #include <csignal>
 #include <cstdio>
 #include <cstring>
@@ -331,6 +333,36 @@ void TestOfflineMessagePullOverTcp() {
     close(fd_bob);
 }
 
+void TestAuthenticatedConnectionTimesOut() {
+    const int fd = ConnectToServer();
+    const nlohmann::json login_resp = SendAndReceiveOnSocket(
+        fd, R"({"msg_type":"login","seq":40,"token":"","data":{"username":"alice","password":"123456"}})");
+    ExpectCommonEnvelope(login_resp, "login_resp", 40, chat::ErrorCode::OK);
+    const std::string token = login_resp["data"]["token"].get<std::string>();
+
+    const auto deadline = std::chrono::steady_clock::now() + std::chrono::seconds(3);
+    bool received_eof = false;
+    char buffer[128];
+    while (std::chrono::steady_clock::now() < deadline) {
+        const ssize_t count = recv(fd, buffer, sizeof(buffer), 0);
+        if (count == 0) {
+            received_eof = true;
+            break;
+        }
+        if (count < 0 && errno != EAGAIN && errno != EWOULDBLOCK) {
+            break;
+        }
+    }
+    assert(received_eof);
+    close(fd);
+
+    const int new_fd = ConnectToServer();
+    const std::string whoami_request = R"({"msg_type":"whoami","seq":41,"token":")" + token + R"(","data":{}})";
+    const nlohmann::json whoami_resp = SendAndReceiveOnSocket(new_fd, whoami_request);
+    ExpectCommonEnvelope(whoami_resp, "whoami_resp", 41, chat::ErrorCode::USER_NOT_FOUND);
+    close(new_fd);
+}
+
 }  // namespace
 
 int main() {
@@ -344,6 +376,7 @@ int main() {
     TestWhoAmIAfterLoginAndLogoutOnSameConnection();
     TestSendMessageOverTcp();
     TestOfflineMessagePullOverTcp();
+    TestAuthenticatedConnectionTimesOut();
 
     server.Stop();
     const std::string log = server.ReadLog();

@@ -4,6 +4,7 @@
 #include <functional>
 #include <iostream>
 #include <nlohmann/json.hpp>
+#include <optional>
 #include <string>
 
 #include "common/error_code.h"
@@ -37,6 +38,48 @@ class FakeUserRepository : public IUserRepository {
         (void)nickname;
         return {};
     }
+};
+
+class CountingGlobalSessionStore : public IGlobalSessionStore {
+   public:
+    bool Bind(ConnectionId connection_id, const ConnectionSession& session, Timestamp issued_at) override {
+        (void)connection_id;
+        (void)session;
+        (void)issued_at;
+        ++bind_count;
+        return true;
+    }
+
+    bool Refresh(ConnectionId connection_id, const ConnectionSession& session) override {
+        (void)connection_id;
+        (void)session;
+        ++refresh_count;
+        return true;
+    }
+
+    bool ClearPresence(ConnectionId connection_id, const ConnectionSession& session) override {
+        (void)connection_id;
+        (void)session;
+        return true;
+    }
+
+    bool RevokeToken(const std::string& token) override {
+        (void)token;
+        return true;
+    }
+
+    std::optional<StoredSessionToken> GetToken(const std::string& token) override {
+        (void)token;
+        return std::nullopt;
+    }
+
+    std::optional<StoredUserPresence> GetPresence(UserId user_id) override {
+        (void)user_id;
+        return std::nullopt;
+    }
+
+    int bind_count = 0;
+    int refresh_count = 0;
 };
 
 std::string HashPasswordForTest(const std::string& password) {
@@ -92,6 +135,27 @@ void TestHandleHeartbeatSuccess() {
     assert(resp["message"].get<std::string>() == "Heartbeat received");
     assert(resp["data"].contains("server_time"));
     assert(resp["data"]["server_time"].is_number_integer());
+}
+
+void TestAnyValidRequestRefreshesPresence() {
+    FakeUserRepository repo;
+    SessionManager session_manager;
+    CountingGlobalSessionStore global_store;
+    UserService service(repo, session_manager, &global_store);
+    FakeMessageRepository message_repo;
+    ChatService chat_service(session_manager, message_repo, repo);
+    MessageHandler handler(service, chat_service);
+
+    ConnectionSession session{true, 10001, "alice", "token"};
+    handler.applyBindSession(42, session);
+    assert(global_store.bind_count == 1);
+
+    handler.handle(R"({"msg_type":"heartbeat","seq":1,"token":"","data":{}})", 42);
+    handler.handle(R"({"msg_type":"unknown_valid","seq":2,"token":"","data":{}})", 42);
+    assert(global_store.refresh_count == 2);
+
+    handler.handle(R"({"msg_type":"heartbeat","seq":)", 42);
+    assert(global_store.refresh_count == 2);
 }
 
 void TestHandleLoginDbQueryFailedWithoutDbConfig() {
@@ -585,6 +649,7 @@ void TestHandlePullOfflineMessagesSuccess() {
 
 int main() {
     TestHandleHeartbeatSuccess();
+    TestAnyValidRequestRefreshesPresence();
     TestHandleLoginDbQueryFailedWithoutDbConfig();
     TestHandleRegisterDbQueryFailedWithoutDbConfig();
     TestHandleLogoutReturnsUserNotLoggedIn();

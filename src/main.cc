@@ -131,7 +131,10 @@ int main(int argc, char* argv[]) {
     chat::MessageHandler handler(user_service, chat_service);
 
     // 4. 启动服务器
-    TcpServer server(cfg.server.listen_ip, cfg.server.listen_port, handler);
+    TcpServerTimeoutOptions timeout_options;
+    timeout_options.idle_timeout_ms = cfg.connection.idle_timeout_ms;
+    timeout_options.heartbeat_timeout_ms = cfg.heartbeat.timeout_ms;
+    TcpServer server(cfg.server.listen_ip, cfg.server.listen_port, handler, timeout_options);
     if (push_stream) {
         push_stream->SetDeliveryCallback([&server, &cfg](const chat::RemotePushEvent& event) {
             return server.deliverRemotePush(event, std::chrono::milliseconds(cfg.timeout.remote_push_ms));
@@ -139,6 +142,7 @@ int main(int argc, char* argv[]) {
         push_stream->SetMarkDeliveredCallback([&message_repo](chat::UserId user_id, const std::string& message_id) {
             return message_repo.markDelivered(user_id, {message_id}).status == chat::RepositoryStatus::kOk;
         });
+        server.setPreShutdownHook([&push_stream]() { push_stream->Stop(); });
         push_stream->Start();
     }
     const int result = RunMain([&]() { return server.start(); });

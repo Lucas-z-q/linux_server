@@ -6,8 +6,10 @@
 #include <sys/epoll.h>
 #include <sys/eventfd.h>
 #include <sys/socket.h>
+#include <sys/timerfd.h>
 #include <unistd.h>
 
+#include <algorithm>
 #include <cerrno>
 #include <chrono>
 #include <cstring>
@@ -26,14 +28,17 @@
  * @brief Implements TcpServer lifecycle with epoll-based read/write event handling.
  */
 
-TcpServer::TcpServer(const std::string &ip, uint16_t port, IMessageHandler &handler)
+TcpServer::TcpServer(const std::string &ip, uint16_t port, IMessageHandler &handler,
+                     TcpServerTimeoutOptions timeout_options)
     : listen_fd_(-1),
       epoll_fd_(-1),
       worker_event_fd_(-1),
+      timer_fd_(-1),
       ip_(ip),
       port_(port),
       handler_(handler),
       worker_pool_(kDefaultWorkerThreads),
+      timeout_options_(timeout_options),
       stopping_(false) {}
 
 TcpServer::~TcpServer() { stop(); }
@@ -53,6 +58,11 @@ bool TcpServer::createListenSocket() {
     listen_fd_ = socket(af, SOCK_STREAM, 0);
     if (listen_fd_ == -1) {
         LOG_ERROR("TcpServer") << "socket failed errno=" << errno << " error=" << std::strerror(errno);
+        return false;
+    }
+    const int reuse_address = 1;
+    if (setsockopt(listen_fd_, SOL_SOCKET, SO_REUSEADDR, &reuse_address, sizeof(reuse_address)) < 0) {
+        LOG_ERROR("TcpServer") << "setsockopt SO_REUSEADDR failed errno=" << errno << " error=" << std::strerror(errno);
         return false;
     }
     return true;
@@ -118,6 +128,21 @@ void TcpServer::stop() {
         return;
     }
 
+    std::vector<RemotePushTask> pending_remote_pushes;
+    {
+        std::lock_guard<std::mutex> lock(remote_push_tasks_mutex_);
+        pending_remote_pushes.swap(remote_push_tasks_);
+    }
+    for (RemotePushTask &task : pending_remote_pushes) {
+        int pending = 0;
+        if (task.state->compare_exchange_strong(pending, 2)) {
+            try {
+                task.completion->set_value(chat::RemoteDeliveryOutcome::kRetry);
+            } catch (const std::future_error &) {
+            }
+        }
+    }
+
     // 主动写入 eventfd，安全唤醒 acceptLoop 中的 epoll_wait。
     {
         std::lock_guard<std::mutex> lock(worker_event_fd_mutex_);
@@ -130,6 +155,8 @@ void TcpServer::stop() {
     }
 }
 
+void TcpServer::setPreShutdownHook(std::function<void()> hook) { pre_shutdown_hook_ = std::move(hook); }
+
 chat::RemoteDeliveryOutcome TcpServer::deliverRemotePush(const chat::RemotePushEvent &event,
                                                          std::chrono::milliseconds timeout) {
     if (stopping_.load() || event.target_connection_id == 0 || event.to_user_id <= 0 || event.payload.empty()) {
@@ -141,7 +168,7 @@ chat::RemoteDeliveryOutcome TcpServer::deliverRemotePush(const chat::RemotePushE
     std::future<chat::RemoteDeliveryOutcome> result = completion->get_future();
     {
         std::lock_guard<std::mutex> event_fd_lock(worker_event_fd_mutex_);
-        if (worker_event_fd_ == -1) {
+        if (stopping_.load() || worker_event_fd_ == -1) {
             return chat::RemoteDeliveryOutcome::kRetry;
         }
         {
@@ -190,8 +217,11 @@ bool TcpServer::start() {
         return false;
 
     auto cleanup_resources = [this]() {
-        stop();               // 确保安全设置了停止标志
-        worker_pool_.stop();  // 阻塞等待业务线程安全降落
+        stop();
+
+        if (pre_shutdown_hook_) {
+            pre_shutdown_hook_();
+        }
 
         if (listen_fd_ != -1) {
             close(listen_fd_);
@@ -210,6 +240,9 @@ bool TcpServer::start() {
             closeClientFd(fd, "server_stop");
         }
 
+        // 连接清理任务已全部提交，等待业务线程和 Redis 清理完成后再销毁通知句柄。
+        worker_pool_.stop();
+
         {
             std::lock_guard<std::mutex> lock(completed_tasks_mutex_);
             std::queue<ResponseTask> empty;
@@ -222,6 +255,10 @@ bool TcpServer::start() {
                 close(worker_event_fd_);
                 worker_event_fd_ = -1;
             }
+        }
+        if (timer_fd_ != -1) {
+            close(timer_fd_);
+            timer_fd_ = -1;
         }
         if (epoll_fd_ != -1) {
             close(epoll_fd_);
@@ -255,7 +292,7 @@ bool TcpServer::start() {
         return false;
     }
 
-    if (!createWorkerEventFd() || !registerWorkerEventFd()) {
+    if (!createWorkerEventFd() || !registerWorkerEventFd() || !createTimerFd() || !registerTimerFd()) {
         cleanup_resources();
         return false;
     }
@@ -301,6 +338,10 @@ void TcpServer::acceptLoop(int epoll_fd) {
 
             if (fd == worker_event_fd_) {
                 onWorkerResultReadable();
+                continue;
+            }
+            if (fd == timer_fd_) {
+                onTimerReadable();
                 continue;
             }
 
@@ -390,30 +431,30 @@ std::shared_ptr<ConnectionContext> TcpServer::registerConnection(int conn_fd, co
         connections_[conn_id] = context;
         fd_to_context_[conn_fd] = context;
     }
+    timeout_scan_queue_.push_back(conn_id);
 
     logConnectionMeta(context->meta());
     return context;
 }
 
-void TcpServer::unregisterConnection(uint64_t conn_id, const std::string &reason) {
-    ConnectionMeta snapshot{};
-    std::shared_ptr<ConnectionContext> context;
+bool TcpServer::unregisterConnection(const std::shared_ptr<ConnectionContext> &context) {
     {
-        // Remove once under lock to keep close path idempotent.
         std::scoped_lock lock(connections_mutex_, fd_to_context_mutex_);
-        auto it = connections_.find(conn_id);
-        if (it == connections_.end()) {
-            return;
+        auto it = connections_.find(context->conn_id());
+        if (it == connections_.end() || it->second != context) {
+            return false;
         }
-        context = it->second;
         context->markClosing();
         fd_to_context_.erase(context->fd());
         connections_.erase(it);
     }
 
-    context->markClosed();
-    snapshot = context->meta();
-    logConnectionDisconnected(snapshot, reason);
+    const chat::UserId user_id = context->meta().authenticated_user_id;
+    const auto authenticated_it = authenticated_connections_.find(user_id);
+    if (authenticated_it != authenticated_connections_.end() && authenticated_it->second == context->conn_id()) {
+        authenticated_connections_.erase(authenticated_it);
+    }
+    return true;
 }
 
 void TcpServer::logConnectionMeta(const ConnectionMeta &meta) {
@@ -434,11 +475,59 @@ void TcpServer::closeClientFd(int fd, const std::string &reason) {
                                << " error=" << std::strerror(errno);
     }
 
+    if (!unregisterConnection(context)) {
+        return;
+    }
+
     context->clearPendingSend();
     context->clearPendingRequests();
-    handler_.onConnectionClosed(conn_id);
-    unregisterConnection(conn_id, reason);
     context->closeConnection();
+    context->markClosed();
+    logConnectionDisconnected(context->meta(), reason);
+    dispatchConnectionClosed(conn_id);
+}
+
+void TcpServer::dispatchConnectionClosed(chat::ConnectionId conn_id) {
+    auto cleanup = [this, conn_id]() {
+        try {
+            handler_.onConnectionClosed(conn_id);
+        } catch (const std::exception &) {
+            LOG_ERROR("TcpServer") << "connection cleanup failed conn_id=" << conn_id << " exception=std_exception";
+        } catch (...) {
+            LOG_ERROR("TcpServer") << "connection cleanup failed conn_id=" << conn_id << " exception=unknown";
+        }
+    };
+
+    try {
+        worker_pool_.submit(cleanup);
+    } catch (const std::exception &) {
+        LOG_WARN("TcpServer") << "submit connection cleanup failed; running synchronously conn_id=" << conn_id;
+        cleanup();
+    }
+}
+
+void TcpServer::bindAuthenticatedConnection(const std::shared_ptr<ConnectionContext> &context, chat::UserId user_id) {
+    unbindAuthenticatedConnection(context);
+
+    const auto old_it = authenticated_connections_.find(user_id);
+    if (old_it != authenticated_connections_.end() && old_it->second != context->conn_id()) {
+        auto old_context = getConnectionContextById(old_it->second);
+        if (old_context) {
+            old_context->clearAuthenticatedUserId();
+        }
+    }
+
+    authenticated_connections_[user_id] = context->conn_id();
+    context->setAuthenticatedUserId(user_id);
+}
+
+void TcpServer::unbindAuthenticatedConnection(const std::shared_ptr<ConnectionContext> &context) {
+    const chat::UserId user_id = context->meta().authenticated_user_id;
+    const auto it = authenticated_connections_.find(user_id);
+    if (it != authenticated_connections_.end() && it->second == context->conn_id()) {
+        authenticated_connections_.erase(it);
+    }
+    context->clearAuthenticatedUserId();
 }
 
 void TcpServer::onReadable(int fd) {
@@ -753,8 +842,10 @@ void TcpServer::onWorkerResultReadable() {
 
         if (task.session_action == SessionAction::BIND) {
             handler_.applyBindSession(task.conn_id, task.pending_session);
+            bindAuthenticatedConnection(context, task.pending_session.user_id);
         } else if (task.session_action == SessionAction::UNBIND) {
             handler_.applyUnbindSession(task.conn_id);
+            unbindAuthenticatedConnection(context);
         }
 
         // 处理主动推送消息 (pushes)
@@ -905,6 +996,90 @@ bool TcpServer::registerWorkerEventFd() {
     return true;
 }
 
+bool TcpServer::createTimerFd() {
+    if (timer_fd_ != -1) {
+        return true;
+    }
+
+    timer_fd_ = timerfd_create(CLOCK_MONOTONIC, TFD_NONBLOCK | TFD_CLOEXEC);
+    if (timer_fd_ == -1) {
+        LOG_ERROR("TcpServer") << "timerfd creation failed errno=" << errno << " error=" << std::strerror(errno);
+        return false;
+    }
+
+    const uint64_t interval_ms = std::max<uint32_t>(1, timeout_options_.scan_interval_ms);
+    struct itimerspec timer_spec {};
+    timer_spec.it_interval.tv_sec = static_cast<time_t>(interval_ms / 1000);
+    timer_spec.it_interval.tv_nsec = static_cast<long>((interval_ms % 1000) * 1000000);
+    timer_spec.it_value = timer_spec.it_interval;
+    if (timerfd_settime(timer_fd_, 0, &timer_spec, nullptr) < 0) {
+        LOG_ERROR("TcpServer") << "timerfd_settime failed errno=" << errno << " error=" << std::strerror(errno);
+        return false;
+    }
+    return true;
+}
+
+bool TcpServer::registerTimerFd() {
+    if (epoll_fd_ == -1 || timer_fd_ == -1) {
+        return false;
+    }
+
+    struct epoll_event ev {};
+    ev.events = EPOLLIN | EPOLLET;
+    ev.data.fd = timer_fd_;
+    if (epoll_ctl(epoll_fd_, EPOLL_CTL_ADD, timer_fd_, &ev) < 0) {
+        LOG_ERROR("TcpServer") << "epoll_ctl add timer fd failed errno=" << errno << " error=" << std::strerror(errno);
+        return false;
+    }
+    return true;
+}
+
+void TcpServer::onTimerReadable() {
+    uint64_t expirations = 0;
+    while (read(timer_fd_, &expirations, sizeof(expirations)) < 0 && errno == EINTR) {
+    }
+    scanConnectionTimeouts();
+}
+
+void TcpServer::scanConnectionTimeouts() {
+    const auto now = std::chrono::steady_clock::now();
+    const size_t scan_count = std::min(kMaxTimeoutScanBatch, timeout_scan_queue_.size());
+    for (size_t i = 0; i < scan_count; ++i) {
+        const chat::ConnectionId conn_id = timeout_scan_queue_.front();
+        timeout_scan_queue_.pop_front();
+
+        auto context = getConnectionContextById(conn_id);
+        if (!context) {
+            continue;
+        }
+
+        bool timed_out = false;
+        std::string reason;
+        if (!context->shouldDeferTimeout()) {
+            const ConnectionMeta &meta = context->meta();
+            const auto last_io_at = std::max(meta.last_recv_at, meta.last_send_at);
+            const auto idle_ms = std::chrono::duration_cast<std::chrono::milliseconds>(now - last_io_at);
+            if (idle_ms >= std::chrono::milliseconds(timeout_options_.idle_timeout_ms)) {
+                timed_out = true;
+                reason = "idle_timeout";
+            } else if (meta.authenticated_user_id > 0) {
+                const auto heartbeat_ms =
+                    std::chrono::duration_cast<std::chrono::milliseconds>(now - meta.last_active_at);
+                if (heartbeat_ms >= std::chrono::milliseconds(timeout_options_.heartbeat_timeout_ms)) {
+                    timed_out = true;
+                    reason = "heartbeat_timeout";
+                }
+            }
+        }
+
+        if (timed_out) {
+            closeClientFd(context->fd(), reason);
+        } else if (getConnectionContextById(conn_id)) {
+            timeout_scan_queue_.push_back(conn_id);
+        }
+    }
+}
+
 void TcpServer::onWritable(int fd) {
     auto context = getConnectionContextByFd(fd);
     if (!context) {
@@ -1016,11 +1191,15 @@ std::shared_ptr<ConnectionContext> TcpServer::getConnectionContextByFd(int fd) {
 
 void TcpServer::logConnectionDisconnected(const ConnectionMeta &meta, const std::string &reason) {
     const auto now = std::chrono::steady_clock::now();
-    const auto alive_ms = std::chrono::duration_cast<std::chrono::milliseconds>(now - meta.last_active_at).count();
-    LOG_INFO("TcpServer") << "connection closed conn_id=" << meta.conn_id << " reason=" << reason
-                          << " peer=" << meta.peer_ip << ":" << meta.peer_port << " recv_count=" << meta.recv_count
-                          << " send_count=" << meta.send_count << " recv_bytes=" << meta.recv_bytes
-                          << " send_bytes=" << meta.sent_bytes << " idle_ms=" << alive_ms;
+    const auto duration_ms = std::chrono::duration_cast<std::chrono::milliseconds>(now - meta.connected_at).count();
+    const auto recv_idle_ms = std::chrono::duration_cast<std::chrono::milliseconds>(now - meta.last_recv_at).count();
+    const auto send_idle_ms = std::chrono::duration_cast<std::chrono::milliseconds>(now - meta.last_send_at).count();
+    LOG_INFO("TcpServer") << "connection closed conn_id=" << meta.conn_id << " user_id=" << meta.authenticated_user_id
+                          << " reason=" << reason << " peer=" << meta.peer_ip << ":" << meta.peer_port
+                          << " recv_count=" << meta.recv_count << " send_count=" << meta.send_count
+                          << " recv_bytes=" << meta.recv_bytes << " send_bytes=" << meta.sent_bytes
+                          << " duration_ms=" << duration_ms << " recv_idle_ms=" << recv_idle_ms
+                          << " send_idle_ms=" << send_idle_ms;
 }
 
 std::shared_ptr<ConnectionContext> TcpServer::getConnectionContextById(chat::ConnectionId conn_id) {

@@ -85,7 +85,11 @@ int main() {
     chat::UserService user_service(repository, session_manager);
     chat::ChatService chat_service(session_manager, message_repository, repository);
     chat::MessageHandler handler(user_service, chat_service);
-    TcpServer server("127.0.0.1", kAuthTestPort, handler);
+    TcpServerTimeoutOptions timeout_options;
+    timeout_options.idle_timeout_ms = 5000;
+    timeout_options.heartbeat_timeout_ms = 500;
+    timeout_options.scan_interval_ms = 20;
+    TcpServer server("127.0.0.1", kAuthTestPort, handler, timeout_options);
 
     return RunMain([&]() { return server.start(); });
 }

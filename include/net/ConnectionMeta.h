@@ -5,6 +5,8 @@
 #include <cstdint>
 #include <string>
 
+#include "common/types.h"
+
 // 本文件定义服务端维护的连接元信息。
 // 这些字段主要用于连接管理、审计、统计以及后续登录态扩展。
 //
@@ -27,10 +29,19 @@ struct ConnectionMeta {
     uint16_t peer_port;
 
     // 连接建立时间，用于计算会话生命周期。
-    std::chrono::system_clock::time_point connected_at;
+    std::chrono::steady_clock::time_point connected_at;
 
-    // 最近一次读写发生的时间，用于空闲超时判断。
+    // 最近一次成功读取字节的时间。
+    std::chrono::steady_clock::time_point last_recv_at;
+
+    // 最近一次成功发送字节的时间。
+    std::chrono::steady_clock::time_point last_send_at;
+
+    // 最近一次解析出完整非空协议包的时间。
     std::chrono::steady_clock::time_point last_active_at;
+
+    // 当前连接绑定的认证用户 ID，0 表示未认证。
+    chat::UserId authenticated_user_id;
 
     // 累计接收的消息数。
     uint32_t recv_count;

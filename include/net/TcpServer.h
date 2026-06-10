@@ -5,12 +5,15 @@
 #include <chrono>
 #include <cstddef>
 #include <cstdint>
+#include <deque>
+#include <functional>
 #include <future>
 #include <memory>
 #include <mutex>
 #include <queue>
 #include <string>
 #include <unordered_map>
+#include <vector>
 
 #include "ConnectionMeta.h"
 #include "IMessageHandler.h"
@@ -19,6 +22,12 @@
 #include "net/ConnectionContext.h"
 #include "net/ResponseTask.h"
 #include "stream/remote_push.h"
+
+struct TcpServerTimeoutOptions {
+    uint32_t idle_timeout_ms = 300000;
+    uint32_t heartbeat_timeout_ms = 90000;
+    uint32_t scan_interval_ms = 1000;
+};
 
 // 本文件声明基于 epoll 的 TCP 服务器。
 // 该类负责连接生命周期管理、事件循环以及收发缓冲协调。
@@ -29,7 +38,8 @@
 class TcpServer {
    public:
     // 根据监听地址、端口和消息处理器构造服务器实例。
-    TcpServer(const std::string &ip, uint16_t port, IMessageHandler &handler);
+    TcpServer(const std::string &ip, uint16_t port, IMessageHandler &handler,
+              TcpServerTimeoutOptions timeout_options = {});
 
     // 析构时释放监听 socket、epoll 句柄和客户端连接资源。
     ~TcpServer();
@@ -50,8 +60,12 @@ class TcpServer {
     chat::RemoteDeliveryOutcome deliverRemotePush(const chat::RemotePushEvent &event,
                                                   std::chrono::milliseconds timeout);
 
+    // 在关闭连接和 worker pool 前停止外部事件源，例如 Redis PushStream。
+    void setPreShutdownHook(std::function<void()> hook);
+
    private:
     static constexpr size_t kDefaultWorkerThreads = 4;
+    static constexpr size_t kMaxTimeoutScanBatch = 256;
 
     struct RequestTask {
         std::weak_ptr<ConnectionContext> context;
@@ -87,7 +101,7 @@ class TcpServer {
     std::shared_ptr<ConnectionContext> registerConnection(int conn_fd, const std::string &peer_ip, uint16_t peer_port);
 
     // 从连接表中注销连接并记录关闭原因。
-    void unregisterConnection(uint64_t conn_id, const std::string &reason);
+    bool unregisterConnection(const std::shared_ptr<ConnectionContext> &context);
 
     // 输出一条连接元数据日志。
     void logConnectionMeta(const ConnectionMeta &meta);
@@ -97,6 +111,13 @@ class TcpServer {
 
     // 关闭一个客户端连接并清理其状态。
     void closeClientFd(int fd, const std::string &reason);
+
+    // 将连接关闭后的业务清理投递到 worker pool，投递失败时同步回退。
+    void dispatchConnectionClosed(chat::ConnectionId conn_id);
+
+    // 更新登录/登出对应的连接认证元信息。
+    void bindAuthenticatedConnection(const std::shared_ptr<ConnectionContext> &context, chat::UserId user_id);
+    void unbindAuthenticatedConnection(const std::shared_ptr<ConnectionContext> &context);
 
     // 处理可读事件。
     void onReadable(int fd);
@@ -125,6 +146,12 @@ class TcpServer {
 
     // 将 worker 结果通知 eventfd 注册到 epoll。
     bool registerWorkerEventFd();
+
+    // 创建、注册并处理连接超时 timerfd。
+    bool createTimerFd();
+    bool registerTimerFd();
+    void onTimerReadable();
+    void scanConnectionTimeouts();
 
     // 处理可写事件。
     void onWritable(int fd);
@@ -157,6 +184,9 @@ class TcpServer {
     int worker_event_fd_;
     std::mutex worker_event_fd_mutex_;
 
+    // 周期唤醒 I/O 线程执行有界连接超时扫描。
+    int timer_fd_;
+
     // 配置中的监听 IP。
     std::string ip_;
 
@@ -168,6 +198,9 @@ class TcpServer {
 
     // 用于后续投递业务请求处理任务的工作线程池。
     ThreadPool worker_pool_;
+
+    TcpServerTimeoutOptions timeout_options_;
+    std::function<void()> pre_shutdown_hook_;
 
     // worker 已完成响应任务队列，由 I/O 线程消费。
     std::mutex completed_tasks_mutex_;
@@ -186,6 +219,8 @@ class TcpServer {
     // 保护 conn_id 到 ConnectionContext 的映射表。
     std::mutex connections_mutex_;
     std::unordered_map<uint64_t, std::shared_ptr<ConnectionContext>> connections_;  // 保存所有活跃连接的上下文
+    std::unordered_map<chat::UserId, chat::ConnectionId> authenticated_connections_;
+    std::deque<chat::ConnectionId> timeout_scan_queue_;
 
     // 保护 fd 到 ConnectionContext 的映射表。
     std::mutex fd_to_context_mutex_;
