@@ -24,7 +24,22 @@
     "port": 6379,
     "password": "",
     "database": 0,
-    "pool_size": 4
+    "pool_size": 4,
+    "connect_timeout_ms": 500,
+    "command_timeout_ms": 500,
+    "key_prefix": "chat",
+    "server_id": "server-1",
+    "session_ttl_seconds": 604800,
+    "presence_ttl_seconds": 120,
+    "user_cache_ttl_seconds": 300,
+    "user_not_found_ttl_seconds": 30,
+    "message_dedup_ttl_seconds": 86400,
+    "login_rate_limit": 10,
+    "login_rate_window_seconds": 60,
+    "register_rate_limit": 5,
+    "register_rate_window_seconds": 300,
+    "send_rate_limit": 60,
+    "send_rate_window_seconds": 60
   },
   "log": {
     "level": "info",
@@ -36,5 +51,11 @@
   },
   "timeout": {
     "remote_push_ms": 500
+  },
+  "connection": {
+    "idle_timeout_ms": 300000
+  },
+  "heartbeat": {
+    "timeout_ms": 90000
   }
 }

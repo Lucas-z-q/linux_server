@@ -30,10 +30,10 @@ bool JsonCodec::decodeMessage(const std::string &raw, Message &msg, std::string 
         // token字段允许缺失或为空字符串
         if (json_obj.contains("token")) {
             if (!json_obj["token"].is_string()) {
-                msg.token = "";
-            } else {
-                msg.token = json_obj["token"].get<std::string>();
+                err = "Missing or invalid 'token' field";
+                return false;
             }
+            msg.token = json_obj["token"].get<std::string>();
         }
         return true;
     } catch (const nlohmann::json::exception &e) {

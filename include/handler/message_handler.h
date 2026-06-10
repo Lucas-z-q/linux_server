@@ -27,7 +27,12 @@ class MessageHandler : public IMessageHandler {
     ~MessageHandler() override = default;
 
     // 处理客户端发送的原始请求字符串，并返回HandleResult结构体。
-    HandleResult handle(const std::string &raw_request, chat::ConnectionId conn_id) override;
+    HandleResult handle(const std::string &raw_request, const RequestContext &context) override;
+
+    // 单元测试和进程内调用不关心 IP 时使用此便捷入口。
+    HandleResult handle(const std::string &raw_request, chat::ConnectionId conn_id) {
+        return handle(raw_request, RequestContext{conn_id, ""});
+    }
 
     // 连接关闭后清理该连接绑定的登录态。
     void onConnectionClosed(chat::ConnectionId conn_id) override;
@@ -36,20 +41,20 @@ class MessageHandler : public IMessageHandler {
         user_service_.bindSession(conn_id, session);
     }
 
-    void applyUnbindSession(chat::ConnectionId conn_id) override { user_service_.clearSession(conn_id); }
+    void applyUnbindSession(chat::ConnectionId conn_id) override { user_service_.logoutSession(conn_id); }
 
     bool isConnectionBoundToUser(chat::ConnectionId conn_id, chat::UserId user_id) override {
         return user_service_.isConnectionBoundToUser(conn_id, user_id);
     }
 
-    void onMessagesDelivered(chat::UserId user_id, const std::vector<std::string>& message_ids) override;
+    void onMessagesDelivered(chat::UserId user_id, const std::vector<std::string> &message_ids) override;
 
    private:
     // 处理注册请求。
-    HandleResult handleRegister(const Message &msg);
+    HandleResult handleRegister(const Message &msg, const std::string &identity);
 
     // 处理登录请求。
-    HandleResult handleLogin(const Message &msg, chat::ConnectionId conn_id);
+    HandleResult handleLogin(const Message &msg, chat::ConnectionId conn_id, const std::string &identity);
 
     // 处理登出请求。
     HandleResult handleLogout(const Message &msg, chat::ConnectionId conn_id);

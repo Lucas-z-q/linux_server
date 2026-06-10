@@ -50,8 +50,35 @@ class EnvGuard {
 
 // 覆盖所有可能影响 ConfigLoader 的环境变量名。
 static const std::vector<const char*> kChatEnvVars = {
-    "CHAT_DB_HOST",    "CHAT_DB_PORT",    "CHAT_DB_USER",        "CHAT_DB_PASSWORD", "CHAT_DB_NAME",
-    "CHAT_REDIS_HOST", "CHAT_REDIS_PORT", "CHAT_REDIS_PASSWORD", "CHAT_REDIS_DB",    "CHAT_CONFIG_PATH",
+    "CHAT_DB_HOST",
+    "CHAT_DB_PORT",
+    "CHAT_DB_USER",
+    "CHAT_DB_PASSWORD",
+    "CHAT_DB_NAME",
+    "CHAT_REDIS_ENABLED",
+    "CHAT_REDIS_HOST",
+    "CHAT_REDIS_PORT",
+    "CHAT_REDIS_PASSWORD",
+    "CHAT_REDIS_DB",
+    "CHAT_REDIS_POOL_SIZE",
+    "CHAT_REDIS_CONNECT_TIMEOUT_MS",
+    "CHAT_REDIS_COMMAND_TIMEOUT_MS",
+    "CHAT_REDIS_KEY_PREFIX",
+    "CHAT_SERVER_ID",
+    "CHAT_SESSION_TTL_SECONDS",
+    "CHAT_PRESENCE_TTL_SECONDS",
+    "CHAT_USER_CACHE_TTL_SECONDS",
+    "CHAT_USER_NOT_FOUND_TTL_SECONDS",
+    "CHAT_MESSAGE_DEDUP_TTL_SECONDS",
+    "CHAT_LOGIN_RATE_LIMIT",
+    "CHAT_LOGIN_RATE_WINDOW_SECONDS",
+    "CHAT_REGISTER_RATE_LIMIT",
+    "CHAT_REGISTER_RATE_WINDOW_SECONDS",
+    "CHAT_SEND_RATE_LIMIT",
+    "CHAT_SEND_RATE_WINDOW_SECONDS",
+    "CHAT_CONNECTION_IDLE_TIMEOUT_MS",
+    "CHAT_HEARTBEAT_TIMEOUT_MS",
+    "CHAT_CONFIG_PATH",
 };
 
 // ── 测试 Fixture ──────────────────────────────────────────────────────────────
@@ -106,6 +133,9 @@ TEST_F(ConfigLoaderTest, LoadFromString_MinimalValid) {
     EXPECT_EQ(cfg.mysql.username, "root");
     EXPECT_EQ(cfg.mysql.database, "chat");
     EXPECT_EQ(cfg.timeout.remote_push_ms, 500u);
+    EXPECT_EQ(cfg.connection.idle_timeout_ms, 300000u);
+    EXPECT_EQ(cfg.heartbeat.timeout_ms, 90000u);
+    EXPECT_EQ(cfg.redis.presence_ttl_seconds, 120u);
 }
 
 TEST_F(ConfigLoaderTest, LoadFromString_DefaultsApplied) {
@@ -324,16 +354,14 @@ TEST_F(ConfigLoaderTest, LegacyLogPathReturnsMigrationError) {
 
 // ── Redis 校验（仅 enabled=true 时生效）────────────────────────────────────
 
-TEST_F(ConfigLoaderTest, Validate_RedisDisabledSkipsValidation) {
-    // Redis disabled 时，仅跳过语义校验（host 非空、pool_size > 0 等），
-    // 但端口值仍需合法（GetPort 在解析阶段校验）。
-    // 这里传入 host 为空、pool_size 为 0 ——这些只在 enabled=true 时校验。
+TEST_F(ConfigLoaderTest, Validate_RedisDisabledStillValidatesNumericFields) {
     const char* json = R"({
       "mysql": { "host": "h", "username": "u", "database": "d" },
       "redis": { "enabled": false, "host": "", "port": 6379, "pool_size": 0 }
     })";
     auto result = ConfigLoader::LoadFromString(json);
-    ASSERT_FALSE(IsError(result)) << ErrMsg(result);
+    ASSERT_TRUE(IsError(result));
+    EXPECT_NE(ErrMsg(result).find("redis.pool_size"), std::string::npos);
 }
 
 TEST_F(ConfigLoaderTest, Validate_RedisEnabledEmptyHost) {
@@ -395,15 +423,22 @@ TEST_F(ConfigLoaderTest, FullConfig_AllFieldsParsed) {
       "redis": {
         "enabled": true, "host": "redis.internal", "port": 6380,
         "password": "redispw", "database": 1, "pool_size": 8,
-        "connect_timeout_ms": 1000, "key_prefix": "myapp:",
-        "session_ttl_seconds": 3600, "rate_limit_window_seconds": 30,
-        "rate_limit_max_requests": 50
+        "connect_timeout_ms": 1000, "command_timeout_ms": 1200,
+        "key_prefix": "myapp", "server_id": "server-a",
+        "session_ttl_seconds": 3600, "presence_ttl_seconds": 121,
+        "user_cache_ttl_seconds": 600, "user_not_found_ttl_seconds": 45,
+        "message_dedup_ttl_seconds": 7200,
+        "login_rate_limit": 12, "login_rate_window_seconds": 30,
+        "register_rate_limit": 7, "register_rate_window_seconds": 120,
+        "send_rate_limit": 80, "send_rate_window_seconds": 45
       },
       "log": {
         "level": "debug", "file_path": "/var/log/server.log", "console": false,
         "max_size_mb": 64, "max_files": 3, "async": false
       },
-      "timeout": { "remote_push_ms": 1000 }
+      "timeout": { "remote_push_ms": 1000 },
+      "connection": { "idle_timeout_ms": 240000 },
+      "heartbeat": { "timeout_ms": 120000 }
     })";
     auto result = ConfigLoader::LoadFromString(json);
     const auto& cfg = OkConfig(result);
@@ -427,10 +462,21 @@ TEST_F(ConfigLoaderTest, FullConfig_AllFieldsParsed) {
     EXPECT_EQ(cfg.redis.password, "redispw");
     EXPECT_EQ(cfg.redis.database, 1);
     EXPECT_EQ(cfg.redis.pool_size, 8);
-    EXPECT_EQ(cfg.redis.key_prefix, "myapp:");
+    EXPECT_EQ(cfg.redis.connect_timeout_ms, 1000u);
+    EXPECT_EQ(cfg.redis.command_timeout_ms, 1200u);
+    EXPECT_EQ(cfg.redis.key_prefix, "myapp");
+    EXPECT_EQ(cfg.redis.server_id, "server-a");
     EXPECT_EQ(cfg.redis.session_ttl_seconds, 3600);
-    EXPECT_EQ(cfg.redis.rate_limit_window_seconds, 30);
-    EXPECT_EQ(cfg.redis.rate_limit_max_requests, 50);
+    EXPECT_EQ(cfg.redis.presence_ttl_seconds, 121u);
+    EXPECT_EQ(cfg.redis.user_cache_ttl_seconds, 600u);
+    EXPECT_EQ(cfg.redis.user_not_found_ttl_seconds, 45u);
+    EXPECT_EQ(cfg.redis.message_dedup_ttl_seconds, 7200u);
+    EXPECT_EQ(cfg.redis.login_rate_limit, 12u);
+    EXPECT_EQ(cfg.redis.login_rate_window_seconds, 30u);
+    EXPECT_EQ(cfg.redis.register_rate_limit, 7u);
+    EXPECT_EQ(cfg.redis.register_rate_window_seconds, 120u);
+    EXPECT_EQ(cfg.redis.send_rate_limit, 80u);
+    EXPECT_EQ(cfg.redis.send_rate_window_seconds, 45u);
     EXPECT_EQ(cfg.log.level, "debug");
     EXPECT_EQ(cfg.log.file_path, "/var/log/server.log");
     EXPECT_FALSE(cfg.log.console);
@@ -438,6 +484,61 @@ TEST_F(ConfigLoaderTest, FullConfig_AllFieldsParsed) {
     EXPECT_EQ(cfg.log.max_files, 3u);
     EXPECT_FALSE(cfg.log.async);
     EXPECT_EQ(cfg.timeout.remote_push_ms, 1000u);
+    EXPECT_EQ(cfg.connection.idle_timeout_ms, 240000u);
+    EXPECT_EQ(cfg.heartbeat.timeout_ms, 120000u);
+}
+
+TEST_F(ConfigLoaderTest, RedisAndTimeoutEnvironmentOverrides) {
+    ::setenv("CHAT_REDIS_ENABLED", "1", 1);
+    ::setenv("CHAT_REDIS_POOL_SIZE", "9", 1);
+    ::setenv("CHAT_REDIS_COMMAND_TIMEOUT_MS", "750", 1);
+    ::setenv("CHAT_REDIS_KEY_PREFIX", "envchat", 1);
+    ::setenv("CHAT_SERVER_ID", "server-env", 1);
+    ::setenv("CHAT_PRESENCE_TTL_SECONDS", "151", 1);
+    ::setenv("CHAT_CONNECTION_IDLE_TIMEOUT_MS", "456000", 1);
+    ::setenv("CHAT_HEARTBEAT_TIMEOUT_MS", "150000", 1);
+
+    auto result = ConfigLoader::LoadFromString(kMinimalValid);
+    const auto& cfg = OkConfig(result);
+    EXPECT_TRUE(cfg.redis.enabled);
+    EXPECT_EQ(cfg.redis.pool_size, 9u);
+    EXPECT_EQ(cfg.redis.command_timeout_ms, 750u);
+    EXPECT_EQ(cfg.redis.key_prefix, "envchat");
+    EXPECT_EQ(cfg.redis.server_id, "server-env");
+    EXPECT_EQ(cfg.redis.presence_ttl_seconds, 151u);
+    EXPECT_EQ(cfg.connection.idle_timeout_ms, 456000u);
+    EXPECT_EQ(cfg.heartbeat.timeout_ms, 150000u);
+}
+
+TEST_F(ConfigLoaderTest, RedisUnsignedOverflowReturnsError) {
+    const char* json = R"({
+      "mysql": { "host": "h", "username": "u", "database": "d" },
+      "redis": { "command_timeout_ms": 4294967296 }
+    })";
+    auto result = ConfigLoader::LoadFromString(json);
+    ASSERT_TRUE(IsError(result));
+    EXPECT_NE(ErrMsg(result).find("redis.command_timeout_ms"), std::string::npos);
+}
+
+TEST_F(ConfigLoaderTest, RedisKeyPrefixMustNotEndWithColon) {
+    const char* json = R"({
+      "mysql": { "host": "h", "username": "u", "database": "d" },
+      "redis": { "key_prefix": "chat:" }
+    })";
+    auto result = ConfigLoader::LoadFromString(json);
+    ASSERT_TRUE(IsError(result));
+    EXPECT_NE(ErrMsg(result).find("redis.key_prefix"), std::string::npos);
+}
+
+TEST_F(ConfigLoaderTest, PresenceTtlMustExceedHeartbeatTimeout) {
+    const char* json = R"({
+      "mysql": { "host": "h", "username": "u", "database": "d" },
+      "redis": { "presence_ttl_seconds": 90 },
+      "heartbeat": { "timeout_ms": 90000 }
+    })";
+    auto result = ConfigLoader::LoadFromString(json);
+    ASSERT_TRUE(IsError(result));
+    EXPECT_NE(ErrMsg(result).find("presence_ttl_seconds"), std::string::npos);
 }
 
 // ── ParseConfigPathArg ────────────────────────────────────────────────────────

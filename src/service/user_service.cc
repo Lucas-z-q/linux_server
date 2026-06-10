@@ -1,5 +1,13 @@
 #include "service/user_service.h"
 
+#include <sys/random.h>
+
+#include <array>
+#include <chrono>
+#include <iomanip>
+#include <sstream>
+#include <utility>
+
 namespace chat {
 
 UserService::UserService(IUserRepository &user_repository) : user_repository_(&user_repository) {}
@@ -7,13 +15,31 @@ UserService::UserService(IUserRepository &user_repository) : user_repository_(&u
 UserService::UserService(IUserRepository &user_repository, ISessionManager &session_manager)
     : user_repository_(&user_repository), session_manager_(&session_manager) {}
 
-RegisterResult UserService::registerUser(const RegisterRequest &req) {
+UserService::UserService(IUserRepository &user_repository, ISessionManager &session_manager,
+                         IGlobalSessionStore *global_session_store, IRateLimiter *rate_limiter, RedisConfig config)
+    : user_repository_(&user_repository),
+      session_manager_(&session_manager),
+      global_session_store_(global_session_store),
+      rate_limiter_(rate_limiter),
+      redis_config_(std::move(config)) {}
+
+RegisterResult UserService::registerUser(const RegisterRequest &req, const std::string &identity) {
     RegisterResult result;
     std::string err;
     if (!validateRegisterRequest(req, err)) {
         result.code = ErrorCode::INVALID_PARAM;
         result.message = err;
         return result;
+    }
+    if (rate_limiter_ != nullptr && !identity.empty()) {
+        const RateLimitResult limit = rate_limiter_->Allow("register", identity, redis_config_.register_rate_limit,
+                                                           redis_config_.register_rate_window_seconds);
+        if (!limit.allowed) {
+            result.code = ErrorCode::RATE_LIMITED;
+            result.message = "register rate limit exceeded";
+            result.retry_after_seconds = limit.retry_after_seconds;
+            return result;
+        }
     }
 
     // 注册流程的第一步是查重；这里必须区分“没找到用户”和“查询失败”，
@@ -66,13 +92,23 @@ RegisterResult UserService::registerUser(const RegisterRequest &req) {
     return result;
 }
 
-LoginResult UserService::login(const LoginRequest &req, ConnectionId conn_id) {
+LoginResult UserService::login(const LoginRequest &req, ConnectionId conn_id, const std::string &identity) {
     LoginResult result;
     std::string err;
     if (!validateLoginRequest(req, err)) {
         result.code = ErrorCode::INVALID_PARAM;
         result.message = err;
         return result;
+    }
+    if (rate_limiter_ != nullptr && !identity.empty()) {
+        const RateLimitResult limit = rate_limiter_->Allow("login", identity, redis_config_.login_rate_limit,
+                                                           redis_config_.login_rate_window_seconds);
+        if (!limit.allowed) {
+            result.code = ErrorCode::RATE_LIMITED;
+            result.message = "login rate limit exceeded";
+            result.retry_after_seconds = limit.retry_after_seconds;
+            return result;
+        }
     }
 
     const FindUserResult find_result = user_repository_->findByUsername(req.username);
@@ -102,7 +138,12 @@ LoginResult UserService::login(const LoginRequest &req, ConnectionId conn_id) {
         return result;
     }
 
-    const std::string token = generateToken(user.id);
+    const std::string token = generateToken();
+    if (token.empty()) {
+        result.code = ErrorCode::INTERNAL_ERROR;
+        result.message = "generate token failed";
+        return result;
+    }
     ConnectionSession session;
     session.authenticated = true;
     session.user_id = user.id;
@@ -148,10 +189,43 @@ WhoAmIResult UserService::whoami(ConnectionId conn_id) {
 }
 
 void UserService::bindSession(ConnectionId conn_id, const ConnectionSession &session) {
-    session_manager_->BindSession(conn_id, session);
+    if (!session_manager_->BindSession(conn_id, session) || global_session_store_ == nullptr) {
+        return;
+    }
+    const Timestamp issued_at = std::chrono::system_clock::to_time_t(std::chrono::system_clock::now());
+    // Redis 是全局加速层。运行期失败不能撤销已经建立的本地连接态。
+    global_session_store_->Bind(conn_id, session, issued_at);
 }
 
-void UserService::clearSession(ConnectionId conn_id) { session_manager_->ClearSession(conn_id); }
+void UserService::logoutSession(ConnectionId conn_id) {
+    const std::optional<ConnectionSession> session = session_manager_->GetSession(conn_id);
+    if (!session) {
+        return;
+    }
+    session_manager_->ClearSession(conn_id);
+    if (global_session_store_ != nullptr) {
+        global_session_store_->ClearPresence(conn_id, *session);
+        global_session_store_->RevokeToken(session->token);
+    }
+}
+
+void UserService::clearSession(ConnectionId conn_id) {
+    const std::optional<ConnectionSession> session = session_manager_->GetSession(conn_id);
+    if (!session) {
+        return;
+    }
+    session_manager_->ClearSession(conn_id);
+    if (global_session_store_ != nullptr) {
+        global_session_store_->ClearPresence(conn_id, *session);
+    }
+}
+
+void UserService::refreshPresence(ConnectionId conn_id) {
+    const std::optional<ConnectionSession> session = session_manager_->GetSession(conn_id);
+    if (session && global_session_store_ != nullptr) {
+        global_session_store_->Refresh(conn_id, *session);
+    }
+}
 
 bool UserService::isConnectionBoundToUser(ConnectionId conn_id, UserId user_id) const {
     auto session_opt = session_manager_->GetSession(conn_id);
@@ -186,6 +260,23 @@ std::string UserService::hashPassword(const std::string &password) const {
     return std::to_string(std::hash<std::string>{}(password));
 }
 
-std::string UserService::generateToken(UserId user_id) const { return "token_" + std::to_string(user_id); }
+std::string UserService::generateToken() const {
+    std::array<unsigned char, 32> bytes{};
+    std::size_t offset = 0;
+    while (offset < bytes.size()) {
+        const ssize_t count = getrandom(bytes.data() + offset, bytes.size() - offset, 0);
+        if (count <= 0) {
+            return "";
+        }
+        offset += static_cast<std::size_t>(count);
+    }
+
+    std::ostringstream token;
+    token << std::hex << std::setfill('0');
+    for (unsigned char byte : bytes) {
+        token << std::setw(2) << static_cast<int>(byte);
+    }
+    return token.str();
+}
 
 }  // namespace chat

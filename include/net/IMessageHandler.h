@@ -17,10 +17,14 @@
 //    - 若存活：发送响应，并根据 action 调用 applyBindSession / applyUnbindSession 落实副作用。
 //    - 若失效：直接丢弃 HandleResult 及副作用。不再尝试取消 worker 任务。
 //
-// TODO(lzq): 在接口中加入连接上下文参数，支持按连接处理认证态。
 // TODO(lzq): 明确 handle 的异常约束，统一使用返回值还是错误对象。
 
 enum class SessionAction { NONE, BIND, UNBIND };
+
+struct RequestContext {
+    chat::ConnectionId conn_id = 0;
+    std::string peer_ip;
+};
 
 // 表示发往特定连接的推送消息负载。
 struct OutboundMessage {
@@ -61,7 +65,7 @@ class IMessageHandler {
 
     // 处理一条请求报文，并返回要发送给客户端的响应报文。
     // 注意：该方法在 Worker 线程执行，不得直接操作 Session。
-    virtual HandleResult handle(const std::string &request, chat::ConnectionId conn_id) = 0;
+    virtual HandleResult handle(const std::string &request, const RequestContext &context) = 0;
 
     // 连接关闭后通知业务层清理与该连接绑定的状态。
     // 该方法仅在 I/O 线程中由网络层 (如 closeClientFd) 触发。

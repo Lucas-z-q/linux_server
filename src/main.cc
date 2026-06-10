@@ -1,8 +1,13 @@
+#include <chrono>
 #include <cstddef>
+#include <memory>
 #include <string>
 #include <variant>
 
 #include "app/main_runner.h"
+#include "cache/cached_user_repository.h"
+#include "cache/message_dedup_cache.h"
+#include "cache/redis_rate_limiter.h"
 #include "common/logger.h"
 #include "config/config_loader.h"
 #include "config/server_config.h"
@@ -11,9 +16,13 @@
 #include "db/user_repository.h"
 #include "handler/message_handler.h"
 #include "net/TcpServer.h"
+#include "redis/redis_client.h"
+#include "redis/redis_pool.h"
+#include "server/redis_session_store.h"
 #include "server/session_manager.h"
 #include "service/chat_service.h"
 #include "service/user_service.h"
+#include "stream/redis_push_stream.h"
 
 /**
  * @file main.cc
@@ -81,15 +90,60 @@ int main(int argc, char* argv[]) {
         return 1;
     }
 
-    // 3. 依赖注入：DbPool -> Repository -> Service -> MessageHandler
+    std::unique_ptr<chat::RedisPool> redis_pool;
+    std::unique_ptr<chat::RedisClient> redis_client;
+    std::unique_ptr<chat::RedisSessionStore> session_store;
+    std::unique_ptr<chat::RedisRateLimiter> rate_limiter;
+    std::unique_ptr<chat::MessageDedupCache> dedup_cache;
+    std::unique_ptr<chat::RedisPushStream> push_stream;
+    if (cfg.redis.enabled) {
+        redis_pool = std::make_unique<chat::RedisPool>(cfg.redis);
+        const chat::RedisPoolInitResult redis_init = redis_pool->Init();
+        if (!redis_init.ok()) {
+            LOG_ERROR("Main") << "RedisPool initialization failed error=" << redis_init.message;
+            return 1;
+        }
+        redis_client = std::make_unique<chat::RedisClient>(redis_pool.get());
+        session_store = std::make_unique<chat::RedisSessionStore>(redis_client.get(), cfg.redis);
+        rate_limiter = std::make_unique<chat::RedisRateLimiter>(redis_client.get(), cfg.redis);
+        dedup_cache = std::make_unique<chat::MessageDedupCache>(redis_client.get(), cfg.redis);
+        push_stream = std::make_unique<chat::RedisPushStream>(redis_client.get(), cfg.redis);
+        if (!push_stream->Initialize()) {
+            LOG_ERROR("Main") << "Redis push stream initialization failed";
+            return 1;
+        }
+    }
+
+    // 3. 依赖注入：Pool -> Repository/Store -> Service -> MessageHandler
     chat::UserRepository user_repo(&db_pool);
+    std::unique_ptr<chat::CachedUserRepository> cached_user_repo;
+    chat::IUserRepository* active_user_repo = &user_repo;
+    if (redis_client) {
+        cached_user_repo = std::make_unique<chat::CachedUserRepository>(&user_repo, redis_client.get(), cfg.redis);
+        active_user_repo = cached_user_repo.get();
+    }
     chat::MessageRepository message_repo(&db_pool);
     chat::SessionManager session_manager;
-    chat::UserService user_service(user_repo, session_manager);
-    chat::ChatService chat_service(session_manager, message_repo, user_repo);
+    chat::UserService user_service(*active_user_repo, session_manager, session_store.get(), rate_limiter.get(),
+                                   cfg.redis);
+    chat::ChatService chat_service(session_manager, message_repo, *active_user_repo, rate_limiter.get(),
+                                   dedup_cache.get(), cfg.redis, session_store.get(), push_stream.get());
     chat::MessageHandler handler(user_service, chat_service);
 
     // 4. 启动服务器
     TcpServer server(cfg.server.listen_ip, cfg.server.listen_port, handler);
-    return RunMain([&]() { return server.start(); });
+    if (push_stream) {
+        push_stream->SetDeliveryCallback([&server, &cfg](const chat::RemotePushEvent& event) {
+            return server.deliverRemotePush(event, std::chrono::milliseconds(cfg.timeout.remote_push_ms));
+        });
+        push_stream->SetMarkDeliveredCallback([&message_repo](chat::UserId user_id, const std::string& message_id) {
+            return message_repo.markDelivered(user_id, {message_id}).status == chat::RepositoryStatus::kOk;
+        });
+        push_stream->Start();
+    }
+    const int result = RunMain([&]() { return server.start(); });
+    if (push_stream) {
+        push_stream->Stop();
+    }
+    return result;
 }

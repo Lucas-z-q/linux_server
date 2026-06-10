@@ -201,6 +201,28 @@ void TestSendMessageRejectsLongClientMsgId() {
     assert(message_repo.created_messages.empty());
 }
 
+void TestSendMessageRejectsInvalidTargetUserId() {
+    FakeSessionManager session_manager;
+    FakeMessageRepository message_repo;
+    FakeUserRepository user_repo;
+    chat::ChatService chat_service(session_manager, message_repo, user_repo);
+
+    chat::ConnectionSession sender_session;
+    sender_session.authenticated = true;
+    sender_session.user_id = 1;
+    sender_session.username = "sender";
+    session_manager.BindSession(100, sender_session);
+
+    chat::SendMessageRequest req;
+    req.client_msg_id = "msg_bad_target";
+    req.to_user_id = 0;
+    req.content = "hello";
+
+    auto result = chat_service.sendMessage(100, req);
+    assert(result.code == chat::ErrorCode::INVALID_PARAM);
+    assert(message_repo.created_messages.empty());
+}
+
 void TestSendMessageDoesNotMarkDeliveredBeforePushAck() {
     FakeSessionManager session_manager;
     FakeMessageRepository message_repo;
@@ -621,6 +643,7 @@ int main() {
     TestSendMessageStoreFailureReturnsError();
     TestSendMessageRejectsEmptyClientMsgId();
     TestSendMessageRejectsLongClientMsgId();
+    TestSendMessageRejectsInvalidTargetUserId();
     TestSendMessageDoesNotMarkDeliveredBeforePushAck();
     TestSendMessageSuccess();
     TestSendMessageDuplicateClientMsgIdReturnsSameMessage();

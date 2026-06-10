@@ -39,6 +39,7 @@ enum class ErrorCode {
     CANNOT_SEND_TO_SELF = 3003,
     NOT_LOGGED_IN = 3004,
     IDEMPOTENCY_CONFLICT = 3005,
+    RATE_LIMITED = 3006,
 
     // 兜底内部错误。
     INTERNAL_ERROR = 9001,

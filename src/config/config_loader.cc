@@ -5,10 +5,12 @@
 #include <cerrno>
 #include <charconv>
 #include <cstdlib>
+#include <cstring>
 #include <fstream>
 #include <limits>
 #include <sstream>
 #include <string>
+#include <type_traits>
 
 #include "nlohmann/json.hpp"
 
@@ -71,6 +73,20 @@ bool GetBool(const nlohmann::json& obj, const char* key, bool& out, std::string&
     }
     out = obj[key].get<bool>();
     return true;
+}
+
+bool StrictParseBool(const char* str, bool& out) {
+    if (str == nullptr)
+        return false;
+    if (std::string(str) == "0") {
+        out = false;
+        return true;
+    }
+    if (std::string(str) == "1") {
+        out = true;
+        return true;
+    }
+    return false;
 }
 
 // 从 JSON 对象安全取无符号整型字段并校验范围；类型不匹配或值超出 T 的表示范围时设 err 并返回 false。
@@ -208,21 +224,43 @@ std::string ParseRedis(const nlohmann::json& root, RedisConfig& cfg) {
         return "redis." + err;
     if (!GetStr(r, "key_prefix", cfg.key_prefix, err))
         return "redis." + err;
+    if (!GetStr(r, "server_id", cfg.server_id, err))
+        return "redis." + err;
 
     // 使用 GetPort 在截断前校验范围。
     if (!GetPort(r, "port", cfg.port, "redis.port", err))
         return err;
     if (!GetInt(r, "database", cfg.database, "redis.database", err))
         return err;
-    if (!GetInt(r, "pool_size", cfg.pool_size, "redis.pool_size", err))
+    if (!GetUInt(r, "pool_size", cfg.pool_size, "redis.pool_size", err))
         return err;
-    if (!GetInt(r, "connect_timeout_ms", cfg.connect_timeout_ms, "redis.connect_timeout_ms", err))
+    if (!GetUInt(r, "connect_timeout_ms", cfg.connect_timeout_ms, "redis.connect_timeout_ms", err))
         return err;
-    if (!GetInt(r, "session_ttl_seconds", cfg.session_ttl_seconds, "redis.session_ttl_seconds", err))
+    if (!GetUInt(r, "command_timeout_ms", cfg.command_timeout_ms, "redis.command_timeout_ms", err))
         return err;
-    if (!GetInt(r, "rate_limit_window_seconds", cfg.rate_limit_window_seconds, "redis.rate_limit_window_seconds", err))
+    if (!GetUInt(r, "session_ttl_seconds", cfg.session_ttl_seconds, "redis.session_ttl_seconds", err))
         return err;
-    if (!GetInt(r, "rate_limit_max_requests", cfg.rate_limit_max_requests, "redis.rate_limit_max_requests", err))
+    if (!GetUInt(r, "presence_ttl_seconds", cfg.presence_ttl_seconds, "redis.presence_ttl_seconds", err))
+        return err;
+    if (!GetUInt(r, "user_cache_ttl_seconds", cfg.user_cache_ttl_seconds, "redis.user_cache_ttl_seconds", err))
+        return err;
+    if (!GetUInt(r, "user_not_found_ttl_seconds", cfg.user_not_found_ttl_seconds, "redis.user_not_found_ttl_seconds",
+                 err))
+        return err;
+    if (!GetUInt(r, "message_dedup_ttl_seconds", cfg.message_dedup_ttl_seconds, "redis.message_dedup_ttl_seconds", err))
+        return err;
+    if (!GetUInt(r, "login_rate_limit", cfg.login_rate_limit, "redis.login_rate_limit", err))
+        return err;
+    if (!GetUInt(r, "login_rate_window_seconds", cfg.login_rate_window_seconds, "redis.login_rate_window_seconds", err))
+        return err;
+    if (!GetUInt(r, "register_rate_limit", cfg.register_rate_limit, "redis.register_rate_limit", err))
+        return err;
+    if (!GetUInt(r, "register_rate_window_seconds", cfg.register_rate_window_seconds,
+                 "redis.register_rate_window_seconds", err))
+        return err;
+    if (!GetUInt(r, "send_rate_limit", cfg.send_rate_limit, "redis.send_rate_limit", err))
+        return err;
+    if (!GetUInt(r, "send_rate_window_seconds", cfg.send_rate_window_seconds, "redis.send_rate_window_seconds", err))
         return err;
     return "";
 }
@@ -261,6 +299,30 @@ std::string ParseTimeout(const nlohmann::json& root, TimeoutConfig& cfg) {
         return "timeout must be an object";
     std::string err;
     if (!GetUInt(t, "remote_push_ms", cfg.remote_push_ms, "timeout.remote_push_ms", err))
+        return err;
+    return "";
+}
+
+std::string ParseConnection(const nlohmann::json& root, ConnectionConfig& cfg) {
+    if (!root.contains("connection"))
+        return "";
+    const auto& c = root["connection"];
+    if (!c.is_object())
+        return "connection must be an object";
+    std::string err;
+    if (!GetUInt(c, "idle_timeout_ms", cfg.idle_timeout_ms, "connection.idle_timeout_ms", err))
+        return err;
+    return "";
+}
+
+std::string ParseHeartbeat(const nlohmann::json& root, HeartbeatConfig& cfg) {
+    if (!root.contains("heartbeat"))
+        return "";
+    const auto& h = root["heartbeat"];
+    if (!h.is_object())
+        return "heartbeat must be an object";
+    std::string err;
+    if (!GetUInt(h, "timeout_ms", cfg.timeout_ms, "heartbeat.timeout_ms", err))
         return err;
     return "";
 }
@@ -327,6 +389,14 @@ ConfigResult ConfigLoader::ParseAndValidate(const std::string& json_str) {
     if (!field_err.empty())
         return ConfigError{field_err};
 
+    field_err = ParseConnection(root, config.connection);
+    if (!field_err.empty())
+        return ConfigError{field_err};
+
+    field_err = ParseHeartbeat(root, config.heartbeat);
+    if (!field_err.empty())
+        return ConfigError{field_err};
+
     // 3. 环境变量覆盖（非法值立即报错，不静默跳过）
     std::string env_err = ApplyEnvOverrides(config);
     if (!env_err.empty())
@@ -343,6 +413,19 @@ ConfigResult ConfigLoader::ParseAndValidate(const std::string& json_str) {
 // 返回首个环境变量解析错误；全部成功时返回空字符串。
 // 非法格式（如 "abc"）或超出范围（如 "65537"）均视为错误，而不是静默跳过。
 std::string ConfigLoader::ApplyEnvOverrides(ServerConfig& config) {
+    auto apply_unsigned = [](const char* name, auto& value) -> std::string {
+        const char* raw = Env(name);
+        if (raw == nullptr)
+            return "";
+        using ValueType = std::decay_t<decltype(value)>;
+        ValueType parsed = 0;
+        if (!StrictParseInt(raw, parsed)) {
+            return std::string(name) + " is not a valid unsigned integer: " + raw;
+        }
+        value = parsed;
+        return "";
+    };
+
     // MySQL 覆盖
     if (const char* v = Env("CHAT_DB_HOST"))
         config.mysql.host = v;
@@ -361,6 +444,11 @@ std::string ConfigLoader::ApplyEnvOverrides(ServerConfig& config) {
     }
 
     // Redis 覆盖
+    if (const char* v = Env("CHAT_REDIS_ENABLED")) {
+        if (!StrictParseBool(v, config.redis.enabled)) {
+            return std::string("CHAT_REDIS_ENABLED must be 0 or 1: ") + v;
+        }
+    }
     if (const char* v = Env("CHAT_REDIS_HOST"))
         config.redis.host = v;
     if (const char* v = Env("CHAT_REDIS_PASSWORD"))
@@ -379,6 +467,60 @@ std::string ConfigLoader::ApplyEnvOverrides(ServerConfig& config) {
         }
         config.redis.database = db;
     }
+    if (const char* v = Env("CHAT_REDIS_KEY_PREFIX"))
+        config.redis.key_prefix = v;
+    if (const char* v = Env("CHAT_SERVER_ID"))
+        config.redis.server_id = v;
+
+    std::string env_err;
+    env_err = apply_unsigned("CHAT_REDIS_POOL_SIZE", config.redis.pool_size);
+    if (!env_err.empty())
+        return env_err;
+    env_err = apply_unsigned("CHAT_REDIS_CONNECT_TIMEOUT_MS", config.redis.connect_timeout_ms);
+    if (!env_err.empty())
+        return env_err;
+    env_err = apply_unsigned("CHAT_REDIS_COMMAND_TIMEOUT_MS", config.redis.command_timeout_ms);
+    if (!env_err.empty())
+        return env_err;
+    env_err = apply_unsigned("CHAT_SESSION_TTL_SECONDS", config.redis.session_ttl_seconds);
+    if (!env_err.empty())
+        return env_err;
+    env_err = apply_unsigned("CHAT_PRESENCE_TTL_SECONDS", config.redis.presence_ttl_seconds);
+    if (!env_err.empty())
+        return env_err;
+    env_err = apply_unsigned("CHAT_USER_CACHE_TTL_SECONDS", config.redis.user_cache_ttl_seconds);
+    if (!env_err.empty())
+        return env_err;
+    env_err = apply_unsigned("CHAT_USER_NOT_FOUND_TTL_SECONDS", config.redis.user_not_found_ttl_seconds);
+    if (!env_err.empty())
+        return env_err;
+    env_err = apply_unsigned("CHAT_MESSAGE_DEDUP_TTL_SECONDS", config.redis.message_dedup_ttl_seconds);
+    if (!env_err.empty())
+        return env_err;
+    env_err = apply_unsigned("CHAT_LOGIN_RATE_LIMIT", config.redis.login_rate_limit);
+    if (!env_err.empty())
+        return env_err;
+    env_err = apply_unsigned("CHAT_LOGIN_RATE_WINDOW_SECONDS", config.redis.login_rate_window_seconds);
+    if (!env_err.empty())
+        return env_err;
+    env_err = apply_unsigned("CHAT_REGISTER_RATE_LIMIT", config.redis.register_rate_limit);
+    if (!env_err.empty())
+        return env_err;
+    env_err = apply_unsigned("CHAT_REGISTER_RATE_WINDOW_SECONDS", config.redis.register_rate_window_seconds);
+    if (!env_err.empty())
+        return env_err;
+    env_err = apply_unsigned("CHAT_SEND_RATE_LIMIT", config.redis.send_rate_limit);
+    if (!env_err.empty())
+        return env_err;
+    env_err = apply_unsigned("CHAT_SEND_RATE_WINDOW_SECONDS", config.redis.send_rate_window_seconds);
+    if (!env_err.empty())
+        return env_err;
+    env_err = apply_unsigned("CHAT_CONNECTION_IDLE_TIMEOUT_MS", config.connection.idle_timeout_ms);
+    if (!env_err.empty())
+        return env_err;
+    env_err = apply_unsigned("CHAT_HEARTBEAT_TIMEOUT_MS", config.heartbeat.timeout_ms);
+    if (!env_err.empty())
+        return env_err;
     return "";
 }
 
@@ -424,25 +566,39 @@ std::string ConfigLoader::Validate(const ServerConfig& config) {
             return "mysql.pool.borrow_timeout_ms must be positive";
     }
 
-    // redis 段（仅在 enabled 时强制校验连接参数）
-    if (config.redis.enabled) {
-        if (config.redis.host.empty())
-            return "redis.host must not be empty";
-        if (config.redis.port < 1)
-            return "redis.port must be in range 1..65535";
-        if (config.redis.pool_size <= 0)
-            return "redis.pool_size must be positive";
-        if (config.redis.database < 0)
-            return "redis.database must be >= 0";
-        if (config.redis.connect_timeout_ms <= 0)
-            return "redis.connect_timeout_ms must be positive";
-        if (config.redis.session_ttl_seconds <= 0)
-            return "redis.session_ttl_seconds must be positive";
-        if (config.redis.rate_limit_window_seconds <= 0)
-            return "redis.rate_limit_window_seconds must be positive";
-        if (config.redis.rate_limit_max_requests <= 0)
-            return "redis.rate_limit_max_requests must be positive";
-    }
+    // redis 段
+    if (config.redis.enabled && config.redis.host.empty())
+        return "redis.host must not be empty";
+    if (config.redis.port < 1)
+        return "redis.port must be in range 1..65535";
+    if (config.redis.pool_size == 0)
+        return "redis.pool_size must be positive";
+    if (config.redis.database < 0)
+        return "redis.database must be >= 0";
+    if (config.redis.connect_timeout_ms == 0)
+        return "redis.connect_timeout_ms must be positive";
+    if (config.redis.command_timeout_ms == 0)
+        return "redis.command_timeout_ms must be positive";
+    if (config.redis.key_prefix.empty() || config.redis.key_prefix.back() == ':')
+        return "redis.key_prefix must not be empty or end with ':'";
+    if (config.redis.server_id.empty() || config.redis.server_id.find(':') != std::string::npos)
+        return "redis.server_id must not be empty or contain ':'";
+    if (config.redis.session_ttl_seconds == 0)
+        return "redis.session_ttl_seconds must be positive";
+    if (config.redis.presence_ttl_seconds == 0)
+        return "redis.presence_ttl_seconds must be positive";
+    if (config.redis.user_cache_ttl_seconds == 0)
+        return "redis.user_cache_ttl_seconds must be positive";
+    if (config.redis.user_not_found_ttl_seconds == 0)
+        return "redis.user_not_found_ttl_seconds must be positive";
+    if (config.redis.message_dedup_ttl_seconds == 0)
+        return "redis.message_dedup_ttl_seconds must be positive";
+    if (config.redis.login_rate_limit == 0 || config.redis.login_rate_window_seconds == 0)
+        return "redis login rate limit values must be positive";
+    if (config.redis.register_rate_limit == 0 || config.redis.register_rate_window_seconds == 0)
+        return "redis register rate limit values must be positive";
+    if (config.redis.send_rate_limit == 0 || config.redis.send_rate_window_seconds == 0)
+        return "redis send rate limit values must be positive";
 
     // log 段
     {
@@ -464,6 +620,12 @@ std::string ConfigLoader::Validate(const ServerConfig& config) {
     // timeout 段
     if (config.timeout.remote_push_ms == 0)
         return "timeout.remote_push_ms must be positive";
+    if (config.connection.idle_timeout_ms == 0)
+        return "connection.idle_timeout_ms must be positive";
+    if (config.heartbeat.timeout_ms == 0)
+        return "heartbeat.timeout_ms must be positive";
+    if (static_cast<uint64_t>(config.redis.presence_ttl_seconds) * 1000 <= config.heartbeat.timeout_ms)
+        return "redis.presence_ttl_seconds must be greater than heartbeat.timeout_ms";
 
     return "";
 }
@@ -506,10 +668,21 @@ std::string ServerConfig::ToSafeString() const {
     j["redis"]["password"] = "<redacted>";  // 脱敏
     j["redis"]["database"] = redis.database;
     j["redis"]["pool_size"] = redis.pool_size;
+    j["redis"]["connect_timeout_ms"] = redis.connect_timeout_ms;
+    j["redis"]["command_timeout_ms"] = redis.command_timeout_ms;
     j["redis"]["key_prefix"] = redis.key_prefix;
+    j["redis"]["server_id"] = redis.server_id;
     j["redis"]["session_ttl_seconds"] = redis.session_ttl_seconds;
-    j["redis"]["rate_limit_window_seconds"] = redis.rate_limit_window_seconds;
-    j["redis"]["rate_limit_max_requests"] = redis.rate_limit_max_requests;
+    j["redis"]["presence_ttl_seconds"] = redis.presence_ttl_seconds;
+    j["redis"]["user_cache_ttl_seconds"] = redis.user_cache_ttl_seconds;
+    j["redis"]["user_not_found_ttl_seconds"] = redis.user_not_found_ttl_seconds;
+    j["redis"]["message_dedup_ttl_seconds"] = redis.message_dedup_ttl_seconds;
+    j["redis"]["login_rate_limit"] = redis.login_rate_limit;
+    j["redis"]["login_rate_window_seconds"] = redis.login_rate_window_seconds;
+    j["redis"]["register_rate_limit"] = redis.register_rate_limit;
+    j["redis"]["register_rate_window_seconds"] = redis.register_rate_window_seconds;
+    j["redis"]["send_rate_limit"] = redis.send_rate_limit;
+    j["redis"]["send_rate_window_seconds"] = redis.send_rate_window_seconds;
 
     j["log"]["level"] = log.level;
     j["log"]["file_path"] = log.file_path;
@@ -519,6 +692,8 @@ std::string ServerConfig::ToSafeString() const {
     j["log"]["async"] = log.async;
 
     j["timeout"]["remote_push_ms"] = timeout.remote_push_ms;
+    j["connection"]["idle_timeout_ms"] = connection.idle_timeout_ms;
+    j["heartbeat"]["timeout_ms"] = heartbeat.timeout_ms;
 
     return j.dump(2);
 }

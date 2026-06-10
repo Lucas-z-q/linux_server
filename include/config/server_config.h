@@ -6,6 +6,7 @@
 #include <string>
 
 #include "config/db_config.h"
+#include "config/redis_config.h"
 #include "db/db_pool_config.h"
 
 // 本文件定义服务器完整配置的聚合结构。
@@ -20,38 +21,6 @@ struct ServerSection {
 
     // 监听端口，范围 1..65535。
     uint16_t listen_port = 8080;
-};
-
-// Redis 连接配置（暂未启用，结构预留）。
-struct RedisConfig {
-    bool enabled = false;
-
-    std::string host = "127.0.0.1";
-    uint16_t port = 6379;
-
-    // 认证密码，留空表示不认证。
-    std::string password;
-
-    // 目标数据库索引。
-    int database = 0;
-
-    // 连接池大小。
-    int pool_size = 4;
-
-    // 连接超时（毫秒）。
-    int connect_timeout_ms = 3000;
-
-    // Key 前缀，避免与其他服务冲突。
-    std::string key_prefix = "chat:";
-
-    // 会话 Token TTL（秒）。
-    int session_ttl_seconds = 86400;
-
-    // 滑动窗口限流：窗口大小（秒）。
-    int rate_limit_window_seconds = 60;
-
-    // 滑动窗口限流：窗口内最大请求次数。
-    int rate_limit_max_requests = 100;
 };
 
 // 日志配置。
@@ -81,6 +50,16 @@ struct TimeoutConfig {
     uint32_t remote_push_ms = 500;
 };
 
+// 未认证连接的空闲超时配置。
+struct ConnectionConfig {
+    uint32_t idle_timeout_ms = 300000;
+};
+
+// 已认证连接的心跳超时配置。
+struct HeartbeatConfig {
+    uint32_t timeout_ms = 90000;
+};
+
 // 服务器完整配置，由 ConfigLoader 构造并传递给 main()。
 struct ServerConfig {
     ServerSection server;
@@ -89,6 +68,8 @@ struct ServerConfig {
     RedisConfig redis;
     LogConfig log;
     TimeoutConfig timeout;
+    ConnectionConfig connection;
+    HeartbeatConfig heartbeat;
 
     // 返回脱敏后的配置 JSON 字符串，可安全写入日志。
     // 密码字段一律替换为 "<redacted>"，不修改原始对象。

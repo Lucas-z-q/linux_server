@@ -16,7 +16,7 @@
 class EchoHandler : public IMessageHandler {
    public:
     // 处理一条请求，并直接返回相同内容作为响应。
-    HandleResult handle(const std::string& request, chat::ConnectionId conn_id) override;
+    HandleResult handle(const std::string& request, const RequestContext& context) override;
 
     // EchoHandler 不涉及用户会话，为测试简便起见直接允许推送通过（默认返回 true）。
     bool isConnectionBoundToUser(chat::ConnectionId conn_id, chat::UserId user_id) override;
