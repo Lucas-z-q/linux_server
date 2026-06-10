@@ -1,7 +1,14 @@
 #include "db/db_pool.h"
 
-#include <iostream>
+#include <memory>
+#include <queue>
+#include <sstream>
+#include <string>
 #include <thread>
+#include <utility>
+#include <vector>
+
+#include "common/logger.h"
 
 namespace chat {
 
@@ -69,16 +76,32 @@ PooledConnection::operator bool() const noexcept { return conn_ != nullptr; }
 
 void PooledConnection::markBad() noexcept { reusable_ = false; }
 
-void DbPool::logStats(const std::string& action, DbPoolError error, const std::string& extra) {
-    std::cerr << "[db_pool] action=" << action << " error=" << DbPoolErrorToString(error)
-              << " idle=" << idle_connections_.size() << " total=" << total_connections_
-              << " waiting=" << stats_.waiting_threads << " created=" << stats_.total_created
-              << " ping_failed=" << stats_.total_ping_failed << " invalidated=" << stats_.total_invalidated
-              << " expired=" << stats_.total_expired << " timeouts=" << stats_.total_timeouts;
+DbPool::Stats DbPool::snapshotStatsLocked() const {
+    Stats snapshot = stats_;
+    snapshot.current_idle = idle_connections_.size();
+    snapshot.current_total = total_connections_;
+    return snapshot;
+}
+
+void DbPool::logStats(const std::string& action, DbPoolError error, const Stats& stats,
+                      const std::string& extra) const {
+    std::ostringstream message;
+    message << "action=" << action << " error=" << DbPoolErrorToString(error) << " idle=" << stats.current_idle
+            << " total=" << stats.current_total << " waiting=" << stats.waiting_threads
+            << " created=" << stats.total_created << " ping_failed=" << stats.total_ping_failed
+            << " invalidated=" << stats.total_invalidated << " expired=" << stats.total_expired
+            << " timeouts=" << stats.total_timeouts;
     if (!extra.empty()) {
-        std::cerr << " details=" << extra;
+        message << " details=" << extra;
     }
-    std::cerr << std::endl;
+
+    LogLevel level = LogLevel::kError;
+    if (error == DbPoolError::kHealthCheckFailed || error == DbPoolError::kBorrowTimeout) {
+        level = LogLevel::kWarn;
+    } else if (error == DbPoolError::kStopping) {
+        level = LogLevel::kInfo;
+    }
+    Logger::Instance().Write(level, "DbPool", message.str());
 }
 
 DbPool::DbPool(const DbConfig& config)
@@ -97,32 +120,30 @@ DbPool::~DbPool() { stop(); }
 DbPoolInitResult DbPool::init() {
     // 校验基础数据库配置
     if (config_.host.empty() || config_.port == 0 || config_.username.empty() || config_.database.empty()) {
-        std::cerr << "[db_pool] action=init error=invalid_config details=host, port, username, or database is empty"
-                  << std::endl;
+        LOG_ERROR("DbPool") << "action=init error=InvalidConfig details=required database field is empty";
         return DbPoolInitResult{false, DbPoolError::kInvalidConfig, 0, "host, port, username, or database is empty"};
     }
 
     // 校验连接池容量配置
     if (pool_config_.min_connections > pool_config_.max_connections) {
-        std::cerr << "[db_pool] action=init error=invalid_config details=min_connections > max_connections"
-                  << std::endl;
+        LOG_ERROR("DbPool") << "action=init error=InvalidConfig details=min_connections exceeds max_connections";
         return DbPoolInitResult{false, DbPoolError::kInvalidConfig, 0, "min_connections > max_connections"};
     }
 
     if (pool_config_.max_connections <= 0) {
-        std::cerr << "[db_pool] action=init error=invalid_config details=max_connections <= 0" << std::endl;
+        LOG_ERROR("DbPool") << "action=init error=InvalidConfig details=max_connections is not positive";
         return DbPoolInitResult{false, DbPoolError::kInvalidConfig, 0, "max_connections <= 0"};
     }
 
     // 校验借连接超时语义（这里选择严格策略：明确拒绝为 0 的情况，防止用户误配导致无限死循环或瞬间降级）
     if (pool_config_.borrow_timeout_ms == 0) {
-        std::cerr << "[db_pool] action=init error=invalid_config details=borrow_timeout_ms == 0" << std::endl;
+        LOG_ERROR("DbPool") << "action=init error=InvalidConfig details=borrow_timeout_ms is zero";
         return DbPoolInitResult{false, DbPoolError::kInvalidConfig, 0, "borrow_timeout_ms == 0"};
     }
 
     // 校验重试语义（如果开启了重试，那么重试间隔不能为 0，防止无缝自旋把 CPU 或者对端 MySQL 打死）
     if (pool_config_.connect_retry_count > 0 && pool_config_.connect_retry_delay_ms == 0) {
-        std::cerr << "[db_pool] action=init error=invalid_config details=connect_retry_delay_ms == 0" << std::endl;
+        LOG_ERROR("DbPool") << "action=init error=InvalidConfig details=connect_retry_delay_ms is zero";
         return DbPoolInitResult{false, DbPoolError::kInvalidConfig, 0, "connect_retry_delay_ms == 0"};
     }
 
@@ -131,9 +152,8 @@ DbPoolInitResult DbPool::init() {
     for (std::size_t i = 0; i < pool_config_.min_connections; ++i) {
         auto res = createConnection();
         if (!res.connection) {
-            std::cerr << "[db_pool] action=init error=" << DbPoolErrorToString(res.error)
-                      << " mysql_errno=" << res.mysql_error_code
-                      << " details=failed to create initial connection: " << res.message << std::endl;
+            LOG_ERROR("DbPool") << "action=init error=" << DbPoolErrorToString(res.error)
+                                << " mysql_errno=" << res.mysql_error_code;
             return DbPoolInitResult{false, res.error, res.mysql_error_code,
                                     "failed to create initial connection: " + res.message};
         }
@@ -162,11 +182,15 @@ BorrowConnectionResult DbPool::borrow() {
     while (true) {
         // 第一种情况：未初始化或连接池已经停机
         if (!initialized_) {
-            logStats("borrow", DbPoolError::kNotInitialized);
+            const Stats snapshot = snapshotStatsLocked();
+            lock.unlock();
+            logStats("borrow", DbPoolError::kNotInitialized, snapshot);
             return BorrowConnectionResult{std::nullopt, DbPoolError::kNotInitialized, 0, "DbPool is not initialized"};
         }
         if (stopping_) {
-            logStats("borrow", DbPoolError::kStopping);
+            const Stats snapshot = snapshotStatsLocked();
+            lock.unlock();
+            logStats("borrow", DbPoolError::kStopping, snapshot);
             return BorrowConnectionResult{std::nullopt, DbPoolError::kStopping, 0, "DbPool is stopping"};
         }
 
@@ -203,10 +227,10 @@ BorrowConnectionResult DbPool::borrow() {
                 total_connections_--;
                 cv_.notify_all();
 
-                logStats("borrow", DbPoolError::kStopping);
-
                 auto conn_to_close = std::move(idle_wrapper.conn);
+                const Stats snapshot = snapshotStatsLocked();
                 lock.unlock();
+                logStats("borrow", DbPoolError::kStopping, snapshot);
                 conn_to_close.reset();  // 在锁外显式触发析构并物理断开
 
                 return BorrowConnectionResult{std::nullopt, DbPoolError::kStopping, 0, "DbPool is stopping"};
@@ -222,7 +246,6 @@ BorrowConnectionResult DbPool::borrow() {
             // 仅对真实失效的连接增加重建/重连统计
             stats_.total_ping_failed++;
             encountered_health_check = true;
-            logStats("borrow", DbPoolError::kHealthCheckFailed, "idle connection ping failed");
 
             // 及时释放名额，并唤醒其他可能正在等待新建连接名额的线程
             total_connections_--;
@@ -230,7 +253,9 @@ BorrowConnectionResult DbPool::borrow() {
 
             // 在锁外安全地销毁失效连接
             auto conn_to_close = std::move(idle_wrapper.conn);
+            const Stats snapshot = snapshotStatsLocked();
             lock.unlock();
+            logStats("borrow", DbPoolError::kHealthCheckFailed, snapshot, "idle connection ping failed");
             conn_to_close.reset();  // 在锁外显式触发析构并物理断开
             lock.lock();
 
@@ -257,11 +282,11 @@ BorrowConnectionResult DbPool::borrow() {
                 total_connections_--;
                 cv_.notify_all();  // 释放了名额，且因为是停机，唤醒所有等待者
 
-                logStats("borrow", DbPoolError::kStopping);
-
                 // 统一风格，在锁外释放刚建好的新连接
                 auto conn_to_close = std::move(new_conn_res.connection);
+                const Stats snapshot = snapshotStatsLocked();
                 lock.unlock();
+                logStats("borrow", DbPoolError::kStopping, snapshot);
                 conn_to_close.reset();
 
                 return BorrowConnectionResult{std::nullopt, DbPoolError::kStopping, 0, "DbPool is stopping"};
@@ -278,9 +303,9 @@ BorrowConnectionResult DbPool::borrow() {
                 cv_.notify_one();  // 释放了名额，唤醒其他可能正在等待的线程
 
                 DbPoolError final_err = encountered_health_check ? DbPoolError::kHealthCheckFailed : new_conn_res.error;
-                logStats("borrow", final_err,
-                         "mysql_errno=" + std::to_string(new_conn_res.mysql_error_code) +
-                             " details=" + new_conn_res.message);
+                const Stats snapshot = snapshotStatsLocked();
+                lock.unlock();
+                logStats("borrow", final_err, snapshot, "mysql_errno=" + std::to_string(new_conn_res.mysql_error_code));
                 return BorrowConnectionResult{std::nullopt, final_err, new_conn_res.mysql_error_code,
                                               new_conn_res.message};
             }
@@ -295,7 +320,9 @@ BorrowConnectionResult DbPool::borrow() {
 
         // 被唤醒后检查是不是停机了
         if (stopping_) {
-            logStats("borrow", DbPoolError::kStopping);
+            const Stats snapshot = snapshotStatsLocked();
+            lock.unlock();
+            logStats("borrow", DbPoolError::kStopping, snapshot);
             return BorrowConnectionResult{std::nullopt, DbPoolError::kStopping, 0, "DbPool is stopping"};
         }
 
@@ -304,7 +331,9 @@ BorrowConnectionResult DbPool::borrow() {
             stats_.total_timeouts++;
             DbPoolError final_err =
                 encountered_health_check ? DbPoolError::kHealthCheckFailed : DbPoolError::kBorrowTimeout;
-            logStats("borrow", final_err, "borrow connection timeout");
+            const Stats snapshot = snapshotStatsLocked();
+            lock.unlock();
+            logStats("borrow", final_err, snapshot, "borrow connection timeout");
             return BorrowConnectionResult{std::nullopt, final_err, 0, "borrow connection timeout"};
         }
 
@@ -323,19 +352,21 @@ void DbPool::returnConnection(std::unique_ptr<DbConnection> conn, std::chrono::s
 
     std::unique_lock<std::mutex> lock(mutex_);
     if (stopping_ || !is_healthy) {
+        DbPoolError log_error = DbPoolError::kStopping;
+        std::string log_details = "discarding returned connection during pool shutdown";
         if (!stopping_ && !is_healthy) {
             stats_.total_invalidated++;
-            logStats("return", DbPoolError::kHealthCheckFailed,
-                     reusable ? "connection ping failed on return" : "connection marked bad by user");
-        } else if (stopping_) {
-            logStats("return", DbPoolError::kStopping, "discarding returned connection during pool shutdown");
+            log_error = DbPoolError::kHealthCheckFailed;
+            log_details = reusable ? "connection ping failed on return" : "connection marked bad by user";
         }
 
         total_connections_--;
         cv_.notify_one();  // 释放了连接名额，唤醒等待的线程
 
         // 释放锁，在锁外安全地进行底层的物理关闭操作
+        const Stats snapshot = snapshotStatsLocked();
         lock.unlock();
+        logStats("return", log_error, snapshot, log_details);
         conn->close();
         return;
     }

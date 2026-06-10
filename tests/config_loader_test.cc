@@ -3,8 +3,10 @@
 #include <gtest/gtest.h>
 
 #include <cstdlib>
+#include <memory>
 #include <optional>
 #include <string>
+#include <utility>
 #include <vector>
 
 #include "config/server_config.h"
@@ -120,6 +122,11 @@ TEST_F(ConfigLoaderTest, LoadFromString_DefaultsApplied) {
     EXPECT_EQ(cfg.timeout.remote_push_ms, 500u);
     EXPECT_FALSE(cfg.redis.enabled);
     EXPECT_EQ(cfg.log.level, "info");
+    EXPECT_TRUE(cfg.log.console);
+    EXPECT_EQ(cfg.log.file_path, "logs/server.log");
+    EXPECT_EQ(cfg.log.max_size_mb, 100u);
+    EXPECT_EQ(cfg.log.max_files, 5u);
+    EXPECT_TRUE(cfg.log.async);
 }
 
 // ── JSON 错误 ─────────────────────────────────────────────────────────────────
@@ -264,6 +271,57 @@ TEST_F(ConfigLoaderTest, Validate_ConnectTimeoutZero) {
     EXPECT_NE(ErrMsg(result).find("connect_timeout_seconds"), std::string::npos);
 }
 
+TEST_F(ConfigLoaderTest, Validate_LogLevelInvalid) {
+    const char* json = R"({
+      "mysql": { "host": "h", "username": "u", "database": "d" },
+      "log": { "level": "trace" }
+    })";
+    auto result = ConfigLoader::LoadFromString(json);
+    ASSERT_TRUE(IsError(result));
+    EXPECT_NE(ErrMsg(result).find("log.level"), std::string::npos);
+}
+
+TEST_F(ConfigLoaderTest, Validate_LogMaxSizeZero) {
+    const char* json = R"({
+      "mysql": { "host": "h", "username": "u", "database": "d" },
+      "log": { "max_size_mb": 0 }
+    })";
+    auto result = ConfigLoader::LoadFromString(json);
+    ASSERT_TRUE(IsError(result));
+    EXPECT_NE(ErrMsg(result).find("log.max_size_mb"), std::string::npos);
+}
+
+TEST_F(ConfigLoaderTest, Validate_LogMaxFilesZero) {
+    const char* json = R"({
+      "mysql": { "host": "h", "username": "u", "database": "d" },
+      "log": { "max_files": 0 }
+    })";
+    auto result = ConfigLoader::LoadFromString(json);
+    ASSERT_TRUE(IsError(result));
+    EXPECT_NE(ErrMsg(result).find("log.max_files"), std::string::npos);
+}
+
+TEST_F(ConfigLoaderTest, Validate_LogWithoutOutputTarget) {
+    const char* json = R"({
+      "mysql": { "host": "h", "username": "u", "database": "d" },
+      "log": { "console": false, "file_path": "" }
+    })";
+    auto result = ConfigLoader::LoadFromString(json);
+    ASSERT_TRUE(IsError(result));
+    EXPECT_NE(ErrMsg(result).find("log"), std::string::npos);
+}
+
+TEST_F(ConfigLoaderTest, LegacyLogPathReturnsMigrationError) {
+    const char* json = R"({
+      "mysql": { "host": "h", "username": "u", "database": "d" },
+      "log": { "path": "old.log" }
+    })";
+    auto result = ConfigLoader::LoadFromString(json);
+    ASSERT_TRUE(IsError(result));
+    EXPECT_NE(ErrMsg(result).find("log.path"), std::string::npos);
+    EXPECT_NE(ErrMsg(result).find("log.file_path"), std::string::npos);
+}
+
 // ── Redis 校验（仅 enabled=true 时生效）────────────────────────────────────
 
 TEST_F(ConfigLoaderTest, Validate_RedisDisabledSkipsValidation) {
@@ -341,7 +399,10 @@ TEST_F(ConfigLoaderTest, FullConfig_AllFieldsParsed) {
         "session_ttl_seconds": 3600, "rate_limit_window_seconds": 30,
         "rate_limit_max_requests": 50
       },
-      "log": { "level": "debug", "path": "/var/log/server.log", "console": false },
+      "log": {
+        "level": "debug", "file_path": "/var/log/server.log", "console": false,
+        "max_size_mb": 64, "max_files": 3, "async": false
+      },
       "timeout": { "remote_push_ms": 1000 }
     })";
     auto result = ConfigLoader::LoadFromString(json);
@@ -371,8 +432,11 @@ TEST_F(ConfigLoaderTest, FullConfig_AllFieldsParsed) {
     EXPECT_EQ(cfg.redis.rate_limit_window_seconds, 30);
     EXPECT_EQ(cfg.redis.rate_limit_max_requests, 50);
     EXPECT_EQ(cfg.log.level, "debug");
-    EXPECT_EQ(cfg.log.path, "/var/log/server.log");
+    EXPECT_EQ(cfg.log.file_path, "/var/log/server.log");
     EXPECT_FALSE(cfg.log.console);
+    EXPECT_EQ(cfg.log.max_size_mb, 64u);
+    EXPECT_EQ(cfg.log.max_files, 3u);
+    EXPECT_FALSE(cfg.log.async);
     EXPECT_EQ(cfg.timeout.remote_push_ms, 1000u);
 }
 

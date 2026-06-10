@@ -4,11 +4,17 @@
 
 #include <atomic>
 #include <chrono>
+#include <condition_variable>
 #include <cstdlib>
+#include <future>
+#include <memory>
 #include <mutex>
 #include <string>
 #include <thread>
+#include <utility>
 #include <vector>
+
+#include "common/logger.h"
 
 namespace chat {
 namespace {
@@ -103,6 +109,43 @@ class FakeDbConnectionFactory : public IDbConnectionFactory {
     bool ping_succeed_;
     FakeDbConnection* last_created_connection_ = nullptr;
     std::size_t created_count_ = 0;
+};
+
+class BlockingLogSink : public ILogSink {
+   public:
+    bool Write(std::string_view) noexcept override {
+        {
+            std::lock_guard<std::mutex> lock(mutex_);
+            entered_ = true;
+        }
+        entered_cv_.notify_all();
+
+        std::unique_lock<std::mutex> lock(mutex_);
+        release_cv_.wait(lock, [this]() { return released_; });
+        return true;
+    }
+
+    void Flush() noexcept override {}
+
+    bool WaitUntilEntered(std::chrono::milliseconds timeout) {
+        std::unique_lock<std::mutex> lock(mutex_);
+        return entered_cv_.wait_for(lock, timeout, [this]() { return entered_; });
+    }
+
+    void Release() {
+        {
+            std::lock_guard<std::mutex> lock(mutex_);
+            released_ = true;
+        }
+        release_cv_.notify_all();
+    }
+
+   private:
+    std::mutex mutex_;
+    std::condition_variable entered_cv_;
+    std::condition_variable release_cv_;
+    bool entered_ = false;
+    bool released_ = false;
 };
 
 DbConfig MakeValidMockConfig() {
@@ -474,6 +517,45 @@ TEST_F(DbPoolTest, StopWakesWaitingBorrowers) {
     EXPECT_FALSE(result.ok());
     EXPECT_EQ(result.error, DbPoolError::kStopping);
     EXPECT_LT(std::chrono::duration_cast<std::chrono::milliseconds>(elapsed).count(), 1000);
+}
+
+TEST_F(DbPoolTest, LoggingDoesNotHoldPoolMutex) {
+    LoggerOptions logger_options;
+    logger_options.min_level = LogLevel::kDebug;
+    logger_options.console = false;
+    logger_options.async = false;
+
+    auto owned_sink = std::make_unique<BlockingLogSink>();
+    BlockingLogSink* sink = owned_sink.get();
+    std::vector<std::unique_ptr<ILogSink>> sinks;
+    sinks.push_back(std::move(owned_sink));
+    ASSERT_TRUE(Logger::Instance().Initialize(logger_options, std::move(sinks)));
+
+    DbPoolConfig pool_config;
+    pool_config.min_connections = 0;
+    auto factory = std::make_shared<FakeDbConnectionFactory>(true, true);
+    DbPool pool(MakeValidMockConfig(), pool_config, factory);
+
+    auto borrow_future = std::async(std::launch::async, [&pool]() { return pool.borrow(); });
+    const bool log_entered = sink->WaitUntilEntered(std::chrono::seconds(1));
+    EXPECT_TRUE(log_entered);
+
+    auto stats_future = std::async(std::launch::async, [&pool]() { return pool.getStats(); });
+    EXPECT_EQ(stats_future.wait_for(std::chrono::milliseconds(100)), std::future_status::ready);
+
+    sink->Release();
+    EXPECT_EQ(borrow_future.wait_for(std::chrono::seconds(1)), std::future_status::ready);
+    EXPECT_FALSE(borrow_future.get().ok());
+    if (stats_future.wait_for(std::chrono::seconds(1)) == std::future_status::ready) {
+        (void)stats_future.get();
+    }
+
+    Logger::Instance().Shutdown();
+    LoggerOptions fallback_options;
+    fallback_options.console = true;
+    fallback_options.file_path.clear();
+    fallback_options.async = false;
+    ASSERT_TRUE(Logger::Instance().Initialize(fallback_options));
 }
 
 // 语义测试 8：健康检查失败，并且无法重建，返回 kHealthCheckFailed

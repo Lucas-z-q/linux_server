@@ -1,4 +1,5 @@
 #include <arpa/inet.h>
+#include <fcntl.h>
 #include <netinet/in.h>
 #include <sys/prctl.h>
 #include <sys/socket.h>
@@ -7,13 +8,18 @@
 
 #include <cassert>
 #include <csignal>
+#include <cstdio>
 #include <cstring>
+#include <fstream>
+#include <functional>
 #include <iostream>
-#include <nlohmann/json.hpp>
+#include <iterator>
 #include <string>
+#include <vector>
 
 #include "codec/packet_codec.h"
 #include "common/error_code.h"
+#include "nlohmann/json.hpp"
 
 namespace {
 
@@ -22,9 +28,15 @@ constexpr uint16_t kAuthTestPort = 18080;
 
 class ServerProcess {
    public:
-    ServerProcess() = default;
+    ServerProcess() {
+        log_path_ = "/tmp/linux_server_auth_test_" + std::to_string(getpid()) + ".log";
+        std::remove(log_path_.c_str());
+    }
 
-    ~ServerProcess() { Stop(); }
+    ~ServerProcess() {
+        Stop();
+        std::remove(log_path_.c_str());
+    }
 
     void Start() {
         assert(pid_ == -1);
@@ -34,6 +46,10 @@ class ServerProcess {
 
         if (pid_ == 0) {
             prctl(PR_SET_PDEATHSIG, SIGTERM);
+            const int log_fd = open(log_path_.c_str(), O_WRONLY | O_CREAT | O_TRUNC, 0600);
+            assert(log_fd >= 0);
+            assert(dup2(log_fd, STDERR_FILENO) >= 0);
+            close(log_fd);
             execl(AUTH_TEST_SERVER_BINARY_PATH, AUTH_TEST_SERVER_BINARY_PATH, static_cast<char*>(nullptr));
             _exit(127);
         }
@@ -50,6 +66,11 @@ class ServerProcess {
         int status = 0;
         waitpid(pid_, &status, 0);
         pid_ = -1;
+    }
+
+    std::string ReadLog() const {
+        std::ifstream input(log_path_);
+        return std::string(std::istreambuf_iterator<char>(input), std::istreambuf_iterator<char>());
     }
 
    private:
@@ -78,6 +99,7 @@ class ServerProcess {
     }
 
     pid_t pid_ = -1;
+    std::string log_path_;
 };
 
 int ConnectToServer() {
@@ -321,6 +343,21 @@ int main() {
     TestWhoAmIAfterLoginAndLogoutOnSameConnection();
     TestSendMessageOverTcp();
     TestOfflineMessagePullOverTcp();
+
+    server.Stop();
+    const std::string log = server.ReadLog();
+    const std::vector<std::string> forbidden = {
+        "123456",         "wrong",
+        "token_",         std::to_string(std::hash<std::string>{}("123456")),
+        "hello bob",      "offline hello bob",
+        R"({"msg_type")", "SELECT ",
+        "INSERT INTO",    "UPDATE ",
+        "DELETE FROM",    "START TRANSACTION",
+        "COMMIT",         "ROLLBACK",
+    };
+    for (const auto& value : forbidden) {
+        assert(log.find(value) == std::string::npos);
+    }
 
     std::cout << "[PASS] auth integration tests passed\n";
     return 0;

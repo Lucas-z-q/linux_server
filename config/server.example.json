@@ -28,8 +28,11 @@
   },
   "log": {
     "level": "info",
-    "path": "logs/server.log",
-    "console": true
+    "console": true,
+    "file_path": "logs/server.log",
+    "max_size_mb": 100,
+    "max_files": 5,
+    "async": true
   },
   "timeout": {
     "remote_push_ms": 500

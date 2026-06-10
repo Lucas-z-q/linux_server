@@ -3,7 +3,6 @@
 #include <mysql/mysql.h>
 
 #include <cstdlib>
-#include <iostream>
 #include <limits>
 #include <memory>
 #include <optional>
@@ -11,6 +10,7 @@
 #include <utility>
 #include <vector>
 
+#include "common/logger.h"
 #include "db/db_pool.h"
 
 // 本文件实现 users 表的最小数据访问能力。
@@ -34,15 +34,9 @@ struct MysqlResultDeleter {
 
 using MysqlResultPtr = std::unique_ptr<MYSQL_RES, MysqlResultDeleter>;
 
-// 统一输出 MySQL 错误，便于后续排查连接、查询、插入失败原因。
 void LogMysqlError(MYSQL *conn, const std::string &action) {
     const unsigned int err_no = conn != nullptr ? mysql_errno(conn) : 0;
-    const char *err_msg = conn != nullptr ? mysql_error(conn) : "unknown mysql error";
-    std::cerr << "[user_repository] " << action << " failed";
-    if (err_no != 0) {
-        std::cerr << " errno=" << err_no;
-    }
-    std::cerr << " message=" << err_msg << std::endl;
+    LOG_ERROR("UserRepository") << "action=" << action << " failed mysql_errno=" << err_no;
 }
 
 // 在拼接 SQL 前对字符串做转义，避免引号等字符破坏语句结构。

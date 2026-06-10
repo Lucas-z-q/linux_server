@@ -234,12 +234,20 @@ std::string ParseLog(const nlohmann::json& root, LogConfig& cfg) {
     const auto& l = root["log"];
     if (!l.is_object())
         return "log must be an object";
+    if (l.contains("path"))
+        return "log.path is no longer supported; use log.file_path";
     std::string err;
     if (!GetStr(l, "level", cfg.level, err))
         return "log." + err;
-    if (!GetStr(l, "path", cfg.path, err))
+    if (!GetStr(l, "file_path", cfg.file_path, err))
         return "log." + err;
     if (!GetBool(l, "console", cfg.console, err))
+        return "log." + err;
+    if (!GetUInt(l, "max_size_mb", cfg.max_size_mb, "log.max_size_mb", err))
+        return err;
+    if (!GetUInt(l, "max_files", cfg.max_files, "log.max_files", err))
+        return err;
+    if (!GetBool(l, "async", cfg.async, err))
         return "log." + err;
     return "";
 }
@@ -436,6 +444,23 @@ std::string ConfigLoader::Validate(const ServerConfig& config) {
             return "redis.rate_limit_max_requests must be positive";
     }
 
+    // log 段
+    {
+        if (config.log.level != "debug" && config.log.level != "info" && config.log.level != "warn" &&
+            config.log.level != "error") {
+            return "log.level must be one of: debug, info, warn, error";
+        }
+        if (config.log.max_size_mb == 0)
+            return "log.max_size_mb must be positive";
+        if (config.log.max_files == 0)
+            return "log.max_files must be at least 1";
+        constexpr std::size_t kBytesPerMegabyte = 1024 * 1024;
+        if (config.log.max_size_mb > std::numeric_limits<std::size_t>::max() / kBytesPerMegabyte)
+            return "log.max_size_mb is too large";
+        if (!config.log.console && config.log.file_path.empty())
+            return "log must enable console or provide file_path";
+    }
+
     // timeout 段
     if (config.timeout.remote_push_ms == 0)
         return "timeout.remote_push_ms must be positive";
@@ -487,8 +512,11 @@ std::string ServerConfig::ToSafeString() const {
     j["redis"]["rate_limit_max_requests"] = redis.rate_limit_max_requests;
 
     j["log"]["level"] = log.level;
-    j["log"]["path"] = log.path;
+    j["log"]["file_path"] = log.file_path;
     j["log"]["console"] = log.console;
+    j["log"]["max_size_mb"] = log.max_size_mb;
+    j["log"]["max_files"] = log.max_files;
+    j["log"]["async"] = log.async;
 
     j["timeout"]["remote_push_ms"] = timeout.remote_push_ms;
 

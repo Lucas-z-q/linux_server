@@ -1,6 +1,7 @@
 #ifndef LINUX_SERVER_INCLUDE_CONFIG_SERVER_CONFIG_H_
 #define LINUX_SERVER_INCLUDE_CONFIG_SERVER_CONFIG_H_
 
+#include <cstddef>
 #include <cstdint>
 #include <string>
 
@@ -53,16 +54,25 @@ struct RedisConfig {
     int rate_limit_max_requests = 100;
 };
 
-// 日志配置（本阶段仅解析和脱敏输出；日志写入由后续 Logger 实现）。
+// 日志配置。
 struct LogConfig {
     // 日志级别：debug / info / warn / error。
     std::string level = "info";
 
     // 日志文件路径。
-    std::string path = "logs/server.log";
+    std::string file_path = "logs/server.log";
 
     // 是否同时输出到控制台。
     bool console = true;
+
+    // 单个日志文件的最大大小，单位 MB。
+    std::size_t max_size_mb = 100;
+
+    // 最多保留的文件数，包含当前日志文件。
+    std::size_t max_files = 5;
+
+    // 是否启用独立后台线程异步写入。
+    bool async = true;
 };
 
 // 超时配置。

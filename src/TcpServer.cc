@@ -12,12 +12,14 @@
 #include <chrono>
 #include <cstring>
 #include <exception>
-#include <iomanip>
-#include <iostream>
+#include <memory>
 #include <queue>
-#include <sstream>
+#include <string>
+#include <unordered_map>
 #include <utility>
 #include <vector>
+
+#include "common/logger.h"
 
 /**
  * @file TcpServer.cc
@@ -45,11 +47,12 @@ bool TcpServer::createListenSocket() {
         af = AF_INET6;
     } else if (inet_pton(AF_INET, ip_.c_str(), &addr4) != 1) {
         // ip_ 应已由 ConfigLoader 校验，此分支理论上不会进入。
-        std::cerr << "createListenSocket: invalid IP address: " << ip_ << std::endl;
+        LOG_ERROR("TcpServer") << "create listen socket failed: invalid IP address ip=" << ip_;
         return false;
     }
     listen_fd_ = socket(af, SOCK_STREAM, 0);
     if (listen_fd_ == -1) {
+        LOG_ERROR("TcpServer") << "socket failed errno=" << errno << " error=" << std::strerror(errno);
         return false;
     }
     return true;
@@ -79,12 +82,12 @@ bool TcpServer::bindAddress() {
         bind_addr = reinterpret_cast<struct sockaddr *>(&addr6);
         bind_len = sizeof(addr6);
     } else {
-        std::cerr << "bindAddress: invalid IP address: " << ip_ << std::endl;
+        LOG_ERROR("TcpServer") << "bind failed: invalid IP address ip=" << ip_;
         return false;
     }
 
     if (bind(listen_fd_, bind_addr, bind_len) < 0) {
-        perror("Bind failed.");
+        LOG_ERROR("TcpServer") << "bind failed errno=" << errno << " error=" << std::strerror(errno);
         return false;
     }
 
@@ -103,7 +106,7 @@ bool TcpServer::bindAddress() {
 
 bool TcpServer::startListen() {
     if (listen(listen_fd_, 5) < 0) {
-        perror("Listen failed.");
+        LOG_ERROR("TcpServer") << "listen failed errno=" << errno << " error=" << std::strerror(errno);
         return false;
     }
     return true;
@@ -130,12 +133,14 @@ void TcpServer::stop() {
 bool TcpServer::set_nonblocking(int fd) {
     int flags = fcntl(fd, F_GETFL, 0);
     if (flags == -1) {
-        perror("fcntl(F_GETFL) failed");
+        LOG_ERROR("TcpServer") << "fcntl F_GETFL failed fd=" << fd << " errno=" << errno
+                               << " error=" << std::strerror(errno);
         return false;
     }
 
     if (fcntl(fd, F_SETFL, flags | O_NONBLOCK) == -1) {
-        perror("fcntl(F_SETFL) failed");
+        LOG_ERROR("TcpServer") << "fcntl F_SETFL failed fd=" << fd << " errno=" << errno
+                               << " error=" << std::strerror(errno);
         return false;
     }
     return true;
@@ -206,7 +211,7 @@ bool TcpServer::start() {
 
     epoll_fd_ = epoll_create1(0);
     if (epoll_fd_ < 0) {
-        perror("epoll_create failed.");
+        LOG_ERROR("TcpServer") << "epoll_create1 failed errno=" << errno << " error=" << std::strerror(errno);
         cleanup_resources();
         return false;
     }
@@ -221,7 +226,7 @@ bool TcpServer::start() {
     event.events = EPOLLIN | EPOLLET | EPOLLRDHUP;
     event.data.fd = listen_fd_;
     if (epoll_ctl(epoll_fd_, EPOLL_CTL_ADD, listen_fd_, &event) < 0) {
-        perror("epoll_ctl add listen_fd failed");
+        LOG_ERROR("TcpServer") << "epoll_ctl add listen fd failed errno=" << errno << " error=" << std::strerror(errno);
         cleanup_resources();
         return false;
     }
@@ -247,7 +252,7 @@ void TcpServer::acceptLoop(int epoll_fd) {
             if (errno == EINTR) {
                 continue;
             }
-            perror("epoll_wait");
+            LOG_ERROR("TcpServer") << "epoll_wait failed errno=" << errno << " error=" << std::strerror(errno);
             break;
         }
 
@@ -292,7 +297,7 @@ void TcpServer::acceptLoop(int epoll_fd) {
                     if (errno == EAGAIN || errno == EWOULDBLOCK) {
                         break;
                     }
-                    perror("Accept failed");
+                    LOG_ERROR("TcpServer") << "accept failed errno=" << errno << " error=" << std::strerror(errno);
                     stop();
                     return;
                 }
@@ -307,7 +312,8 @@ void TcpServer::acceptLoop(int epoll_fd) {
                 ev.events = EPOLLIN | EPOLLET | EPOLLRDHUP;
                 ev.data.fd = client_fd;
                 if (epoll_ctl(epoll_fd, EPOLL_CTL_ADD, client_fd, &ev) < 0) {
-                    perror("epoll_ctl add client_fd failed");
+                    LOG_ERROR("TcpServer") << "epoll_ctl add client fd failed fd=" << client_fd << " errno=" << errno
+                                           << " error=" << std::strerror(errno);
                     close(client_fd);
                     continue;
                 }
@@ -372,14 +378,8 @@ void TcpServer::unregisterConnection(uint64_t conn_id, const std::string &reason
 }
 
 void TcpServer::logConnectionMeta(const ConnectionMeta &meta) {
-    const auto now = std::chrono::system_clock::to_time_t(meta.connected_at);
-    std::tm tm_buf{};
-    localtime_r(&now, &tm_buf);
-    std::ostringstream oss;
-    oss << std::put_time(&tm_buf, "%F %T");
-
-    std::cout << "[connected] conn_id=" << meta.conn_id << " peer=" << meta.peer_ip << ":" << meta.peer_port
-              << " fd=" << meta.fd << " at=" << oss.str() << std::endl;
+    LOG_INFO("TcpServer") << "connection established conn_id=" << meta.conn_id << " peer=" << meta.peer_ip << ":"
+                          << meta.peer_port << " fd=" << meta.fd;
 }
 
 void TcpServer::closeClientFd(int fd, const std::string &reason) {
@@ -391,7 +391,8 @@ void TcpServer::closeClientFd(int fd, const std::string &reason) {
 
     // DEL may fail if the fd was already removed/closed by another path.
     if (epoll_fd_ != -1 && epoll_ctl(epoll_fd_, EPOLL_CTL_DEL, fd, nullptr) < 0 && errno != ENOENT && errno != EBADF) {
-        perror("epoll_ctl del client_fd failed");
+        LOG_ERROR("TcpServer") << "epoll_ctl delete client fd failed fd=" << fd << " errno=" << errno
+                               << " error=" << std::strerror(errno);
     }
 
     context->clearPendingSend();
@@ -404,7 +405,7 @@ void TcpServer::closeClientFd(int fd, const std::string &reason) {
 void TcpServer::onReadable(int fd) {
     auto context = getConnectionContextByFd(fd);
     if (!context) {
-        std::cerr << "can't find connection context for fd=" << fd << std::endl;
+        LOG_ERROR("TcpServer") << "connection context not found fd=" << fd;
         return;
     }
     const uint64_t conn_id = context->conn_id();
@@ -414,9 +415,9 @@ void TcpServer::onReadable(int fd) {
         memset(buff, 0, sizeof(buff));
         ssize_t n = context->recv(buff, sizeof(buff) - 1);
         if (n < 0) {
-            if (errno == EAGAIN || errno == EWOULDBLOCK)
+            if (errno == EAGAIN || errno == EWOULDBLOCK) {
                 break;
-            else {
+            } else {
                 closeClientFd(fd, "recv_error");
                 return;
             }
@@ -427,7 +428,7 @@ void TcpServer::onReadable(int fd) {
         }
 
         context->touchOnRecv(static_cast<size_t>(n));
-        std::cout << "[message_received] conn_id=" << conn_id << " bytes=" << n << std::endl;
+        LOG_DEBUG("TcpServer") << "message received conn_id=" << conn_id << " bytes=" << n;
         std::string chunk(buff, static_cast<size_t>(n));
 
         std::vector<std::string> packets;
@@ -479,8 +480,8 @@ bool TcpServer::submitRequestTask(RequestTask task) {
                                            std::move(result.delivered_message_ids),
                                            result.delivered_user_id};
                 enqueueResponseTask(std::move(response_task));
-            } catch (const std::exception &ex) {
-                std::cerr << "worker request failed: " << ex.what() << std::endl;
+            } catch (const std::exception &) {
+                LOG_ERROR("TcpServer") << "worker request failed exception=std_exception";
                 auto context = task.context.lock();
                 if (context) {
                     ResponseTask close_task{std::weak_ptr<ConnectionContext>(context), task.conn_id, "",
@@ -490,7 +491,7 @@ bool TcpServer::submitRequestTask(RequestTask task) {
                     }
                 }
             } catch (...) {
-                std::cerr << "worker request failed: unknown exception" << std::endl;
+                LOG_ERROR("TcpServer") << "worker request failed: unknown exception";
                 auto context = task.context.lock();
                 if (context) {
                     ResponseTask close_task{std::weak_ptr<ConnectionContext>(context), task.conn_id, "",
@@ -501,8 +502,8 @@ bool TcpServer::submitRequestTask(RequestTask task) {
                 }
             }
         });
-    } catch (const std::exception &ex) {
-        std::cerr << "submit request task failed: " << ex.what() << std::endl;
+    } catch (const std::exception &) {
+        LOG_ERROR("TcpServer") << "submit request task failed exception=std_exception";
         return false;
     }
     return true;
@@ -576,7 +577,8 @@ bool TcpServer::enqueueResponseTask(ResponseTask task) {
             return true;
         }
         if (n < 0) {
-            perror("write worker_event_fd failed (critical)");
+            LOG_ERROR("TcpServer") << "write worker event fd failed errno=" << errno
+                                   << " error=" << std::strerror(errno);
             // 即使 write 失败，任务已经在队列里了。
             // I/O 线程最终会在下一次 eventfd 触发或轮询时排空队列。
             // 不要去扫描并删除任务！
@@ -614,7 +616,8 @@ void TcpServer::onWorkerResultReadable() {
                     break;
                 }
                 if (n < 0) {
-                    perror("read worker_event_fd failed");
+                    LOG_ERROR("TcpServer")
+                        << "read worker event fd failed errno=" << errno << " error=" << std::strerror(errno);
                 }
                 break;
             }
@@ -659,18 +662,18 @@ void TcpServer::onWorkerResultReadable() {
                     worker_pool_.submit([this, user_id, msg_ids = std::move(msg_ids), conn_id]() {
                         try {
                             handler_.onMessagesDelivered(user_id, msg_ids);
-                        } catch (const std::exception &ex) {
-                            std::cerr << "markDelivered batch failed: " << ex.what() << std::endl;
+                        } catch (const std::exception &) {
+                            LOG_ERROR("TcpServer") << "mark delivered batch failed exception=std_exception";
                         } catch (...) {
-                            std::cerr << "markDelivered batch failed: unknown exception" << std::endl;
+                            LOG_ERROR("TcpServer") << "mark delivered batch failed: unknown exception";
                         }
                         enqueuePostDeliveryEvent(conn_id, true);
                     });
                     deferred_next_request = true;
-                } catch (const std::exception &ex) {
-                    std::cerr << "submit markDelivered batch failed: " << ex.what() << std::endl;
+                } catch (const std::exception &) {
+                    LOG_ERROR("TcpServer") << "submit mark delivered batch failed exception=std_exception";
                 } catch (...) {
-                    std::cerr << "submit markDelivered batch failed: unknown exception" << std::endl;
+                    LOG_ERROR("TcpServer") << "submit mark delivered batch failed: unknown exception";
                 }
             }
         }
@@ -729,10 +732,10 @@ void TcpServer::onWorkerResultReadable() {
                 worker_pool_.submit([this, user_id, msg_ids = std::move(msg_ids), target_conn_id]() {
                     try {
                         handler_.onMessagesDelivered(user_id, msg_ids);
-                    } catch (const std::exception &ex) {
-                        std::cerr << "markDelivered cross-conn push failed: " << ex.what() << std::endl;
+                    } catch (const std::exception &) {
+                        LOG_ERROR("TcpServer") << "mark delivered cross-connection push failed exception=std_exception";
                     } catch (...) {
-                        std::cerr << "markDelivered cross-conn push failed: unknown exception" << std::endl;
+                        LOG_ERROR("TcpServer") << "mark delivered cross-connection push failed: unknown exception";
                     }
                     auto ctx = getConnectionContextById(target_conn_id);
                     if (ctx) {
@@ -740,13 +743,13 @@ void TcpServer::onWorkerResultReadable() {
                         enqueuePostDeliveryEvent(target_conn_id, false);
                     }
                 });
-            } catch (const std::exception &ex) {
+            } catch (const std::exception &) {
                 target_ctx->decrementPendingDeliveryMarks();
-                std::cerr << "submit markDelivered cross-conn push failed: " << ex.what() << std::endl;
+                LOG_ERROR("TcpServer") << "submit mark delivered cross-connection push failed exception=std_exception";
                 enqueuePostDeliveryEvent(target_conn_id, false);
             } catch (...) {
                 target_ctx->decrementPendingDeliveryMarks();
-                std::cerr << "submit markDelivered cross-conn push failed: unknown exception" << std::endl;
+                LOG_ERROR("TcpServer") << "submit mark delivered cross-connection push failed: unknown exception";
                 enqueuePostDeliveryEvent(target_conn_id, false);
             }
         }
@@ -758,18 +761,18 @@ void TcpServer::onWorkerResultReadable() {
                 worker_pool_.submit([this, user_id, msg_ids = std::move(same_conn_push_msg_ids), conn_id]() {
                     try {
                         handler_.onMessagesDelivered(user_id, msg_ids);
-                    } catch (const std::exception &ex) {
-                        std::cerr << "markDelivered same-conn push failed: " << ex.what() << std::endl;
+                    } catch (const std::exception &) {
+                        LOG_ERROR("TcpServer") << "mark delivered same-connection push failed exception=std_exception";
                     } catch (...) {
-                        std::cerr << "markDelivered same-conn push failed: unknown exception" << std::endl;
+                        LOG_ERROR("TcpServer") << "mark delivered same-connection push failed: unknown exception";
                     }
                     enqueuePostDeliveryEvent(conn_id, true);
                 });
                 deferred_next_request = true;
-            } catch (const std::exception &ex) {
-                std::cerr << "submit markDelivered same-conn push failed: " << ex.what() << std::endl;
+            } catch (const std::exception &) {
+                LOG_ERROR("TcpServer") << "submit mark delivered same-connection push failed exception=std_exception";
             } catch (...) {
-                std::cerr << "submit markDelivered same-conn push failed: unknown exception" << std::endl;
+                LOG_ERROR("TcpServer") << "submit mark delivered same-connection push failed: unknown exception";
             }
         }
 
@@ -807,7 +810,7 @@ bool TcpServer::createWorkerEventFd() {
 
     worker_event_fd_ = eventfd(0, EFD_NONBLOCK | EFD_CLOEXEC);
     if (worker_event_fd_ == -1) {
-        perror("eventfd create failed");
+        LOG_ERROR("TcpServer") << "eventfd creation failed errno=" << errno << " error=" << std::strerror(errno);
         return false;
     }
     return true;
@@ -822,7 +825,8 @@ bool TcpServer::registerWorkerEventFd() {
     ev.events = EPOLLIN | EPOLLET;
     ev.data.fd = worker_event_fd_;
     if (epoll_ctl(epoll_fd_, EPOLL_CTL_ADD, worker_event_fd_, &ev) < 0) {
-        perror("epoll_ctl add worker_event_fd failed");
+        LOG_ERROR("TcpServer") << "epoll_ctl add worker event fd failed errno=" << errno
+                               << " error=" << std::strerror(errno);
         return false;
     }
     return true;
@@ -831,7 +835,7 @@ bool TcpServer::registerWorkerEventFd() {
 void TcpServer::onWritable(int fd) {
     auto context = getConnectionContextByFd(fd);
     if (!context) {
-        std::cerr << "can't find connection context for fd=" << fd << std::endl;
+        LOG_ERROR("TcpServer") << "connection context not found for writable fd=" << fd;
         return;
     }
 
@@ -905,7 +909,8 @@ bool TcpServer::enableWritableEvent(int fd) {
     ev.events = EPOLLIN | EPOLLET | EPOLLRDHUP | EPOLLOUT;
     ev.data.fd = fd;
     if (epoll_ctl(epoll_fd_, EPOLL_CTL_MOD, fd, &ev) < 0) {
-        perror("epoll_ctl mod enable EPOLLOUT failed");
+        LOG_ERROR("TcpServer") << "epoll_ctl enable writable failed fd=" << fd << " errno=" << errno
+                               << " error=" << std::strerror(errno);
         return false;
     }
     return true;
@@ -920,7 +925,8 @@ bool TcpServer::disableWritableEvent(int fd) {
     ev.events = EPOLLIN | EPOLLET | EPOLLRDHUP;
     ev.data.fd = fd;
     if (epoll_ctl(epoll_fd_, EPOLL_CTL_MOD, fd, &ev) < 0) {
-        perror("epoll_ctl mod disable EPOLLOUT failed");
+        LOG_ERROR("TcpServer") << "epoll_ctl disable writable failed fd=" << fd << " errno=" << errno
+                               << " error=" << std::strerror(errno);
         return false;
     }
     return true;
@@ -938,10 +944,10 @@ std::shared_ptr<ConnectionContext> TcpServer::getConnectionContextByFd(int fd) {
 void TcpServer::logConnectionDisconnected(const ConnectionMeta &meta, const std::string &reason) {
     const auto now = std::chrono::steady_clock::now();
     const auto alive_ms = std::chrono::duration_cast<std::chrono::milliseconds>(now - meta.last_active_at).count();
-    std::cout << "[disconnected] conn_id=" << meta.conn_id << " reason=" << reason << " peer=" << meta.peer_ip << ":"
-              << meta.peer_port << " recv_count=" << meta.recv_count << " send_count=" << meta.send_count
-              << " recv_bytes=" << meta.recv_bytes << " send_bytes=" << meta.sent_bytes << " idle_ms=" << alive_ms
-              << std::endl;
+    LOG_INFO("TcpServer") << "connection closed conn_id=" << meta.conn_id << " reason=" << reason
+                          << " peer=" << meta.peer_ip << ":" << meta.peer_port << " recv_count=" << meta.recv_count
+                          << " send_count=" << meta.send_count << " recv_bytes=" << meta.recv_bytes
+                          << " send_bytes=" << meta.sent_bytes << " idle_ms=" << alive_ms;
 }
 
 std::shared_ptr<ConnectionContext> TcpServer::getConnectionContextById(chat::ConnectionId conn_id) {
