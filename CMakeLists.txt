@@ -53,6 +53,13 @@ if(NOT MYSQLCLIENT_LIB)
     message(FATAL_ERROR "mysqlclient library not found")
 endif()
 
+add_library(chat_logger STATIC
+    src/common/logger.cc
+)
+
+target_include_directories(chat_logger PUBLIC include)
+target_link_libraries(chat_logger PUBLIC Threads::Threads)
+
 add_library(redis_runtime
     src/cache/cached_user_repository.cc
     src/cache/message_dedup_cache.cc
@@ -76,6 +83,7 @@ add_executable(server
     src/TcpServer.cc
     src/codec/json_codec.cc
     src/codec/packet_codec.cc
+    src/config/config_loader.cc
     src/db/db_pool.cc
     src/db/db_connection.cc
     src/db/user_repository.cc
@@ -89,7 +97,7 @@ add_executable(server
 )
 
 target_include_directories(server PRIVATE include third_party)
-target_link_libraries(server PRIVATE ${MYSQLCLIENT_LIB} Threads::Threads redis_runtime)
+target_link_libraries(server PRIVATE chat_logger redis_runtime ${MYSQLCLIENT_LIB} Threads::Threads)
 
 add_executable(client
     client/client.cc
@@ -104,6 +112,7 @@ add_executable(main_test
 )
 
 target_include_directories(main_test PRIVATE include third_party)
+target_link_libraries(main_test PRIVATE chat_logger)
 add_test(NAME main_test COMMAND main_test)
 
 add_executable(json_codec_test
@@ -196,7 +205,7 @@ add_executable(server_test_server
 )
 
 target_include_directories(server_test_server PRIVATE include third_party)
-target_link_libraries(server_test_server PRIVATE Threads::Threads)
+target_link_libraries(server_test_server PRIVATE chat_logger Threads::Threads)
 
 add_executable(server_integration_test
     tests/server_integration_test.cc
@@ -227,7 +236,7 @@ add_executable(auth_test_server
 )
 
 target_include_directories(auth_test_server PRIVATE include third_party)
-target_link_libraries(auth_test_server PRIVATE Threads::Threads)
+target_link_libraries(auth_test_server PRIVATE chat_logger Threads::Threads)
 
 add_executable(auth_integration_test
     tests/auth_integration_test.cc
@@ -329,7 +338,7 @@ add_executable(user_repository_test
 )
 
 target_include_directories(user_repository_test PRIVATE include third_party)
-target_link_libraries(user_repository_test PRIVATE ${MYSQLCLIENT_LIB})
+target_link_libraries(user_repository_test PRIVATE chat_logger ${MYSQLCLIENT_LIB})
 add_test(NAME user_repository_test COMMAND user_repository_test)
 
 add_executable(message_repository_test
@@ -340,7 +349,7 @@ add_executable(message_repository_test
 )
 
 target_include_directories(message_repository_test PRIVATE include third_party)
-target_link_libraries(message_repository_test PRIVATE ${MYSQLCLIENT_LIB})
+target_link_libraries(message_repository_test PRIVATE chat_logger ${MYSQLCLIENT_LIB})
 add_test(NAME message_repository_test COMMAND message_repository_test)
 
 add_executable(thread_pool_test
@@ -368,12 +377,34 @@ add_executable(server_shutdown_test
 
 target_include_directories(server_shutdown_test PRIVATE include third_party)
 target_link_libraries(server_shutdown_test PRIVATE
+    chat_logger
     GTest::gtest
     GTest::gtest_main
     Threads::Threads
 )
 
 add_test(NAME server_shutdown_test COMMAND server_shutdown_test)
+
+add_executable(server_timeout_test
+    tests/server_timeout_test.cc
+    src/TcpServer.cc
+    src/TcpConnection.cc
+    src/ConnectionContext.cc
+    src/concurrency/thread_pool.cc
+    src/codec/packet_codec.cc
+)
+
+target_include_directories(server_timeout_test PRIVATE include third_party tests)
+target_link_libraries(server_timeout_test PRIVATE
+    chat_logger
+    redis_runtime
+    GTest::gtest
+    GTest::gtest_main
+    Threads::Threads
+)
+
+add_test(NAME server_timeout_test COMMAND server_timeout_test)
+set_tests_properties(server_timeout_test PROPERTIES TIMEOUT 15)
 
 add_executable(remote_push_io_test
     tests/remote_push_io_test.cc
@@ -385,7 +416,7 @@ add_executable(remote_push_io_test
 )
 
 target_include_directories(remote_push_io_test PRIVATE include third_party)
-target_link_libraries(remote_push_io_test PRIVATE Threads::Threads)
+target_link_libraries(remote_push_io_test PRIVATE chat_logger Threads::Threads)
 add_test(NAME remote_push_io_test COMMAND remote_push_io_test)
 set_tests_properties(remote_push_io_test PROPERTIES TIMEOUT 10)
 
@@ -410,9 +441,35 @@ add_executable(db_pool_test
 
 target_include_directories(db_pool_test PRIVATE include third_party)
 target_link_libraries(db_pool_test PRIVATE
+    chat_logger
     ${MYSQLCLIENT_LIB}
     GTest::gtest
     GTest::gtest_main
     Threads::Threads
 )
 add_test(NAME db_pool_test COMMAND db_pool_test)
+
+add_executable(config_loader_test
+    tests/config_loader_test.cc
+    src/config/config_loader.cc
+)
+
+target_include_directories(config_loader_test PRIVATE include third_party)
+target_link_libraries(config_loader_test PRIVATE
+    GTest::gtest
+    GTest::gtest_main
+)
+add_test(NAME config_loader_test COMMAND config_loader_test)
+
+add_executable(logger_test
+    tests/logger_test.cc
+)
+
+target_include_directories(logger_test PRIVATE include third_party)
+target_link_libraries(logger_test PRIVATE
+    chat_logger
+    GTest::gtest
+    GTest::gtest_main
+    Threads::Threads
+)
+add_test(NAME logger_test COMMAND logger_test)

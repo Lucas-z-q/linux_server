@@ -1,4 +1,5 @@
 #include <arpa/inet.h>
+#include <fcntl.h>
 #include <netinet/in.h>
 #include <sys/prctl.h>
 #include <sys/socket.h>
@@ -6,14 +7,21 @@
 #include <unistd.h>
 
 #include <cassert>
+#include <cerrno>
+#include <chrono>
 #include <csignal>
+#include <cstdio>
 #include <cstring>
+#include <fstream>
+#include <functional>
 #include <iostream>
-#include <nlohmann/json.hpp>
+#include <iterator>
 #include <string>
+#include <vector>
 
 #include "codec/packet_codec.h"
 #include "common/error_code.h"
+#include "nlohmann/json.hpp"
 
 namespace {
 
@@ -22,9 +30,15 @@ constexpr uint16_t kAuthTestPort = 18080;
 
 class ServerProcess {
    public:
-    ServerProcess() = default;
+    ServerProcess() {
+        log_path_ = "/tmp/linux_server_auth_test_" + std::to_string(getpid()) + ".log";
+        std::remove(log_path_.c_str());
+    }
 
-    ~ServerProcess() { Stop(); }
+    ~ServerProcess() {
+        Stop();
+        std::remove(log_path_.c_str());
+    }
 
     void Start() {
         assert(pid_ == -1);
@@ -34,6 +48,10 @@ class ServerProcess {
 
         if (pid_ == 0) {
             prctl(PR_SET_PDEATHSIG, SIGTERM);
+            const int log_fd = open(log_path_.c_str(), O_WRONLY | O_CREAT | O_TRUNC, 0600);
+            assert(log_fd >= 0);
+            assert(dup2(log_fd, STDERR_FILENO) >= 0);
+            close(log_fd);
             execl(AUTH_TEST_SERVER_BINARY_PATH, AUTH_TEST_SERVER_BINARY_PATH, static_cast<char*>(nullptr));
             _exit(127);
         }
@@ -50,6 +68,11 @@ class ServerProcess {
         int status = 0;
         waitpid(pid_, &status, 0);
         pid_ = -1;
+    }
+
+    std::string ReadLog() const {
+        std::ifstream input(log_path_);
+        return std::string(std::istreambuf_iterator<char>(input), std::istreambuf_iterator<char>());
     }
 
    private:
@@ -78,6 +101,7 @@ class ServerProcess {
     }
 
     pid_t pid_ = -1;
+    std::string log_path_;
 };
 
 int ConnectToServer() {
@@ -309,6 +333,36 @@ void TestOfflineMessagePullOverTcp() {
     close(fd_bob);
 }
 
+void TestAuthenticatedConnectionTimesOut() {
+    const int fd = ConnectToServer();
+    const nlohmann::json login_resp = SendAndReceiveOnSocket(
+        fd, R"({"msg_type":"login","seq":40,"token":"","data":{"username":"alice","password":"123456"}})");
+    ExpectCommonEnvelope(login_resp, "login_resp", 40, chat::ErrorCode::OK);
+    const std::string token = login_resp["data"]["token"].get<std::string>();
+
+    const auto deadline = std::chrono::steady_clock::now() + std::chrono::seconds(3);
+    bool received_eof = false;
+    char buffer[128];
+    while (std::chrono::steady_clock::now() < deadline) {
+        const ssize_t count = recv(fd, buffer, sizeof(buffer), 0);
+        if (count == 0) {
+            received_eof = true;
+            break;
+        }
+        if (count < 0 && errno != EAGAIN && errno != EWOULDBLOCK) {
+            break;
+        }
+    }
+    assert(received_eof);
+    close(fd);
+
+    const int new_fd = ConnectToServer();
+    const std::string whoami_request = R"({"msg_type":"whoami","seq":41,"token":")" + token + R"(","data":{}})";
+    const nlohmann::json whoami_resp = SendAndReceiveOnSocket(new_fd, whoami_request);
+    ExpectCommonEnvelope(whoami_resp, "whoami_resp", 41, chat::ErrorCode::USER_NOT_FOUND);
+    close(new_fd);
+}
+
 }  // namespace
 
 int main() {
@@ -322,6 +376,22 @@ int main() {
     TestWhoAmIAfterLoginAndLogoutOnSameConnection();
     TestSendMessageOverTcp();
     TestOfflineMessagePullOverTcp();
+    TestAuthenticatedConnectionTimesOut();
+
+    server.Stop();
+    const std::string log = server.ReadLog();
+    const std::vector<std::string> forbidden = {
+        "123456",         "wrong",
+        "token_",         std::to_string(std::hash<std::string>{}("123456")),
+        "hello bob",      "offline hello bob",
+        R"({"msg_type")", "SELECT ",
+        "INSERT INTO",    "UPDATE ",
+        "DELETE FROM",    "START TRANSACTION",
+        "COMMIT",         "ROLLBACK",
+    };
+    for (const auto& value : forbidden) {
+        assert(log.find(value) == std::string::npos);
+    }
 
     std::cout << "[PASS] auth integration tests passed\n";
     return 0;

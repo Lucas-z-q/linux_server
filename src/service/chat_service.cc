@@ -98,6 +98,12 @@ SendMessageResult ChatService::sendMessage(ConnectionId from_conn_id, const Send
         result.message = "client_msg_id exceeds limit (64)";
         return result;
     }
+    if (req.to_user_id <= 0) {
+        SendMessageResult result;
+        result.code = ErrorCode::INVALID_PARAM;
+        result.message = "to_user_id must be greater than 0";
+        return result;
+    }
 
     // 1. 获取发送方会话
     auto from_session_opt = session_manager_.GetSession(from_conn_id);

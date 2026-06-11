@@ -20,7 +20,7 @@ void TestBindReadRefreshAndClear() {
 
     assert(store.Bind(42, session, 123456));
     assert(redis.ttls[store.TokenKey("token-a")] == 604800);
-    assert(redis.ttls[store.UserPresenceKey(10001)] == 90);
+    assert(redis.ttls[store.UserPresenceKey(10001)] == 120);
 
     const auto token = store.GetToken("token-a");
     assert(token && token->user_id == 10001 && token->username == "alice" && token->issued_at == 123456);
@@ -29,7 +29,7 @@ void TestBindReadRefreshAndClear() {
 
     redis.ttls[store.UserPresenceKey(10001)] = 1;
     assert(store.Refresh(42, session));
-    assert(redis.ttls[store.UserPresenceKey(10001)] == 90);
+    assert(redis.ttls[store.UserPresenceKey(10001)] == 120);
 
     assert(store.ClearPresence(42, session));
     assert(!store.GetPresence(10001));

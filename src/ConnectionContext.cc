@@ -13,8 +13,12 @@ ConnectionContext::ConnectionContext(TcpConnection conn, chat::ConnectionId conn
     meta_.fd = connection_.fd();
     meta_.peer_ip = connection_.peerIp();
     meta_.peer_port = connection_.peerPort();
-    meta_.connected_at = std::chrono::system_clock::now();
-    meta_.last_active_at = std::chrono::steady_clock::now();
+    const auto now = std::chrono::steady_clock::now();
+    meta_.connected_at = now;
+    meta_.last_recv_at = now;
+    meta_.last_send_at = now;
+    meta_.last_active_at = now;
+    meta_.authenticated_user_id = 0;
     meta_.recv_count = 0;
     meta_.send_count = 0;
     meta_.recv_bytes = 0;
@@ -35,7 +39,17 @@ ssize_t ConnectionContext::sendSome(const char* data, size_t len) { return conne
 void ConnectionContext::closeConnection() { connection_.close(); }
 
 bool ConnectionContext::feedPacketData(const std::string& chunk, std::vector<std::string>& packets) {
-    return packet_codec_.feed(chunk, packets);
+    const size_t previous_size = packets.size();
+    if (!packet_codec_.feed(chunk, packets)) {
+        return false;
+    }
+    for (size_t i = previous_size; i < packets.size(); ++i) {
+        if (!packets[i].empty()) {
+            touchOnPacket();
+            break;
+        }
+    }
+    return true;
 }
 
 void ConnectionContext::appendPendingSend(const std::string& data) { pending_send_ += data; }
@@ -110,17 +124,29 @@ void ConnectionContext::clearPendingRequests() {
     pending_requests_.swap(empty);
 }
 
+bool ConnectionContext::shouldDeferTimeout() {
+    std::lock_guard<std::mutex> lock(request_mutex_);
+    return request_in_flight_ || !pending_requests_.empty() || pending_delivery_marks_.load() > 0 ||
+           !pending_send_.empty();
+}
+
 void ConnectionContext::touchOnRecv(size_t bytes) {
-    meta_.last_active_at = std::chrono::steady_clock::now();
+    meta_.last_recv_at = std::chrono::steady_clock::now();
     meta_.recv_count += 1;
     meta_.recv_bytes += bytes;
 }
 
+void ConnectionContext::touchOnPacket() { meta_.last_active_at = std::chrono::steady_clock::now(); }
+
 void ConnectionContext::touchOnSend(size_t bytes) {
-    meta_.last_active_at = std::chrono::steady_clock::now();
+    meta_.last_send_at = std::chrono::steady_clock::now();
     meta_.send_count += 1;
     meta_.sent_bytes += bytes;
 }
+
+void ConnectionContext::setAuthenticatedUserId(chat::UserId user_id) { meta_.authenticated_user_id = user_id; }
+
+void ConnectionContext::clearAuthenticatedUserId() { meta_.authenticated_user_id = 0; }
 
 void ConnectionContext::markClosing() { meta_.state = ConnectionMeta::State::CLOSING; }
 

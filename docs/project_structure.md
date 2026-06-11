@@ -11,6 +11,11 @@ client
   -> UserService / ChatService / SessionManager
   -> UserRepository / MessageRepository / DbPool / DbConnection / sql schema
   -> MySQL
+
+main / network / service / repository / db
+  -> Logger
+      -> ConsoleSink
+      -> RollingFileSink
 ```
 
 主程序目标是 `server`。它启动一个基于 epoll 的 TCP 服务器，通过工作线程池处理业务请求，使用换行分隔的 JSON 作为应用层协议，由 `MessageHandler` 路由消息，并通过 MySQL 仓储层持久化用户和聊天消息数据。聊天消息当前采用服务端投递语义：服务端先将消息保存为 `stored`；当在线 push 或离线拉取响应成功进入 I/O 发送队列后，服务端将消息推进为 `delivered`。`delivered` 表示服务端已投递或已返回给客户端，不等价于客户端已读。
@@ -33,6 +38,7 @@ client
 |   |   `-- packet_codec.h
 |   |-- common/
 |   |   |-- error_code.h
+|   |   |-- logger.h
 |   |   |-- message.h
 |   |   |-- response.h
 |   |   `-- types.h
@@ -77,6 +83,8 @@ client
 |   |   `-- packet_codec.cc
 |   |-- concurrency/
 |   |   `-- thread_pool.cc
+|   |-- common/
+|   |   `-- logger.cc
 |   |-- db/
 |   |   |-- db_connection.cc
 |   |   |-- db_pool.cc
@@ -105,6 +113,7 @@ client
 |   |-- fake_auth_server.cc
 |   |-- fake_server.cc
 |   |-- json_codec_test.cc
+|   |-- logger_test.cc
 |   |-- main_test.cc
 |   |-- message_handler_test.cc
 |   |-- packet_codec_test.cc
@@ -128,9 +137,40 @@ client
 
 - 语言标准：C++17。
 - 主服务端目标：`server`。
+- 公共日志静态库：`chat_logger`。
 - 客户端目标：`client`。
 - 外部依赖：POSIX threads、MySQL client library、GoogleTest，以及随项目 vendored 的 `nlohmann/json.hpp`。
 - 测试目标：覆盖 codec、handler、service、session、thread pool、server shutdown、database connection、database pool、repository、聊天 service 路径和端到端服务器流程。
+- 日志测试覆盖级别过滤、固定格式、多线程完整性、文件滚动、异步 flush/drain 和队列背压。
+
+### 日志层
+
+文件：
+
+- `include/common/logger.h`
+- `src/common/logger.cc`
+
+职责：
+
+- 提供 `LOG_DEBUG`、`LOG_INFO`、`LOG_WARN` 和 `LOG_ERROR` 流式接口。
+- 按 UTC 毫秒时间、Linux 线程 ID、级别和模块输出单行日志。
+- 支持控制台与滚动文件 sink，自动创建日志目录。
+- 使用独立有界队列和后台线程异步写入，不复用业务线程池。
+- 队列满时优先丢弃低级别日志，并由后台线程输出 dropped 汇总。
+- 在服务依赖析构后 drain 队列并关闭，保证停机日志落盘。
+
+日志配置位于 `log` 段：
+
+```json
+{
+  "level": "info",
+  "console": true,
+  "file_path": "logs/server.log",
+  "max_size_mb": 100,
+  "max_files": 5,
+  "async": true
+}
+```
 
 生产环境的 `server` 目标主要由以下文件组成：
 

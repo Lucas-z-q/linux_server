@@ -6,7 +6,9 @@
 #include <atomic>
 #include <chrono>
 #include <cstring>
+#include <mutex>
 #include <thread>
+#include <vector>
 
 #include "model/connection_session.h"
 #include "net/IMessageHandler.h"
@@ -131,6 +133,83 @@ TEST(TcpServerShutdownTest, ShutdownWhileProcessingRequests) {
     close(client_fd);
 
     // 能顺利到达这里证明死锁、悬空fd操作、崩溃均未发生。
+}
+
+class ShutdownOrderHandler : public IMessageHandler {
+   public:
+    HandleResult handle(const std::string& request, const RequestContext& context) override {
+        (void)request;
+        (void)context;
+        return {};
+    }
+
+    void onConnectionClosed(chat::ConnectionId conn_id) override {
+        (void)conn_id;
+        std::lock_guard<std::mutex> lock(mutex);
+        cleanup_thread = std::this_thread::get_id();
+        events.push_back("session_cleanup");
+    }
+
+    bool isConnectionBoundToUser(chat::ConnectionId conn_id, chat::UserId user_id) override {
+        (void)conn_id;
+        (void)user_id;
+        return false;
+    }
+
+    std::mutex mutex;
+    std::vector<std::string> events;
+    std::thread::id cleanup_thread;
+};
+
+TEST(TcpServerShutdownTest, StopsExternalSourceBeforeWorkerCleanupAndWaitsForCleanup) {
+    ShutdownOrderHandler handler;
+    TcpServerTimeoutOptions options;
+    options.scan_interval_ms = 10;
+    TcpServer server("127.0.0.1", 0, handler, options);
+    server.setPreShutdownHook([&handler]() {
+        std::lock_guard<std::mutex> lock(handler.mutex);
+        handler.events.push_back("push_stream_stop");
+    });
+
+    std::thread::id io_thread_id;
+    std::thread server_thread([&]() {
+        io_thread_id = std::this_thread::get_id();
+        server.start();
+    });
+
+    uint16_t server_port = 0;
+    for (int i = 0; i < 50; ++i) {
+        server_port = server.getPort();
+        if (server_port != 0) {
+            break;
+        }
+        std::this_thread::sleep_for(std::chrono::milliseconds(10));
+    }
+    ASSERT_NE(server_port, 0);
+
+    int client_fd = socket(AF_INET, SOCK_STREAM, 0);
+    ASSERT_GE(client_fd, 0);
+    struct sockaddr_in server_addr {};
+    server_addr.sin_family = AF_INET;
+    server_addr.sin_port = htons(server_port);
+    inet_pton(AF_INET, "127.0.0.1", &server_addr.sin_addr);
+    ASSERT_EQ(connect(client_fd, reinterpret_cast<struct sockaddr*>(&server_addr), sizeof(server_addr)), 0);
+    std::this_thread::sleep_for(std::chrono::milliseconds(20));
+
+    server.stop();
+    server_thread.join();
+
+    {
+        std::lock_guard<std::mutex> lock(handler.mutex);
+        ASSERT_EQ(handler.events.size(), 2u);
+        EXPECT_EQ(handler.events[0], "push_stream_stop");
+        EXPECT_EQ(handler.events[1], "session_cleanup");
+        EXPECT_NE(handler.cleanup_thread, io_thread_id);
+    }
+
+    char byte = '\0';
+    EXPECT_EQ(recv(client_fd, &byte, 1, MSG_DONTWAIT), 0);
+    close(client_fd);
 }
 
 // 模拟产生 push 且可调控 isConnectionBoundToUser 返回值的测试 Handler

@@ -4,11 +4,11 @@
 
 #include <algorithm>
 #include <cstdlib>
-#include <iostream>
 #include <memory>
 #include <string>
 #include <vector>
 
+#include "common/logger.h"
 #include "db/db_pool.h"
 
 namespace {
@@ -37,12 +37,7 @@ struct QueryExecResult {
 
 void LogMysqlError(MYSQL* conn, const std::string& action) {
     const unsigned int err_no = conn != nullptr ? mysql_errno(conn) : 0;
-    const char* err_msg = conn != nullptr ? mysql_error(conn) : "unknown mysql error";
-    std::cerr << "[message_repository] " << action << " failed";
-    if (err_no != 0) {
-        std::cerr << " errno=" << err_no;
-    }
-    std::cerr << " message=" << err_msg << std::endl;
+    LOG_ERROR("MessageRepository") << "action=" << action << " failed mysql_errno=" << err_no;
 }
 
 std::string EscapeSqlValue(MYSQL* conn, const std::string& input) {

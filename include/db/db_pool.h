@@ -7,6 +7,7 @@
 #include <mutex>
 #include <optional>
 #include <queue>
+#include <string>
 
 #include "config/db_config.h"
 #include "db/db_connection.h"
@@ -128,7 +129,9 @@ class DbPool {
     CreateConnectionResult createConnection();
 
     bool isExpired(const IdleConnection& idle, std::chrono::steady_clock::time_point now);
-    void logStats(const std::string& action, DbPoolError error, const std::string& extra = "");
+    Stats snapshotStatsLocked() const;
+    void logStats(const std::string& action, DbPoolError error, const Stats& stats,
+                  const std::string& extra = "") const;
 
     DbConfig config_;
     DbPoolConfig pool_config_;
