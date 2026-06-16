@@ -10,6 +10,8 @@
 #include <sstream>
 #include <utility>
 
+#include "common/validator.h"
+
 namespace chat {
 
 namespace {
@@ -73,29 +75,19 @@ ChatService::ChatService(ISessionManager& session_manager, IMessageRepository& m
       remote_push_publisher_(remote_push_publisher) {}
 
 SendMessageResult ChatService::sendMessage(ConnectionId from_conn_id, const SendMessageRequest& req) {
-    // 0. 校验内容合法性（安全与业务兜底）
-    if (req.content.empty()) {
+    const ValidationResult content_validation = Validator::MessageContent(req.content);
+    if (!content_validation.ok()) {
         SendMessageResult result;
-        result.code = ErrorCode::INVALID_PARAM;
-        result.message = "Message content cannot be empty";
+        result.code =
+            req.content.size() > Validator::kMessageMaxBytes ? ErrorCode::MESSAGE_TOO_LONG : ErrorCode::INVALID_PARAM;
+        result.message = content_validation.message;
         return result;
     }
-    if (req.content.length() > 4096) {
-        SendMessageResult result;
-        result.code = ErrorCode::MESSAGE_TOO_LONG;
-        result.message = "Message content exceeds limit (4096)";
-        return result;
-    }
-    if (req.client_msg_id.empty()) {
+    const ValidationResult client_id_validation = Validator::ClientMessageId(req.client_msg_id);
+    if (!client_id_validation.ok()) {
         SendMessageResult result;
         result.code = ErrorCode::INVALID_PARAM;
-        result.message = "client_msg_id cannot be empty";
-        return result;
-    }
-    if (req.client_msg_id.length() > 64) {
-        SendMessageResult result;
-        result.code = ErrorCode::INVALID_PARAM;
-        result.message = "client_msg_id exceeds limit (64)";
+        result.message = client_id_validation.message;
         return result;
     }
     if (req.to_user_id <= 0) {
@@ -279,6 +271,13 @@ PullOfflineMessagesResult ChatService::pullOfflineMessages(ConnectionId from_con
         result.message = "limit must be between 1 and 100";
         return result;
     }
+    const ValidationResult cursor_validation = Validator::Cursor(req.since_message_id);
+    if (!cursor_validation.ok()) {
+        PullOfflineMessagesResult result;
+        result.code = ErrorCode::INVALID_PARAM;
+        result.message = cursor_validation.message;
+        return result;
+    }
 
     const int32_t limit = req.limit;
     ListOfflineMessagesResult list_result =
@@ -309,6 +308,14 @@ PullOfflineMessagesResult ChatService::pullOfflineMessages(ConnectionId from_con
 }
 
 void ChatService::markMessagesDelivered(UserId user_id, const std::vector<std::string>& message_ids) {
+    if (user_id <= 0 || message_ids.empty()) {
+        return;
+    }
+    for (const std::string& message_id : message_ids) {
+        if (!Validator::MessageId(message_id).ok()) {
+            return;
+        }
+    }
     message_repository_.markDelivered(user_id, message_ids);
 }
 

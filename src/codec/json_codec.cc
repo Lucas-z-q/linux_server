@@ -122,15 +122,6 @@ bool JsonCodec::parseSendMessageRequest(const Message &msg, SendMessageRequest &
         return false;
     }
     std::string client_msg_id = msg.data["client_msg_id"].get<std::string>();
-    if (client_msg_id.empty()) {
-        err = "Empty 'client_msg_id' field in data";
-        return false;
-    }
-    if (client_msg_id.length() > 64) {
-        err = "'client_msg_id' field in data is too long (max 64)";
-        return false;
-    }
-
     if (!msg.data.contains("to_user_id")) {
         err = "Missing 'to_user_id' field in data";
         return false;
@@ -140,11 +131,6 @@ bool JsonCodec::parseSendMessageRequest(const Message &msg, SendMessageRequest &
         return false;
     }
     UserId to_user_id = msg.data["to_user_id"].get<UserId>();
-    if (to_user_id <= 0) {
-        err = "Invalid 'to_user_id' field in data: must be greater than 0";
-        return false;
-    }
-
     if (!msg.data.contains("content")) {
         err = "Missing 'content' field in data";
         return false;
@@ -155,16 +141,6 @@ bool JsonCodec::parseSendMessageRequest(const Message &msg, SendMessageRequest &
     }
 
     std::string content = msg.data["content"].get<std::string>();
-    if (content.empty()) {
-        err = "Empty 'content' field in data";
-        return false;
-    }
-
-    if (content.length() > 4096) {
-        err = "'content' field in data is too long";
-        return false;
-    }
-
     req.client_msg_id = std::move(client_msg_id);
     req.to_user_id = to_user_id;
     req.content = std::move(content);
@@ -201,14 +177,6 @@ bool JsonCodec::parsePullOfflineMessagesRequest(const Message &msg, PullOfflineM
         return false;
     }
     int32_t limit = msg.data["limit"].get<int32_t>();
-    if (limit <= 0) {
-        err = "Invalid 'limit' field in data: must be greater than 0";
-        return false;
-    }
-    if (limit > 100) {
-        err = "Invalid 'limit' field in data: must be at most 100";
-        return false;
-    }
     req.limit = limit;
 
     if (msg.data.contains("before_message_id")) {

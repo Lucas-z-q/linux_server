@@ -115,6 +115,9 @@ class FakeRedisClient : public IRedisClient {
             if (args[1].find("old_server") != std::string::npos) {
                 return EvalBind(args);
             }
+            if (args[1].find("KEYS[3]") != std::string::npos) {
+                return EvalRevoke(args);
+            }
             if (args[1].find("EXPIRE") != std::string::npos) {
                 return EvalRefresh(args);
             }
@@ -230,15 +233,26 @@ class FakeRedisClient : public IRedisClient {
         const std::string &token_key = args[3];
         const std::string &user_key = args[4];
         const std::string &conn_key = args[5];
-        const std::string &prefix = args[6];
-        const std::string &server_id = args[7];
-        const std::string &connection_id = args[8];
-        const std::string &user_id = args[9];
-        const std::string &username = args[10];
-        const std::string &issued_at = args[11];
-        const long long token_ttl = std::stoll(args[12]);
-        const std::string &token = args[13];
-        const long long presence_ttl = std::stoll(args[14]);
+        const std::string &user_session_key = args[6];
+        const std::string &prefix = args[7];
+        const std::string &server_id = args[8];
+        const std::string &connection_id = args[9];
+        const std::string &user_id = args[10];
+        const std::string &username = args[11];
+        const std::string &issued_at = args[12];
+        const long long token_ttl = std::stoll(args[13]);
+        const std::string &token = args[14];
+        const long long presence_ttl = std::stoll(args[15]);
+
+        const auto old_user_session = hashes.find(user_session_key);
+        if (old_user_session != hashes.end()) {
+            const auto old_token = old_user_session->second.find("token");
+            if (old_token != old_user_session->second.end() && old_token->second != token) {
+                const std::string old_token_key = prefix + ":session:token:" + old_token->second;
+                hashes.erase(old_token_key);
+                ttls.erase(old_token_key);
+            }
+        }
 
         const auto old_user_presence = hashes.find(user_key);
         if (old_user_presence != hashes.end()) {
@@ -268,9 +282,11 @@ class FakeRedisClient : public IRedisClient {
         hashes[token_key] = {{"user_id", user_id}, {"username", username}, {"issued_at", issued_at}};
         hashes[user_key] = {{"server_id", server_id}, {"connection_id", connection_id}, {"token", token}};
         hashes[conn_key] = {{"user_id", user_id}, {"token", token}};
+        hashes[user_session_key] = {{"token", token}};
         ttls[token_key] = token_ttl;
         ttls[user_key] = presence_ttl;
         ttls[conn_key] = presence_ttl;
+        ttls[user_session_key] = token_ttl;
         return RedisOk(IntegerReply(1));
     }
 
@@ -286,6 +302,29 @@ class FakeRedisClient : public IRedisClient {
         }
         ttls[user_key] = std::stoll(args[9]);
         ttls[conn_key] = std::stoll(args[9]);
+        return RedisOk(IntegerReply(1));
+    }
+
+    RedisCommandResult EvalRevoke(const std::vector<std::string> &args) {
+        const std::string &user_key = args[3];
+        const std::string &conn_key = args[4];
+        const std::string &token_key = args[5];
+        const std::string &user_session_key = args[6];
+        hashes.erase(token_key);
+        ttls.erase(token_key);
+        const auto current = hashes.find(user_session_key);
+        if (current != hashes.end() && current->second["token"] == args[9]) {
+            hashes.erase(user_session_key);
+            ttls.erase(user_session_key);
+        }
+        hashes.erase(conn_key);
+        ttls.erase(conn_key);
+        const auto user = hashes.find(user_key);
+        if (user != hashes.end() && user->second["server_id"] == args[7] && user->second["connection_id"] == args[8] &&
+            user->second["token"] == args[9]) {
+            hashes.erase(user_key);
+            ttls.erase(user_key);
+        }
         return RedisOk(IntegerReply(1));
     }
 

@@ -12,6 +12,7 @@ enable_testing()
 include(FetchContent)
 
 find_package(Threads REQUIRED)
+find_library(CRYPT_LIB NAMES crypt REQUIRED)
 find_package(GTest QUIET)
 if(NOT GTest_FOUND)
     FetchContent_Declare(
@@ -60,6 +61,23 @@ add_library(chat_logger STATIC
 target_include_directories(chat_logger PUBLIC include)
 target_link_libraries(chat_logger PUBLIC Threads::Threads)
 
+add_library(security_runtime STATIC
+    src/common/validator.cc
+    src/security/password_hasher.cc
+)
+target_include_directories(security_runtime PUBLIC include)
+target_link_libraries(security_runtime PUBLIC ${CRYPT_LIB})
+
+add_executable(password_hasher_test tests/password_hasher_test.cc)
+target_include_directories(password_hasher_test PRIVATE include)
+target_link_libraries(password_hasher_test PRIVATE security_runtime)
+add_test(NAME password_hasher_test COMMAND password_hasher_test)
+
+add_executable(validator_test tests/validator_test.cc)
+target_include_directories(validator_test PRIVATE include)
+target_link_libraries(validator_test PRIVATE security_runtime)
+add_test(NAME validator_test COMMAND validator_test)
+
 add_library(redis_runtime
     src/cache/cached_user_repository.cc
     src/cache/message_dedup_cache.cc
@@ -72,7 +90,7 @@ add_library(redis_runtime
     src/stream/redis_push_stream.cc
 )
 target_include_directories(redis_runtime PUBLIC include third_party)
-target_link_libraries(redis_runtime PUBLIC hiredis::hiredis Threads::Threads)
+target_link_libraries(redis_runtime PUBLIC hiredis::hiredis security_runtime Threads::Threads)
 
 add_executable(server
     src/app/main_runner.cc
@@ -86,6 +104,7 @@ add_executable(server
     src/config/config_loader.cc
     src/db/db_pool.cc
     src/db/db_connection.cc
+    src/db/mysql_statement.cc
     src/db/user_repository.cc
     src/db/message_repository.cc
     src/handler/message_handler.cc
@@ -97,7 +116,7 @@ add_executable(server
 )
 
 target_include_directories(server PRIVATE include third_party)
-target_link_libraries(server PRIVATE chat_logger redis_runtime ${MYSQLCLIENT_LIB} Threads::Threads)
+target_link_libraries(server PRIVATE chat_logger redis_runtime security_runtime ${MYSQLCLIENT_LIB} Threads::Threads)
 
 add_executable(client
     client/client.cc
@@ -158,8 +177,20 @@ add_executable(message_handler_test
 )
 
 target_include_directories(message_handler_test PRIVATE include third_party)
-target_link_libraries(message_handler_test PRIVATE redis_runtime)
+target_link_libraries(message_handler_test PRIVATE redis_runtime security_runtime)
 add_test(NAME message_handler_test COMMAND message_handler_test)
+
+add_executable(token_handler_test
+    tests/token_handler_test.cc
+    src/codec/json_codec.cc
+    src/handler/message_handler.cc
+    src/server/session_manager.cc
+    src/service/user_service.cc
+    src/service/chat_service.cc
+)
+target_include_directories(token_handler_test PRIVATE include third_party tests)
+target_link_libraries(token_handler_test PRIVATE redis_runtime security_runtime)
+add_test(NAME token_handler_test COMMAND token_handler_test)
 
 add_executable(user_service_test
     tests/user_service_test.cc
@@ -168,8 +199,17 @@ add_executable(user_service_test
 )
 
 target_include_directories(user_service_test PRIVATE include third_party)
-target_link_libraries(user_service_test PRIVATE redis_runtime)
+target_link_libraries(user_service_test PRIVATE redis_runtime security_runtime)
 add_test(NAME user_service_test COMMAND user_service_test)
+
+add_executable(user_service_security_test
+    tests/user_service_security_test.cc
+    src/server/session_manager.cc
+    src/service/user_service.cc
+)
+target_include_directories(user_service_security_test PRIVATE include third_party)
+target_link_libraries(user_service_security_test PRIVATE redis_runtime security_runtime)
+add_test(NAME user_service_security_test COMMAND user_service_security_test)
 
 add_executable(chat_service_test
     tests/chat_service_test.cc
@@ -178,7 +218,17 @@ add_executable(chat_service_test
 )
 
 target_include_directories(chat_service_test PRIVATE include third_party)
+target_link_libraries(chat_service_test PRIVATE security_runtime)
 add_test(NAME chat_service_test COMMAND chat_service_test)
+
+add_executable(chat_service_validation_test
+    tests/chat_service_validation_test.cc
+    src/server/session_manager.cc
+    src/service/chat_service.cc
+)
+target_include_directories(chat_service_validation_test PRIVATE include third_party tests)
+target_link_libraries(chat_service_validation_test PRIVATE security_runtime)
+add_test(NAME chat_service_validation_test COMMAND chat_service_validation_test)
 
 add_executable(chat_service_redis_test
     tests/chat_service_redis_test.cc
@@ -186,7 +236,7 @@ add_executable(chat_service_redis_test
 )
 
 target_include_directories(chat_service_redis_test PRIVATE include third_party tests)
-target_link_libraries(chat_service_redis_test PRIVATE redis_runtime)
+target_link_libraries(chat_service_redis_test PRIVATE redis_runtime security_runtime)
 add_test(NAME chat_service_redis_test COMMAND chat_service_redis_test)
 
 add_executable(server_test_server
@@ -205,7 +255,7 @@ add_executable(server_test_server
 )
 
 target_include_directories(server_test_server PRIVATE include third_party)
-target_link_libraries(server_test_server PRIVATE chat_logger Threads::Threads)
+target_link_libraries(server_test_server PRIVATE chat_logger security_runtime Threads::Threads)
 
 add_executable(server_integration_test
     tests/server_integration_test.cc
@@ -236,7 +286,7 @@ add_executable(auth_test_server
 )
 
 target_include_directories(auth_test_server PRIVATE include third_party)
-target_link_libraries(auth_test_server PRIVATE chat_logger Threads::Threads)
+target_link_libraries(auth_test_server PRIVATE chat_logger security_runtime Threads::Threads)
 
 add_executable(auth_integration_test
     tests/auth_integration_test.cc
@@ -264,6 +314,13 @@ add_executable(redis_session_store_test tests/redis_session_store_test.cc)
 target_include_directories(redis_session_store_test PRIVATE include third_party tests)
 target_link_libraries(redis_session_store_test PRIVATE redis_runtime)
 add_test(NAME redis_session_store_test COMMAND redis_session_store_test)
+
+add_executable(redis_session_store_integration_test tests/redis_session_store_integration_test.cc)
+target_include_directories(redis_session_store_integration_test PRIVATE include third_party)
+target_link_libraries(redis_session_store_integration_test PRIVATE redis_runtime)
+add_test(NAME redis_session_store_integration_test COMMAND redis_session_store_integration_test)
+set_tests_properties(redis_session_store_integration_test PROPERTIES LABELS redis_integration TIMEOUT 10)
+set_tests_properties(redis_session_store_integration_test PROPERTIES SKIP_RETURN_CODE 77)
 
 add_executable(redis_config_test tests/redis_config_test.cc)
 
@@ -313,7 +370,7 @@ add_executable(cross_server_push_router_test
 )
 
 target_include_directories(cross_server_push_router_test PRIVATE include third_party tests)
-target_link_libraries(cross_server_push_router_test PRIVATE redis_runtime)
+target_link_libraries(cross_server_push_router_test PRIVATE redis_runtime security_runtime)
 add_test(NAME cross_server_push_router_test COMMAND cross_server_push_router_test)
 
 add_executable(redis_connection_integration_test tests/redis_connection_integration_test.cc)
@@ -335,22 +392,52 @@ add_executable(user_repository_test
     src/db/user_repository.cc
     src/db/db_pool.cc
     src/db/db_connection.cc
+    src/db/mysql_statement.cc
 )
 
 target_include_directories(user_repository_test PRIVATE include third_party)
 target_link_libraries(user_repository_test PRIVATE chat_logger ${MYSQLCLIENT_LIB})
 add_test(NAME user_repository_test COMMAND user_repository_test)
 
+add_executable(user_repository_integration_test
+    tests/user_repository_integration_test.cc
+    src/db/user_repository.cc
+    src/db/db_pool.cc
+    src/db/db_connection.cc
+    src/db/mysql_statement.cc
+)
+target_include_directories(user_repository_integration_test PRIVATE include third_party)
+target_link_libraries(user_repository_integration_test PRIVATE chat_logger security_runtime ${MYSQLCLIENT_LIB})
+add_test(NAME user_repository_integration_test COMMAND user_repository_integration_test)
+set_tests_properties(user_repository_integration_test PROPERTIES LABELS mysql_integration SKIP_RETURN_CODE 77)
+
 add_executable(message_repository_test
     tests/message_repository_test.cc
     src/db/message_repository.cc
     src/db/db_pool.cc
     src/db/db_connection.cc
+    src/db/mysql_statement.cc
 )
 
 target_include_directories(message_repository_test PRIVATE include third_party)
 target_link_libraries(message_repository_test PRIVATE chat_logger ${MYSQLCLIENT_LIB})
 add_test(NAME message_repository_test COMMAND message_repository_test)
+
+add_executable(message_repository_security_integration_test
+    tests/message_repository_security_integration_test.cc
+    src/db/message_repository.cc
+    src/db/user_repository.cc
+    src/db/db_pool.cc
+    src/db/db_connection.cc
+    src/db/mysql_statement.cc
+)
+target_include_directories(message_repository_security_integration_test PRIVATE include third_party)
+target_link_libraries(message_repository_security_integration_test PRIVATE chat_logger security_runtime ${MYSQLCLIENT_LIB})
+add_test(NAME message_repository_security_integration_test COMMAND message_repository_security_integration_test)
+set_tests_properties(message_repository_security_integration_test PROPERTIES
+    LABELS mysql_integration
+    SKIP_RETURN_CODE 77
+)
 
 add_executable(thread_pool_test
     tests/thread_pool_test.cc
@@ -423,6 +510,7 @@ set_tests_properties(remote_push_io_test PROPERTIES TIMEOUT 10)
 add_executable(db_connection_test
     tests/db_connection_test.cc
     src/db/db_connection.cc
+    src/db/mysql_statement.cc
 )
 
 target_include_directories(db_connection_test PRIVATE include third_party)
@@ -437,6 +525,7 @@ add_executable(db_pool_test
     tests/db_pool_test.cc
     src/db/db_pool.cc
     src/db/db_connection.cc
+    src/db/mysql_statement.cc
 )
 
 target_include_directories(db_pool_test PRIVATE include third_party)

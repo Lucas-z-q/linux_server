@@ -31,6 +31,9 @@ class IGlobalSessionStore {
     virtual bool Bind(ConnectionId connection_id, const ConnectionSession &session, Timestamp issued_at) = 0;
     virtual bool Refresh(ConnectionId connection_id, const ConnectionSession &session) = 0;
     virtual bool ClearPresence(ConnectionId connection_id, const ConnectionSession &session) = 0;
+    virtual bool RevokeSession(ConnectionId connection_id, const ConnectionSession &session) {
+        return ClearPresence(connection_id, session) && RevokeToken(session.token);
+    }
     virtual bool RevokeToken(const std::string &token) = 0;
     virtual std::optional<StoredSessionToken> GetToken(const std::string &token) = 0;
     virtual std::optional<StoredUserPresence> GetPresence(UserId user_id) = 0;
@@ -44,12 +47,14 @@ class RedisSessionStore : public IGlobalSessionStore {
     bool Bind(ConnectionId connection_id, const ConnectionSession &session, Timestamp issued_at) override;
     bool Refresh(ConnectionId connection_id, const ConnectionSession &session) override;
     bool ClearPresence(ConnectionId connection_id, const ConnectionSession &session) override;
+    bool RevokeSession(ConnectionId connection_id, const ConnectionSession &session) override;
     bool RevokeToken(const std::string &token) override;
     std::optional<StoredSessionToken> GetToken(const std::string &token) override;
     std::optional<StoredUserPresence> GetPresence(UserId user_id) override;
 
     std::string TokenKey(const std::string &token) const;
     std::string UserPresenceKey(UserId user_id) const;
+    std::string UserSessionKey(UserId user_id) const;
     std::string ConnectionPresenceKey(const std::string &server_id, ConnectionId connection_id) const;
 
    private:

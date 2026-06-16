@@ -37,14 +37,16 @@ chat::DbConfig GetTestDbConfig() {
         config.username = user;
     if (const char* pwd = std::getenv("CHAT_DB_PASSWORD"))
         config.password = pwd;
-    if (const char* db = std::getenv("CHAT_DB_NAME"))
+    if (const char* db = std::getenv("CHAT_TEST_DB_NAME"))
         config.database = db;
     return config;
 }
 
 bool HasRealDbEnvConfig() {
     return std::getenv("CHAT_DB_HOST") != nullptr && std::getenv("CHAT_DB_PORT") != nullptr &&
-           std::getenv("CHAT_DB_USER") != nullptr && std::getenv("CHAT_DB_NAME") != nullptr;
+           std::getenv("CHAT_DB_USER") != nullptr && std::getenv("CHAT_DB_NAME") != nullptr &&
+           std::getenv("CHAT_TEST_DB_NAME") != nullptr &&
+           std::string(std::getenv("CHAT_DB_NAME")) != std::getenv("CHAT_TEST_DB_NAME");
 }
 
 void TestReturnsUnavailableWhenConfigIncomplete() {
@@ -137,7 +139,7 @@ void TestRepositoryMapsBorrowTimeout() {
 
 void TestRealDbBehavior() {
     if (!HasRealDbEnvConfig()) {
-        std::cout << "[INFO] CHAT_DB_* env is incomplete, skipping real DB integration tests\n";
+        std::cout << "[SKIP] independent CHAT_TEST_DB_NAME is required for legacy DB integration coverage\n";
         return;
     }
 

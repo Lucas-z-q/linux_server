@@ -20,6 +20,11 @@ Response MakeInvalidParamResponse(const Message &msg, const std::string &message
     return resp;
 }
 
+bool IsProtectedMessage(const std::string &message_type) {
+    return message_type == "logout" || message_type == "whoami" || message_type == "send_message" ||
+           message_type == "pull_offline_messages";
+}
+
 }  // namespace
 
 HandleResult MessageHandler::handle(const std::string &raw_request, const RequestContext &context) {
@@ -31,6 +36,21 @@ HandleResult MessageHandler::handle(const std::string &raw_request, const Reques
         HandleResult res;
         res.response = codec_.encodeResponse(resp);
         return res;
+    }
+
+    if (msg.msg_type == "resume_session") {
+        return handleResumeSession(msg);
+    }
+    if (IsProtectedMessage(msg.msg_type) && !msg.token.empty() &&
+        !user_service_.requestTokenMatches(conn_id, msg.token)) {
+        Response resp;
+        resp.msg_type = msg.msg_type + "_resp";
+        resp.seq = msg.seq;
+        resp.code = ErrorCode::INVALID_CREDENTIALS;
+        resp.message = "request token does not match connection session";
+        HandleResult result;
+        result.response = codec_.encodeResponse(resp);
+        return result;
     }
 
     // 任意合法请求都可维持已认证连接的在线状态。
@@ -123,6 +143,25 @@ HandleResult MessageHandler::handleLogin(const Message &msg, chat::ConnectionId 
     }
     res.response = codec_.encodeResponse(resp);
     return res;
+}
+
+HandleResult MessageHandler::handleResumeSession(const Message &msg) {
+    const ResumeSessionResult resume = user_service_.resumeSession(msg.token);
+    Response resp;
+    resp.msg_type = "resume_session_resp";
+    resp.seq = msg.seq;
+    resp.code = resume.code;
+    resp.message = resume.message;
+
+    HandleResult result;
+    if (resume.code == ErrorCode::OK) {
+        resp.data["user_id"] = resume.session.user_id;
+        resp.data["username"] = resume.session.username;
+        result.session_action = SessionAction::BIND;
+        result.pending_session = resume.session;
+    }
+    result.response = codec_.encodeResponse(resp);
+    return result;
 }
 
 HandleResult MessageHandler::handleLogout(const Message &msg, chat::ConnectionId conn_id) {

@@ -41,18 +41,18 @@ class CountingUserRepository : public chat::IUserRepository {
     }
 };
 
-void TestCacheHitAvoidsRepeatedSourceQueries() {
+void TestPositiveUserCacheDoesNotStorePasswordHash() {
     CountingUserRepository source;
     chat::test::FakeRedisClient redis;
     chat::CachedUserRepository repository(&source, &redis, {});
 
     assert(repository.findById(7).status == chat::RepositoryStatus::kOk);
-    source.id_status = chat::RepositoryStatus::kQueryFailed;
-    const auto cached = repository.findById(7);
-
-    assert(cached.status == chat::RepositoryStatus::kOk);
-    assert(cached.user->username == "alice");
-    assert(source.find_id_calls == 1);
+    assert(repository.findById(7).status == chat::RepositoryStatus::kOk);
+    assert(source.find_id_calls == 2);
+    for (const auto &entry : redis.strings) {
+        assert(entry.second.find("password_hash") == std::string::npos);
+        assert(entry.second.find("hash") == std::string::npos);
+    }
 }
 
 void TestUsernameAndNotFoundCaches() {
@@ -62,7 +62,7 @@ void TestUsernameAndNotFoundCaches() {
 
     assert(repository.findByUsername("alice").status == chat::RepositoryStatus::kOk);
     assert(repository.findByUsername("alice").status == chat::RepositoryStatus::kOk);
-    assert(source.find_name_calls == 1);
+    assert(source.find_name_calls == 2);
 
     source.id_status = chat::RepositoryStatus::kNotFound;
     assert(repository.findById(99).status == chat::RepositoryStatus::kNotFound);
@@ -99,7 +99,7 @@ void TestCreateInvalidatesPotentialStaleEntries() {
 }  // namespace
 
 int main() {
-    TestCacheHitAvoidsRepeatedSourceQueries();
+    TestPositiveUserCacheDoesNotStorePasswordHash();
     TestUsernameAndNotFoundCaches();
     TestCorruptCacheAndRedisFailureFallBack();
     TestCreateInvalidatesPotentialStaleEntries();

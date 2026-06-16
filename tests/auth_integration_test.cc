@@ -27,6 +27,7 @@ namespace {
 
 constexpr const char* kServerIp = "127.0.0.1";
 constexpr uint16_t kAuthTestPort = 18080;
+std::vector<std::string> observed_tokens;
 
 class ServerProcess {
    public:
@@ -139,7 +140,12 @@ nlohmann::json SendAndReceiveOnSocket(int fd, const std::string& request) {
         response.append(buffer, static_cast<size_t>(n));
     }
 
-    return nlohmann::json::parse(response);
+    nlohmann::json parsed = nlohmann::json::parse(response);
+    if (parsed.value("msg_type", "") == "login_resp" && parsed.contains("data") && parsed["data"].contains("token") &&
+        parsed["data"]["token"].is_string()) {
+        observed_tokens.push_back(parsed["data"]["token"].get<std::string>());
+    }
+    return parsed;
 }
 
 nlohmann::json SendAndReceive(const std::string& request) {
@@ -333,6 +339,74 @@ void TestOfflineMessagePullOverTcp() {
     close(fd_bob);
 }
 
+void TestResumeSessionAfterDisconnectOverTcp() {
+    const int login_fd = ConnectToServer();
+    const nlohmann::json login = SendAndReceiveOnSocket(
+        login_fd, R"({"msg_type":"login","seq":50,"token":"","data":{"username":"alice","password":"123456"}})");
+    ExpectCommonEnvelope(login, "login_resp", 50, chat::ErrorCode::OK);
+    const std::string token = login["data"]["token"].get<std::string>();
+    close(login_fd);
+
+    const int resumed_fd = ConnectToServer();
+    const std::string resume_request = R"({"msg_type":"resume_session","seq":51,"token":")" + token + R"(","data":{}})";
+    const nlohmann::json resumed = SendAndReceiveOnSocket(resumed_fd, resume_request);
+    ExpectCommonEnvelope(resumed, "resume_session_resp", 51, chat::ErrorCode::OK);
+    const std::string whoami_request = R"({"msg_type":"whoami","seq":52,"token":")" + token + R"(","data":{}})";
+    const nlohmann::json whoami = SendAndReceiveOnSocket(resumed_fd, whoami_request);
+    ExpectCommonEnvelope(whoami, "whoami_resp", 52, chat::ErrorCode::OK);
+    close(resumed_fd);
+}
+
+void TestLogoutRejectsOldTokenReplayOverTcp() {
+    const int fd = ConnectToServer();
+    const nlohmann::json login = SendAndReceiveOnSocket(
+        fd, R"({"msg_type":"login","seq":60,"token":"","data":{"username":"alice","password":"123456"}})");
+    ExpectCommonEnvelope(login, "login_resp", 60, chat::ErrorCode::OK);
+    const std::string token = login["data"]["token"].get<std::string>();
+    const std::string logout_request = R"({"msg_type":"logout","seq":61,"token":")" + token + R"(","data":{}})";
+    const nlohmann::json logout = SendAndReceiveOnSocket(fd, logout_request);
+    ExpectCommonEnvelope(logout, "logout_resp", 61, chat::ErrorCode::OK);
+    close(fd);
+
+    const int replay_fd = ConnectToServer();
+    const std::string replay_request = R"({"msg_type":"resume_session","seq":62,"token":")" + token + R"(","data":{}})";
+    const nlohmann::json replay = SendAndReceiveOnSocket(replay_fd, replay_request);
+    ExpectCommonEnvelope(replay, "resume_session_resp", 62, chat::ErrorCode::INVALID_CREDENTIALS);
+    close(replay_fd);
+}
+
+void TestRepeatedLoginRevokesOldTokenOverTcp() {
+    const int old_fd = ConnectToServer();
+    const nlohmann::json first_login = SendAndReceiveOnSocket(
+        old_fd, R"({"msg_type":"login","seq":70,"token":"","data":{"username":"alice","password":"123456"}})");
+    ExpectCommonEnvelope(first_login, "login_resp", 70, chat::ErrorCode::OK);
+    const std::string old_token = first_login["data"]["token"].get<std::string>();
+
+    const int new_fd = ConnectToServer();
+    const nlohmann::json second_login = SendAndReceiveOnSocket(
+        new_fd, R"({"msg_type":"login","seq":71,"token":"","data":{"username":"alice","password":"123456"}})");
+    ExpectCommonEnvelope(second_login, "login_resp", 71, chat::ErrorCode::OK);
+    const std::string new_token = second_login["data"]["token"].get<std::string>();
+    assert(old_token != new_token);
+
+    const std::string old_whoami = R"({"msg_type":"whoami","seq":72,"token":")" + old_token + R"(","data":{}})";
+    const nlohmann::json old_access = SendAndReceiveOnSocket(old_fd, old_whoami);
+    ExpectCommonEnvelope(old_access, "whoami_resp", 72, chat::ErrorCode::INVALID_CREDENTIALS);
+
+    const int replay_fd = ConnectToServer();
+    const std::string old_resume = R"({"msg_type":"resume_session","seq":74,"token":")" + old_token + R"(","data":{}})";
+    const nlohmann::json replay = SendAndReceiveOnSocket(replay_fd, old_resume);
+    ExpectCommonEnvelope(replay, "resume_session_resp", 74, chat::ErrorCode::INVALID_CREDENTIALS);
+    close(replay_fd);
+
+    close(old_fd);
+    usleep(50 * 1000);
+    const std::string whoami_request = R"({"msg_type":"whoami","seq":73,"token":")" + new_token + R"(","data":{}})";
+    const nlohmann::json whoami = SendAndReceiveOnSocket(new_fd, whoami_request);
+    ExpectCommonEnvelope(whoami, "whoami_resp", 73, chat::ErrorCode::OK);
+    close(new_fd);
+}
+
 void TestAuthenticatedConnectionTimesOut() {
     const int fd = ConnectToServer();
     const nlohmann::json login_resp = SendAndReceiveOnSocket(
@@ -359,7 +433,7 @@ void TestAuthenticatedConnectionTimesOut() {
     const int new_fd = ConnectToServer();
     const std::string whoami_request = R"({"msg_type":"whoami","seq":41,"token":")" + token + R"(","data":{}})";
     const nlohmann::json whoami_resp = SendAndReceiveOnSocket(new_fd, whoami_request);
-    ExpectCommonEnvelope(whoami_resp, "whoami_resp", 41, chat::ErrorCode::USER_NOT_FOUND);
+    ExpectCommonEnvelope(whoami_resp, "whoami_resp", 41, chat::ErrorCode::INVALID_CREDENTIALS);
     close(new_fd);
 }
 
@@ -376,6 +450,9 @@ int main() {
     TestWhoAmIAfterLoginAndLogoutOnSameConnection();
     TestSendMessageOverTcp();
     TestOfflineMessagePullOverTcp();
+    TestResumeSessionAfterDisconnectOverTcp();
+    TestLogoutRejectsOldTokenReplayOverTcp();
+    TestRepeatedLoginRevokesOldTokenOverTcp();
     TestAuthenticatedConnectionTimesOut();
 
     server.Stop();
@@ -391,6 +468,9 @@ int main() {
     };
     for (const auto& value : forbidden) {
         assert(log.find(value) == std::string::npos);
+    }
+    for (const std::string& token : observed_tokens) {
+        assert(log.find(token) == std::string::npos);
     }
 
     std::cout << "[PASS] auth integration tests passed\n";

@@ -21,6 +21,7 @@ class FakeMessageRepository : public chat::IMessageRepository {
     bool create_result_created = true;
     int create_message_calls = 0;
     int find_by_client_msg_id_calls = 0;
+    int list_offline_calls = 0;
     std::vector<chat::MessageRecord> created_messages;
     std::vector<std::string> delivered_message_ids;
     std::vector<std::string> read_message_ids;
@@ -94,6 +95,7 @@ class FakeMessageRepository : public chat::IMessageRepository {
 
     chat::ListOfflineMessagesResult listOfflineMessages(chat::UserId to_user_id, int32_t limit,
                                                         const std::string& cursor) override {
+        ++list_offline_calls;
         last_since_message_id = cursor;
         if (list_result.status != chat::RepositoryStatus::kOk || !list_result.messages.empty() ||
             list_result.has_more) {

@@ -44,7 +44,10 @@ class TimeoutHandler : public IMessageHandler {
         if (request == "login") {
             result.response = "login_ok";
             result.session_action = SessionAction::BIND;
-            result.pending_session = {true, 10001, "alice", "token-" + std::to_string(context.conn_id)};
+            std::string token(64, '0');
+            const std::string suffix = std::to_string(context.conn_id);
+            token.replace(token.size() - suffix.size(), suffix.size(), suffix);
+            result.pending_session = {true, 10001, "alice", token};
             return result;
         }
         if (request == "logout") {
