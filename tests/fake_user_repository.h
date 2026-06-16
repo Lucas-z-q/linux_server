@@ -21,6 +21,9 @@ class FakeUserRepository : public chat::IUserRepository {
     chat::FindUserResult find_by_username_result;
     chat::FindUserResult find_by_id_result;
     chat::CreateUserResult create_user_result;
+    int find_by_username_calls = 0;
+    int find_by_id_calls = 0;
+    int create_user_calls = 0;
 
     chat::UserRecord AddUser(chat::UserId user_id, const std::string& username,
                              const std::string& password_hash = "password_hash", const std::string& nickname = "") {
@@ -41,6 +44,7 @@ class FakeUserRepository : public chat::IUserRepository {
     }
 
     chat::FindUserResult findByUsername(const std::string& username) override {
+        ++find_by_username_calls;
         if (find_by_username_result.status != chat::RepositoryStatus::kNotFound ||
             find_by_username_result.user.has_value()) {
             return find_by_username_result;
@@ -53,6 +57,7 @@ class FakeUserRepository : public chat::IUserRepository {
     }
 
     chat::FindUserResult findById(chat::UserId user_id) override {
+        ++find_by_id_calls;
         if (find_by_id_result.status != chat::RepositoryStatus::kNotFound || find_by_id_result.user.has_value()) {
             return find_by_id_result;
         }
@@ -65,6 +70,7 @@ class FakeUserRepository : public chat::IUserRepository {
 
     chat::CreateUserResult createUser(const std::string& username, const std::string& password_hash,
                                       const std::string& nickname) override {
+        ++create_user_calls;
         if (create_user_result.status != chat::RepositoryStatus::kInsertFailed || create_user_result.user_id != 0) {
             return create_user_result;
         }

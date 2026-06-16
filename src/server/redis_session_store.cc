@@ -3,6 +3,8 @@
 #include <cstdlib>
 #include <utility>
 
+#include "common/validator.h"
+
 namespace chat {
 namespace {
 
@@ -10,6 +12,10 @@ namespace {
 constexpr char kBindScript[] = R"(
 local old_server = redis.call('HGET', KEYS[2], 'server_id')
 local old_conn = redis.call('HGET', KEYS[2], 'connection_id')
+local old_presence_token = redis.call('HGET', KEYS[4], 'token')
+if old_presence_token and old_presence_token ~= ARGV[8] then
+  redis.call('DEL', ARGV[1] .. ':session:token:' .. old_presence_token)
+end
 if old_server and old_conn then
   redis.call('DEL', ARGV[1] .. ':presence:conn:' .. old_server .. ':' .. old_conn)
 end
@@ -29,6 +35,8 @@ redis.call('HSET', KEYS[2], 'server_id', ARGV[2], 'connection_id', ARGV[3], 'tok
 redis.call('EXPIRE', KEYS[2], ARGV[9])
 redis.call('HSET', KEYS[3], 'user_id', ARGV[4], 'token', ARGV[8])
 redis.call('EXPIRE', KEYS[3], ARGV[9])
+redis.call('HSET', KEYS[4], 'token', ARGV[8])
+redis.call('EXPIRE', KEYS[4], ARGV[7])
 return 1
 )";
 
@@ -48,6 +56,20 @@ return 1
 
 // 条件删除避免旧连接关闭时误删新登录的 presence。
 constexpr char kClearScript[] = R"(
+redis.call('DEL', KEYS[2])
+if redis.call('HGET', KEYS[1], 'server_id') == ARGV[1]
+   and redis.call('HGET', KEYS[1], 'connection_id') == ARGV[2]
+   and redis.call('HGET', KEYS[1], 'token') == ARGV[3] then
+  redis.call('DEL', KEYS[1])
+end
+return 1
+)";
+
+constexpr char kRevokeScript[] = R"(
+redis.call('DEL', KEYS[3])
+if redis.call('HGET', KEYS[4], 'token') == ARGV[3] then
+  redis.call('DEL', KEYS[4])
+end
 redis.call('DEL', KEYS[2])
 if redis.call('HGET', KEYS[1], 'server_id') == ARGV[1]
    and redis.call('HGET', KEYS[1], 'connection_id') == ARGV[2]
@@ -79,11 +101,12 @@ bool RedisSessionStore::Bind(ConnectionId connection_id, const ConnectionSession
     if (client_ == nullptr || connection_id == 0 || issued_at < 0 || !IsValidSession(session)) {
         return false;
     }
-    return IsOne(client_->Command(
-        {"EVAL", kBindScript, "3", TokenKey(session.token), UserPresenceKey(session.user_id),
-         ConnectionPresenceKey(config_.server_id, connection_id), config_.key_prefix, config_.server_id,
-         std::to_string(connection_id), std::to_string(session.user_id), session.username, std::to_string(issued_at),
-         std::to_string(config_.session_ttl_seconds), session.token, std::to_string(config_.presence_ttl_seconds)}));
+    return IsOne(client_->Command({"EVAL", kBindScript, "4", TokenKey(session.token), UserPresenceKey(session.user_id),
+                                   ConnectionPresenceKey(config_.server_id, connection_id),
+                                   UserSessionKey(session.user_id), config_.key_prefix, config_.server_id,
+                                   std::to_string(connection_id), std::to_string(session.user_id), session.username,
+                                   std::to_string(issued_at), std::to_string(config_.session_ttl_seconds),
+                                   session.token, std::to_string(config_.presence_ttl_seconds)}));
 }
 
 bool RedisSessionStore::Refresh(ConnectionId connection_id, const ConnectionSession &session) {
@@ -107,11 +130,24 @@ bool RedisSessionStore::ClearPresence(ConnectionId connection_id, const Connecti
         .ok();
 }
 
+bool RedisSessionStore::RevokeSession(ConnectionId connection_id, const ConnectionSession &session) {
+    if (client_ == nullptr || connection_id == 0 || !IsValidSession(session)) {
+        return false;
+    }
+    return IsOne(client_->Command({"EVAL", kRevokeScript, "4", UserPresenceKey(session.user_id),
+                                   ConnectionPresenceKey(config_.server_id, connection_id), TokenKey(session.token),
+                                   UserSessionKey(session.user_id), config_.server_id, std::to_string(connection_id),
+                                   session.token}));
+}
+
 bool RedisSessionStore::RevokeToken(const std::string &token) {
-    return client_ != nullptr && !token.empty() && client_->Command({"DEL", TokenKey(token)}).ok();
+    return client_ != nullptr && Validator::Token(token).ok() && client_->Command({"DEL", TokenKey(token)}).ok();
 }
 
 std::optional<StoredSessionToken> RedisSessionStore::GetToken(const std::string &token) {
+    if (!Validator::Token(token).ok()) {
+        return std::nullopt;
+    }
     const auto values = ReadHash(TokenKey(token), {"user_id", "username", "issued_at"});
     if (!values) {
         return std::nullopt;
@@ -134,7 +170,7 @@ std::optional<StoredUserPresence> RedisSessionStore::GetPresence(UserId user_id)
         return std::nullopt;
     }
     const auto connection_id = ParseInteger((*values)[1]);
-    if ((*values)[0].empty() || !connection_id || *connection_id <= 0 || (*values)[2].empty()) {
+    if ((*values)[0].empty() || !connection_id || *connection_id <= 0 || !Validator::Token((*values)[2]).ok()) {
         client_->Command({"DEL", UserPresenceKey(user_id)});
         return std::nullopt;
     }
@@ -149,12 +185,17 @@ std::string RedisSessionStore::UserPresenceKey(UserId user_id) const {
     return config_.key_prefix + ":presence:user:" + std::to_string(user_id);
 }
 
+std::string RedisSessionStore::UserSessionKey(UserId user_id) const {
+    return config_.key_prefix + ":session:user:" + std::to_string(user_id);
+}
+
 std::string RedisSessionStore::ConnectionPresenceKey(const std::string &server_id, ConnectionId connection_id) const {
     return config_.key_prefix + ":presence:conn:" + server_id + ":" + std::to_string(connection_id);
 }
 
 bool RedisSessionStore::IsValidSession(const ConnectionSession &session) const {
-    return session.authenticated && session.user_id > 0 && !session.username.empty() && !session.token.empty();
+    return session.authenticated && session.user_id > 0 && !session.username.empty() &&
+           Validator::Token(session.token).ok();
 }
 
 std::optional<std::vector<std::string>> RedisSessionStore::ReadHash(const std::string &key,

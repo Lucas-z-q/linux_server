@@ -38,6 +38,8 @@ class FakeUserRepository : public IUserRepository {
         (void)nickname;
         return {};
     }
+
+    RepositoryStatus updatePasswordHash(UserId, const std::string&) override { return RepositoryStatus::kOk; }
 };
 
 class CountingGlobalSessionStore : public IGlobalSessionStore {
@@ -601,7 +603,7 @@ void TestHandleSendMessageEmptyClientMsgId() {
     const HandleResult result = handler.handle(request, 42);
     const nlohmann::json resp = ParseResponse(result);
     ExpectCommonEnvelope(resp, "send_message_resp", 22, ErrorCode::INVALID_PARAM);
-    assert(resp["message"].get<std::string>().find("Empty") != std::string::npos);
+    assert(resp["message"].get<std::string>().find("empty") != std::string::npos);
 }
 
 void TestHandlePullOfflineMessagesNotLoggedIn() {

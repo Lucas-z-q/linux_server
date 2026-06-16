@@ -5,6 +5,7 @@
 #include "db/user_repository.h"
 #include "fake_message_repository.h"
 #include "handler/message_handler.h"
+#include "in_memory_session_store.h"
 #include "model/user_record.h"
 #include "net/TcpServer.h"
 #include "server/session_manager.h"
@@ -71,6 +72,16 @@ class InMemoryUserRepository : public chat::IUserRepository {
         return {.status = chat::RepositoryStatus::kOk, .user_id = record.id};
     }
 
+    chat::RepositoryStatus updatePasswordHash(chat::UserId user_id, const std::string& password_hash) override {
+        for (auto& entry : users_by_name_) {
+            if (entry.second.id == user_id) {
+                entry.second.password_hash = password_hash;
+                return chat::RepositoryStatus::kOk;
+            }
+        }
+        return chat::RepositoryStatus::kNotFound;
+    }
+
    private:
     std::unordered_map<std::string, chat::UserRecord> users_by_name_;
     chat::UserId next_user_id_ = 1;
@@ -82,7 +93,8 @@ int main() {
     InMemoryUserRepository repository;
     FakeMessageRepository message_repository;
     chat::SessionManager session_manager;
-    chat::UserService user_service(repository, session_manager);
+    InMemorySessionStore global_session_store;
+    chat::UserService user_service(repository, session_manager, &global_session_store);
     chat::ChatService chat_service(session_manager, message_repository, repository);
     chat::MessageHandler handler(user_service, chat_service);
     TcpServerTimeoutOptions timeout_options;

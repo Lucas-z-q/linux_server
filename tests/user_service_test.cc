@@ -13,12 +13,19 @@ class FakeUserRepository : public chat::IUserRepository {
     chat::FindUserResult find_by_username_result;
     chat::FindUserResult find_by_id_result;
     chat::CreateUserResult create_user_result;
+    chat::RepositoryStatus update_password_status = chat::RepositoryStatus::kOk;
+
+    int find_by_username_calls = 0;
+    int create_user_calls = 0;
+    int update_password_calls = 0;
 
     std::string last_username;
     std::string last_password_hash;
     std::string last_nickname;
+    std::string updated_password_hash;
 
     chat::FindUserResult findByUsername(const std::string &username) override {
+        ++find_by_username_calls;
         last_username = username;
         return find_by_username_result;
     }
@@ -30,10 +37,18 @@ class FakeUserRepository : public chat::IUserRepository {
 
     chat::CreateUserResult createUser(const std::string &username, const std::string &password_hash,
                                       const std::string &nickname) override {
+        ++create_user_calls;
         last_username = username;
         last_password_hash = password_hash;
         last_nickname = nickname;
         return create_user_result;
+    }
+
+    chat::RepositoryStatus updatePasswordHash(chat::UserId user_id, const std::string &password_hash) override {
+        (void)user_id;
+        ++update_password_calls;
+        updated_password_hash = password_hash;
+        return update_password_status;
     }
 };
 
@@ -167,7 +182,7 @@ void TestRegisterReturnsInvalidParamForEmptyUsername() {
 
     const chat::RegisterResult result = service.registerUser(req);
     assert(result.code == chat::ErrorCode::INVALID_PARAM);
-    assert(result.message == "username is empty");
+    assert(result.message == "username length must be between 3 and 32");
 }
 
 void TestRegisterReturnsUserAlreadyExistsWhenUserFound() {
@@ -232,7 +247,7 @@ void TestRegisterSuccessReturnsUserIdAndHashesPassword() {
     assert(repo.last_username == "alice");
     assert(repo.last_nickname == "Alice");
     assert(repo.last_password_hash != req.password);
-    assert(!repo.last_password_hash.empty());
+    assert(repo.last_password_hash.compare(0, 4, "$2b$") == 0);
 }
 
 void TestLoginReturnsInvalidParamForEmptyUsername() {
@@ -244,7 +259,7 @@ void TestLoginReturnsInvalidParamForEmptyUsername() {
 
     const chat::LoginResult result = service.login(req, 0);
     assert(result.code == chat::ErrorCode::INVALID_PARAM);
-    assert(result.message == "username is empty");
+    assert(result.message == "username length must be between 3 and 32");
 }
 
 void TestLoginReturnsInvalidParamForEmptyPassword() {
@@ -256,7 +271,7 @@ void TestLoginReturnsInvalidParamForEmptyPassword() {
 
     const chat::LoginResult result = service.login(req, 0);
     assert(result.code == chat::ErrorCode::INVALID_PARAM);
-    assert(result.message == "password is empty");
+    assert(result.message == "password length must be between 1 and 72");
 }
 
 void TestLoginReturnsDbQueryFailedWhenLookupFails() {

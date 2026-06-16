@@ -64,6 +64,8 @@ class IUserRepository {
     // status 为 kOk 时，user_id 中包含新生成的主键。
     virtual CreateUserResult createUser(const std::string& username, const std::string& password_hash,
                                         const std::string& nickname) = 0;
+
+    virtual RepositoryStatus updatePasswordHash(UserId, const std::string&) { return RepositoryStatus::kQueryFailed; }
 };
 
 class DbPool;
@@ -81,6 +83,8 @@ class UserRepository : public IUserRepository {
     // 创建新用户，并返回插入状态与新生成的用户 ID。
     CreateUserResult createUser(const std::string& username, const std::string& password_hash,
                                 const std::string& nickname) override;
+
+    RepositoryStatus updatePasswordHash(UserId user_id, const std::string& password_hash) override;
 
    private:
     DbPool* pool_;

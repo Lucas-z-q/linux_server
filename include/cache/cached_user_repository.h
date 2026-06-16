@@ -19,13 +19,12 @@ class CachedUserRepository : public IUserRepository {
     FindUserResult findById(UserId user_id) override;
     CreateUserResult createUser(const std::string &username, const std::string &password_hash,
                                 const std::string &nickname) override;
+    RepositoryStatus updatePasswordHash(UserId user_id, const std::string &password_hash) override;
 
    private:
     std::string UserKey(UserId user_id) const;
     std::string UsernameKey(const std::string &username) const;
-    void CacheUser(const UserRecord &user);
     void CacheNotFound(const std::string &key);
-    std::optional<FindUserResult> ReadUser(const std::string &key);
 
     IUserRepository *source_;
     IRedisClient *redis_;

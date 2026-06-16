@@ -56,6 +56,8 @@ class MessageHandler : public IMessageHandler {
     // 处理登录请求。
     HandleResult handleLogin(const Message &msg, chat::ConnectionId conn_id, const std::string &identity);
 
+    HandleResult handleResumeSession(const Message &msg);
+
     // 处理登出请求。
     HandleResult handleLogout(const Message &msg, chat::ConnectionId conn_id);
 

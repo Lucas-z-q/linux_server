@@ -8,6 +8,7 @@
 #include "common/types.h"
 #include "db/user_repository.h"
 #include "protocol/auth_messages.h"
+#include "security/password_hasher.h"
 #include "server/redis_session_store.h"
 #include "server/session_manager.h"
 
@@ -47,6 +48,12 @@ struct LoginResult {
     std::uint32_t retry_after_seconds = 0;
 };
 
+struct ResumeSessionResult {
+    ErrorCode code = ErrorCode::OK;
+    std::string message;
+    ConnectionSession session;
+};
+
 // 表示登出流程的执行结果。
 struct LogoutResult {
     // 业务状态码。
@@ -75,7 +82,7 @@ class UserService {
     explicit UserService(IUserRepository &user_repository, ISessionManager &session_manager);
     UserService(IUserRepository &user_repository, ISessionManager &session_manager,
                 IGlobalSessionStore *global_session_store, IRateLimiter *rate_limiter = nullptr,
-                RedisConfig config = {});
+                RedisConfig config = {}, IPasswordHasher *password_hasher = nullptr);
 
     // 使用外部注入的 Repository 构造，便于单元测试或替换实现。
     explicit UserService(IUserRepository &user_repository);
@@ -85,6 +92,9 @@ class UserService {
 
     // 执行用户登录流程，并关联当前连接 ID。
     LoginResult login(const LoginRequest &req, ConnectionId conn_id, const std::string &identity = "");
+
+    ResumeSessionResult resumeSession(const std::string &token);
+    bool requestTokenMatches(ConnectionId conn_id, const std::string &token);
 
     // 执行用户登出流程，并解除当前连接上的登录态。
     LogoutResult logout(ConnectionId conn_id);
@@ -120,15 +130,14 @@ class UserService {
     IGlobalSessionStore *global_session_store_ = nullptr;
     IRateLimiter *rate_limiter_ = nullptr;
     RedisConfig redis_config_;
+    BcryptPasswordHasher default_password_hasher_;
+    IPasswordHasher *password_hasher_ = &default_password_hasher_;
 
     // 校验注册请求的字段完整性与基本合法性。
     bool validateRegisterRequest(const RegisterRequest &req, std::string &err) const;
 
     // 校验登录请求的字段完整性与基本合法性。
     bool validateLoginRequest(const LoginRequest &req, std::string &err) const;
-
-    // 对用户输入密码进行哈希计算。
-    std::string hashPassword(const std::string &password) const;
 
     // 为指定用户生成认证令牌。
     std::string generateToken() const;

@@ -157,8 +157,8 @@ void TestSendMessageRequest() {
 
         SendMessageRequest req;
         bool ok = codec.parseSendMessageRequest(msg, req, err);
-        assert(!ok);
-        assert(err.find("to_user_id") != std::string::npos);
+        assert(ok);
+        assert(req.to_user_id == 0);
     }
 
     // 5. Missing content
@@ -201,8 +201,8 @@ void TestSendMessageRequest() {
 
         SendMessageRequest req;
         bool ok = codec.parseSendMessageRequest(msg, req, err);
-        assert(!ok);
-        assert(err.find("Empty") != std::string::npos);
+        assert(ok);
+        assert(req.content.empty());
     }
 
     // 8. Too long content (> 4096)
@@ -216,8 +216,8 @@ void TestSendMessageRequest() {
 
         SendMessageRequest req;
         bool ok = codec.parseSendMessageRequest(msg, req, err);
-        assert(!ok);
-        assert(err.find("too long") != std::string::npos);
+        assert(ok);
+        assert(req.content.size() == 4097);
     }
 
     // 8a. Missing client_msg_id
@@ -245,8 +245,8 @@ void TestSendMessageRequest() {
 
         SendMessageRequest req;
         bool ok = codec.parseSendMessageRequest(msg, req, err);
-        assert(!ok);
-        assert(err.find("Empty") != std::string::npos);
+        assert(ok);
+        assert(req.client_msg_id.empty());
     }
 
     // 8c. Too long client_msg_id (> 64)
@@ -260,8 +260,8 @@ void TestSendMessageRequest() {
 
         SendMessageRequest req;
         bool ok = codec.parseSendMessageRequest(msg, req, err);
-        assert(!ok);
-        assert(err.find("too long") != std::string::npos);
+        assert(ok);
+        assert(req.client_msg_id.size() == 65);
     }
 
     // 9. fillSendMessageAck
@@ -379,8 +379,8 @@ void TestPullOfflineMessages() {
 
         PullOfflineMessagesRequest req;
         bool ok = codec.parsePullOfflineMessagesRequest(msg, req, err);
-        assert(!ok);
-        assert(err.find("limit") != std::string::npos);
+        assert(ok);
+        assert(req.limit == 0);
     }
 
     // 6. Invalid limit value (> 100)
@@ -392,8 +392,8 @@ void TestPullOfflineMessages() {
 
         PullOfflineMessagesRequest req;
         bool ok = codec.parsePullOfflineMessagesRequest(msg, req, err);
-        assert(!ok);
-        assert(err.find("limit") != std::string::npos);
+        assert(ok);
+        assert(req.limit == 101);
     }
 
     // 7. fillPullOfflineMessagesResponse
