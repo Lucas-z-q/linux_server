@@ -107,11 +107,15 @@ add_executable(server
     src/db/mysql_statement.cc
     src/db/user_repository.cc
     src/db/message_repository.cc
+    src/db/friend_repository.cc
+    src/db/group_repository.cc
     src/handler/message_handler.cc
     src/protocol/protocol_helper.cc
     src/server/session_manager.cc
     src/service/user_service.cc
     src/service/chat_service.cc
+    src/service/friend_service.cc
+    src/service/group_service.cc
     src/concurrency/thread_pool.cc
 )
 
@@ -174,6 +178,8 @@ add_executable(message_handler_test
     src/server/session_manager.cc
     src/service/user_service.cc
     src/service/chat_service.cc
+    src/service/friend_service.cc
+    src/service/group_service.cc
 )
 
 target_include_directories(message_handler_test PRIVATE include third_party)
@@ -187,6 +193,8 @@ add_executable(token_handler_test
     src/server/session_manager.cc
     src/service/user_service.cc
     src/service/chat_service.cc
+    src/service/friend_service.cc
+    src/service/group_service.cc
 )
 target_include_directories(token_handler_test PRIVATE include third_party tests)
 target_link_libraries(token_handler_test PRIVATE redis_runtime security_runtime)
@@ -239,6 +247,24 @@ target_include_directories(chat_service_redis_test PRIVATE include third_party t
 target_link_libraries(chat_service_redis_test PRIVATE redis_runtime security_runtime)
 add_test(NAME chat_service_redis_test COMMAND chat_service_redis_test)
 
+add_executable(friend_service_test
+    tests/friend_service_test.cc
+    src/service/friend_service.cc
+)
+
+target_include_directories(friend_service_test PRIVATE include third_party tests)
+target_link_libraries(friend_service_test PRIVATE security_runtime)
+add_test(NAME friend_service_test COMMAND friend_service_test)
+
+add_executable(group_service_test
+    tests/group_service_test.cc
+    src/service/group_service.cc
+)
+
+target_include_directories(group_service_test PRIVATE include third_party tests)
+target_link_libraries(group_service_test PRIVATE security_runtime)
+add_test(NAME group_service_test COMMAND group_service_test)
+
 add_executable(server_test_server
     tests/fake_server.cc
     src/app/main_runner.cc
@@ -251,6 +277,8 @@ add_executable(server_test_server
     src/server/session_manager.cc
     src/service/user_service.cc
     src/service/chat_service.cc
+    src/service/friend_service.cc
+    src/service/group_service.cc
     src/concurrency/thread_pool.cc
 )
 
@@ -282,6 +310,8 @@ add_executable(auth_test_server
     src/server/session_manager.cc
     src/service/user_service.cc
     src/service/chat_service.cc
+    src/service/friend_service.cc
+    src/service/group_service.cc
     src/concurrency/thread_pool.cc
 )
 
@@ -422,6 +452,30 @@ add_executable(message_repository_test
 target_include_directories(message_repository_test PRIVATE include third_party)
 target_link_libraries(message_repository_test PRIVATE chat_logger ${MYSQLCLIENT_LIB})
 add_test(NAME message_repository_test COMMAND message_repository_test)
+
+add_executable(friend_repository_test
+    tests/friend_repository_test.cc
+    src/db/friend_repository.cc
+    src/db/db_pool.cc
+    src/db/db_connection.cc
+    src/db/mysql_statement.cc
+)
+
+target_include_directories(friend_repository_test PRIVATE include third_party)
+target_link_libraries(friend_repository_test PRIVATE chat_logger ${MYSQLCLIENT_LIB})
+add_test(NAME friend_repository_test COMMAND friend_repository_test)
+
+add_executable(group_repository_test
+    tests/group_repository_test.cc
+    src/db/group_repository.cc
+    src/db/db_pool.cc
+    src/db/db_connection.cc
+    src/db/mysql_statement.cc
+)
+
+target_include_directories(group_repository_test PRIVATE include third_party)
+target_link_libraries(group_repository_test PRIVATE chat_logger ${MYSQLCLIENT_LIB})
+add_test(NAME group_repository_test COMMAND group_repository_test)
 
 add_executable(message_repository_security_integration_test
     tests/message_repository_security_integration_test.cc

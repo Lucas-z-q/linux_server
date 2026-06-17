@@ -278,7 +278,8 @@ void TestSendMessageOverTcp() {
 
     const nlohmann::json push_resp = ReceiveOnSocket(fd_bob);
     ExpectCommonEnvelope(push_resp, "message_push", 0, chat::ErrorCode::OK);
-    assert(!push_resp["data"]["message_id"].get<std::string>().empty());
+    const std::string pushed_message_id = push_resp["data"]["message_id"].get<std::string>();
+    assert(!pushed_message_id.empty());
     assert(!push_resp["data"]["conversation_id"].get<std::string>().empty());
     assert(push_resp["data"]["from_user_id"].get<int>() == 10001);
     assert(push_resp["data"]["from_username"].get<std::string>() == "alice");
@@ -286,6 +287,12 @@ void TestSendMessageOverTcp() {
     assert(push_resp["data"]["content"].get<std::string>() == "hello bob");
     assert(push_resp["data"]["created_at"].is_number_integer());
     assert(push_resp["data"].contains("server_time"));
+
+    const std::string ack_request =
+        R"({"msg_type":"message_ack","seq":13,"token":"","data":{"message_id":")" + pushed_message_id + R"("}})";
+    const nlohmann::json delivery_ack_resp = SendAndReceiveOnSocket(fd_bob, ack_request);
+    ExpectCommonEnvelope(delivery_ack_resp, "message_ack_resp", 13, chat::ErrorCode::OK);
+    assert(delivery_ack_resp["data"]["affected_rows"].get<int>() == 1);
 
     close(fd_alice);
     close(fd_bob);
@@ -330,9 +337,15 @@ void TestOfflineMessagePullOverTcp() {
     }
     assert(found_offline_message);
 
+    const std::string ack_request =
+        R"({"msg_type":"message_ack","seq":34,"token":"","data":{"message_id":")" + message_id + R"("}})";
+    const nlohmann::json delivery_ack_resp = SendAndReceiveOnSocket(fd_bob, ack_request);
+    ExpectCommonEnvelope(delivery_ack_resp, "message_ack_resp", 34, chat::ErrorCode::OK);
+    assert(delivery_ack_resp["data"]["affected_rows"].get<int>() == 1);
+
     const nlohmann::json second_pull_resp = SendAndReceiveOnSocket(
-        fd_bob, R"({"msg_type":"pull_offline_messages","seq":34,"token":"","data":{"limit":10}})");
-    ExpectCommonEnvelope(second_pull_resp, "pull_offline_messages_resp", 34, chat::ErrorCode::OK);
+        fd_bob, R"({"msg_type":"pull_offline_messages","seq":35,"token":"","data":{"limit":10}})");
+    ExpectCommonEnvelope(second_pull_resp, "pull_offline_messages_resp", 35, chat::ErrorCode::OK);
     assert(second_pull_resp["data"]["messages"].is_array());
     assert(second_pull_resp["data"]["messages"].empty());
 

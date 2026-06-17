@@ -198,7 +198,7 @@ bool RedisPushStream::ProcessPushEntry(const StreamEntry &entry) {
     if (!event) {
         return MoveToDeadLetter(stream, entry, "invalid push event") && Ack(stream, kPushGroup, entry.stream_id);
     }
-    if (!delivery_callback_ || !mark_delivered_callback_) {
+    if (!delivery_callback_) {
         return false;
     }
 
@@ -208,11 +208,7 @@ bool RedisPushStream::ProcessPushEntry(const StreamEntry &entry) {
         redis_->Command({"SET", dedup_key, "1", "NX", "EX", std::to_string(kDeliveryDedupTtlSeconds)});
     if (!acquired.ok()) {
         if (acquired.error == RedisError::kNotFound) {
-            // 正文已投递过时只恢复状态，不再次调用发送回调。
-            if (mark_delivered_callback_(event->to_user_id, event->message_id) ||
-                PublishDeliveryRetry(event->to_user_id, event->message_id)) {
-                return Ack(stream, kPushGroup, entry.stream_id);
-            }
+            return Ack(stream, kPushGroup, entry.stream_id);
         }
         return false;
     }
@@ -221,12 +217,6 @@ bool RedisPushStream::ProcessPushEntry(const StreamEntry &entry) {
     if (outcome == RemoteDeliveryOutcome::kRetry) {
         redis_->Command({"DEL", dedup_key});
         return false;
-    }
-    if (outcome == RemoteDeliveryOutcome::kDelivered &&
-        !mark_delivered_callback_(event->to_user_id, event->message_id)) {
-        if (!PublishDeliveryRetry(event->to_user_id, event->message_id)) {
-            return false;
-        }
     }
     return Ack(stream, kPushGroup, entry.stream_id);
 }

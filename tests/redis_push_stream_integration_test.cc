@@ -69,7 +69,7 @@ int main() {
     assert(stream.Publish(config.server_id, event));
     assert(stream.PollOnce());
     assert(delivered == 1);
-    assert(marked == 1);
+    assert(marked == 0);
 
     client.Command({"DEL", stream.PushStreamKey(config.server_id), stream.RetryStreamKey(config.server_id),
                     stream.DeadLetterStreamKey(config.server_id),

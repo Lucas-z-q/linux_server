@@ -12,6 +12,8 @@
 #include "config/config_loader.h"
 #include "config/server_config.h"
 #include "db/db_pool.h"
+#include "db/friend_repository.h"
+#include "db/group_repository.h"
 #include "db/message_repository.h"
 #include "db/user_repository.h"
 #include "handler/message_handler.h"
@@ -21,6 +23,8 @@
 #include "server/redis_session_store.h"
 #include "server/session_manager.h"
 #include "service/chat_service.h"
+#include "service/friend_service.h"
+#include "service/group_service.h"
 #include "service/user_service.h"
 #include "stream/redis_push_stream.h"
 
@@ -123,12 +127,16 @@ int main(int argc, char* argv[]) {
         active_user_repo = cached_user_repo.get();
     }
     chat::MessageRepository message_repo(&db_pool);
+    chat::FriendRepository friend_repo(&db_pool);
+    chat::GroupRepository group_repo(&db_pool);
     chat::SessionManager session_manager;
     chat::UserService user_service(*active_user_repo, session_manager, session_store.get(), rate_limiter.get(),
                                    cfg.redis);
     chat::ChatService chat_service(session_manager, message_repo, *active_user_repo, rate_limiter.get(),
                                    dedup_cache.get(), cfg.redis, session_store.get(), push_stream.get());
-    chat::MessageHandler handler(user_service, chat_service);
+    chat::FriendService friend_service(session_manager, friend_repo, *active_user_repo);
+    chat::GroupService group_service(session_manager, group_repo, message_repo, *active_user_repo);
+    chat::MessageHandler handler(user_service, chat_service, &friend_service, &group_service);
 
     // 4. 启动服务器
     TcpServerTimeoutOptions timeout_options;

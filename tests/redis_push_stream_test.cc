@@ -46,7 +46,7 @@ void TestPublishAndSuccessfulConsumption() {
 
     const std::string key = stream.PushStreamKey("server-b");
     assert(delivered == 1);
-    assert(marked == 1);
+    assert(marked == 0);
     assert(IsAcked(redis, key, 0));
 }
 
@@ -118,7 +118,7 @@ void TestInvalidAndMalformedTargetsAreAcked() {
     assert(redis.streams[stream.DeadLetterStreamKey("server-b")].size() == 1);
 }
 
-void TestMarkFailureUsesBodyFreeRetryStream() {
+void TestSuccessfulDeliveryDoesNotUseMarkRetryStream() {
     chat::test::FakeRedisClient redis;
     chat::RedisConfig config;
     config.server_id = "server-b";
@@ -131,8 +131,7 @@ void TestMarkFailureUsesBodyFreeRetryStream() {
     assert(stream.PollOnce());
 
     const auto &retry = redis.streams[stream.RetryStreamKey("server-b")];
-    assert(retry.size() == 1);
-    assert(std::find(retry[0].fields.begin(), retry[0].fields.end(), "payload") == retry[0].fields.end());
+    assert(retry.empty());
     assert(IsAcked(redis, stream.PushStreamKey("server-b"), 0));
 }
 
@@ -143,7 +142,7 @@ int main() {
     TestDuplicateEventsDeliverBodyOnce();
     TestPendingEntryIsRecovered();
     TestInvalidAndMalformedTargetsAreAcked();
-    TestMarkFailureUsesBodyFreeRetryStream();
+    TestSuccessfulDeliveryDoesNotUseMarkRetryStream();
     std::cout << "[PASS] redis push stream tests passed\n";
     return 0;
 }

@@ -56,6 +56,7 @@ struct MessageRecord {
     std::string id;
     std::string conversation_id;
     std::string client_msg_id;
+    int64_t sequence = 0;
     UserId from_user_id = 0;
     UserId to_user_id = 0;
     std::string content;

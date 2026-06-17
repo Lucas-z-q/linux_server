@@ -2,6 +2,7 @@
 #include <iostream>
 #include <optional>
 #include <unordered_map>
+#include <vector>
 
 #include "fake_message_repository.h"
 #include "fake_user_repository.h"
@@ -13,15 +14,21 @@ class FakeSessionManager : public chat::ISessionManager {
    public:
     std::unordered_map<chat::ConnectionId, chat::ConnectionSession> sessions;
     std::unordered_map<chat::UserId, chat::ConnectionId> connections;
+    std::unordered_map<chat::UserId, std::vector<chat::ConnectionId>> connection_lists;
 
     bool BindSession(chat::ConnectionId connection_id, const chat::ConnectionSession &session) override {
         sessions[connection_id] = session;
         connections[session.user_id] = connection_id;
+        connection_lists[session.user_id].push_back(connection_id);
         return true;
     }
     std::optional<chat::ConnectionId> GetConnectionId(chat::UserId user_id) override {
         const auto it = connections.find(user_id);
         return it == connections.end() ? std::nullopt : std::optional<chat::ConnectionId>(it->second);
+    }
+    std::vector<chat::ConnectionId> GetConnectionIds(chat::UserId user_id) override {
+        const auto it = connection_lists.find(user_id);
+        return it == connection_lists.end() ? std::vector<chat::ConnectionId>() : it->second;
     }
     std::optional<chat::ConnectionSession> GetSession(chat::ConnectionId connection_id) override {
         const auto it = sessions.find(connection_id);
@@ -113,6 +120,27 @@ void TestLocalPresenceRequiresMatchingConnection() {
     assert(rebound.remote_server_id.empty());
 }
 
+void TestLocalPresenceRoutesAllLocalConnections() {
+    FakeSessionManager sessions;
+    BindUser(&sessions, 10, 1);
+    BindUser(&sessions, 20, 2);
+    BindUser(&sessions, 21, 2);
+    FakeMessageRepository messages;
+    FakeUserRepository users;
+    FakeGlobalSessionStore global;
+    global.presence = chat::StoredUserPresence{"server-a", 21, "token"};
+    chat::RedisConfig config;
+    config.server_id = "server-a";
+    chat::ChatService service(sessions, messages, users, nullptr, nullptr, config, &global);
+
+    const auto result = service.sendMessage(10, MakeRequest());
+
+    assert(result.remote_server_id.empty());
+    assert(result.to_conn_ids.size() == 2);
+    assert(result.to_conn_ids[0] == 20);
+    assert(result.to_conn_ids[1] == 21);
+}
+
 void TestStreamFailureKeepsStoredSendSuccess() {
     FakeSessionManager sessions;
     BindUser(&sessions, 10, 1);
@@ -137,6 +165,7 @@ void TestStreamFailureKeepsStoredSendSuccess() {
 int main() {
     TestRemotePresenceRoutesToOtherServer();
     TestLocalPresenceRequiresMatchingConnection();
+    TestLocalPresenceRoutesAllLocalConnections();
     TestStreamFailureKeepsStoredSendSuccess();
     std::cout << "[PASS] cross server push router tests passed\n";
     return 0;

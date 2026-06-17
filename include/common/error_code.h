@@ -4,7 +4,6 @@
 // 本文件集中定义服务器对外暴露的业务错误码。
 // 错误码按功能区间划分，便于客户端处理和服务端排障。
 //
-// TODO(lzq): 在 README 中补齐错误码与场景的对应关系。
 // TODO(lzq): 为每个错误码补充统一的人类可读错误信息映射。
 // TODO(lzq): 后续按认证、聊天、存储等模块拆分错误码段。
 
@@ -40,6 +39,18 @@ enum class ErrorCode {
     NOT_LOGGED_IN = 3004,
     IDEMPOTENCY_CONFLICT = 3005,
     RATE_LIMITED = 3006,
+
+    // 好友关系相关错误。
+    FRIEND_REQUEST_ALREADY_EXISTS = 4001,
+    FRIENDSHIP_ALREADY_EXISTS = 4002,
+    FRIEND_REQUEST_NOT_FOUND = 4003,
+    FRIENDSHIP_NOT_FOUND = 4004,
+    FRIENDSHIP_BLOCKED = 4005,
+
+    // 群组相关错误。
+    GROUP_NOT_FOUND = 5001,
+    GROUP_MEMBER_ALREADY_EXISTS = 5002,
+    PERMISSION_DENIED = 5003,
 
     // 兜底内部错误。
     INTERNAL_ERROR = 9001,

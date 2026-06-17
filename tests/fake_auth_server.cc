@@ -99,7 +99,7 @@ int main() {
     chat::MessageHandler handler(user_service, chat_service);
     TcpServerTimeoutOptions timeout_options;
     timeout_options.idle_timeout_ms = 5000;
-    timeout_options.heartbeat_timeout_ms = 500;
+    timeout_options.heartbeat_timeout_ms = 1500;
     timeout_options.scan_interval_ms = 20;
     TcpServer server("127.0.0.1", kAuthTestPort, handler, timeout_options);
 

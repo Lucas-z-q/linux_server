@@ -59,6 +59,30 @@ bool IsSameIdempotentMessage(const MessageRecord& expected, const MessageRecord&
            expected.content == actual.content;
 }
 
+std::optional<std::string> ValidateMessageIds(const std::vector<std::string>& message_ids) {
+    if (message_ids.empty()) {
+        return "message_ids is empty";
+    }
+    if (message_ids.size() > 100) {
+        return "message_ids exceeds maximum batch size";
+    }
+    for (const std::string& message_id : message_ids) {
+        const ValidationResult validation = Validator::MessageId(message_id);
+        if (!validation.ok()) {
+            return validation.message;
+        }
+    }
+    return std::nullopt;
+}
+
+std::optional<ConnectionSession> GetAuthenticatedSession(ISessionManager& session_manager, ConnectionId conn_id) {
+    const std::optional<ConnectionSession> session = session_manager.GetSession(conn_id);
+    if (!session.has_value() || !session->authenticated) {
+        return std::nullopt;
+    }
+    return session;
+}
+
 }  // namespace
 
 ChatService::ChatService(ISessionManager& session_manager, IMessageRepository& message_repository,
@@ -194,20 +218,28 @@ SendMessageResult ChatService::sendMessage(ConnectionId from_conn_id, const Send
 
     const bool can_attempt_push = create_result.created || stored_message.status == MessageStatus::kStored;
     std::optional<ConnectionId> target_conn_id;
+    std::vector<ConnectionId> local_target_conn_ids;
     std::optional<StoredUserPresence> presence;
     if (can_attempt_push && global_session_store_ != nullptr) {
         presence = global_session_store_->GetPresence(stored_message.to_user_id);
     }
     if (can_attempt_push && presence) {
         if (presence->server_id == redis_config_.server_id) {
-            target_conn_id = session_manager_.GetConnectionId(stored_message.to_user_id);
-            if (target_conn_id != presence->connection_id) {
+            local_target_conn_ids = session_manager_.GetConnectionIds(stored_message.to_user_id);
+            if (std::find(local_target_conn_ids.begin(), local_target_conn_ids.end(), presence->connection_id) !=
+                local_target_conn_ids.end()) {
+                target_conn_id = presence->connection_id;
+            } else {
+                local_target_conn_ids.clear();
                 target_conn_id.reset();
             }
         }
     } else if (can_attempt_push) {
         // Redis 不可用或未启用时保留原有单进程推送路径。
-        target_conn_id = session_manager_.GetConnectionId(stored_message.to_user_id);
+        local_target_conn_ids = session_manager_.GetConnectionIds(stored_message.to_user_id);
+        if (!local_target_conn_ids.empty()) {
+            target_conn_id = local_target_conn_ids.front();
+        }
     }
 
     // 6. 返回发送方、接收方、目标连接、消息内容等信息
@@ -217,7 +249,17 @@ SendMessageResult ChatService::sendMessage(ConnectionId from_conn_id, const Send
     result.from_user_id = from_session_opt->user_id;
     result.from_username = from_session_opt->username;
     result.to_user_id = stored_message.to_user_id;
-    result.to_conn_id = target_conn_id.value_or(0);
+    if (can_attempt_push && (presence == std::nullopt || presence->server_id == redis_config_.server_id)) {
+        result.to_conn_ids = local_target_conn_ids;
+    }
+    result.to_conn_id = result.to_conn_ids.empty() ? target_conn_id.value_or(0) : result.to_conn_ids.front();
+    if (can_attempt_push) {
+        for (const ConnectionId sync_conn_id : session_manager_.GetConnectionIds(from_session_opt->user_id)) {
+            if (sync_conn_id != from_conn_id) {
+                result.sender_sync_conn_ids.push_back(sync_conn_id);
+            }
+        }
+    }
     if (can_attempt_push && presence && presence->server_id != redis_config_.server_id) {
         result.remote_server_id = presence->server_id;
         result.remote_conn_id = presence->connection_id;
@@ -226,6 +268,7 @@ SendMessageResult ChatService::sendMessage(ConnectionId from_conn_id, const Send
     result.server_time = now;
     result.message_id = stored_message.id;
     result.conversation_id = stored_message.conversation_id;
+    result.sequence = stored_message.sequence;
     result.status = ToProtocolMessageStatus(stored_message.status);
     result.created_at = stored_message.created_at;
 
@@ -297,6 +340,7 @@ PullOfflineMessagesResult ChatService::pullOfflineMessages(ConnectionId from_con
         OfflineMessage message;
         message.message_id = record.id;
         message.conversation_id = record.conversation_id;
+        message.sequence = record.sequence;
         message.from_user_id = record.from_user_id;
         message.to_user_id = record.to_user_id;
         message.content = record.content;
@@ -305,6 +349,44 @@ PullOfflineMessagesResult ChatService::pullOfflineMessages(ConnectionId from_con
         result.messages.push_back(message);
     }
     return result;
+}
+
+MessageStateUpdateResult ChatService::acknowledgeMessages(ConnectionId conn_id, const MessageAckRequest& req) {
+    const std::optional<ConnectionSession> session = GetAuthenticatedSession(session_manager_, conn_id);
+    if (!session) {
+        return {.code = ErrorCode::NOT_LOGGED_IN, .message = "User not logged in"};
+    }
+    if (const auto validation_error = ValidateMessageIds(req.message_ids)) {
+        return {.code = ErrorCode::INVALID_PARAM, .message = *validation_error};
+    }
+
+    const MarkDeliveredResult mark_result = message_repository_.markDelivered(session->user_id, req.message_ids);
+    if (mark_result.status != RepositoryStatus::kOk) {
+        return {.code = MapRepositoryError(mark_result.status), .message = "mark messages delivered failed"};
+    }
+    return {.code = ErrorCode::OK,
+            .message = "Success",
+            .message_ids = req.message_ids,
+            .affected_rows = mark_result.affected_rows};
+}
+
+MessageStateUpdateResult ChatService::markMessagesRead(ConnectionId conn_id, const MarkMessageReadRequest& req) {
+    const std::optional<ConnectionSession> session = GetAuthenticatedSession(session_manager_, conn_id);
+    if (!session) {
+        return {.code = ErrorCode::NOT_LOGGED_IN, .message = "User not logged in"};
+    }
+    if (const auto validation_error = ValidateMessageIds(req.message_ids)) {
+        return {.code = ErrorCode::INVALID_PARAM, .message = *validation_error};
+    }
+
+    const MarkReadResult mark_result = message_repository_.markRead(session->user_id, req.message_ids);
+    if (mark_result.status != RepositoryStatus::kOk) {
+        return {.code = MapRepositoryError(mark_result.status), .message = "mark messages read failed"};
+    }
+    return {.code = ErrorCode::OK,
+            .message = "Success",
+            .message_ids = req.message_ids,
+            .affected_rows = mark_result.affected_rows};
 }
 
 void ChatService::markMessagesDelivered(UserId user_id, const std::vector<std::string>& message_ids) {

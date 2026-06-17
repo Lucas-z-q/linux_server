@@ -205,12 +205,16 @@ void TestRealDbBehavior() {
     auto create_res = repo.createMessage(msg);
     assert(create_res.status == chat::RepositoryStatus::kOk);
     assert(create_res.message_id == "test_msg_1");
+    assert(create_res.message.has_value());
+    assert(create_res.message->sequence == 1);
     assert(create_res.created);
 
     // Try to create again with duplicate client_msg_id
     auto create_dup = repo.createMessage(msg);
     assert(create_dup.status == chat::RepositoryStatus::kOk);
     assert(create_dup.message_id == "test_msg_1");
+    assert(create_dup.message.has_value());
+    assert(create_dup.message->sequence == create_res.message->sequence);
     assert(!create_dup.created);  // fallback to existing
 
     // 3. Test listOfflineMessages with cursor ownership
@@ -218,8 +222,10 @@ void TestRealDbBehavior() {
     assert(list_res.status == chat::RepositoryStatus::kOk);
     bool found = false;
     for (auto& r : list_res.messages) {
-        if (r.id == "test_msg_1")
+        if (r.id == "test_msg_1") {
             found = true;
+            assert(r.sequence == 1);
+        }
     }
     assert(found);
 
@@ -235,6 +241,8 @@ void TestRealDbBehavior() {
     msg3.created_at = 1600000005;
     auto create_res3 = repo.createMessage(msg3);
     assert(create_res3.status == chat::RepositoryStatus::kOk);
+    assert(create_res3.message.has_value());
+    assert(create_res3.message->sequence == 1);
 
     // Fetch offline messages for user 1003 with no cursor
     chat::ListOfflineMessagesResult list_1003_no_cursor = repo.listOfflineMessages(1003, 10, "");
@@ -267,6 +275,8 @@ void TestRealDbBehavior() {
     msg2.client_msg_id = "client_msg_uniq_456";
     auto create_res2 = repo.createMessage(msg2);
     assert(create_res2.status == chat::RepositoryStatus::kOk);
+    assert(create_res2.message.has_value());
+    assert(create_res2.message->sequence == 2);
 
     // Directly mark it as read (Stored -> Read)
     auto read_res = repo.markRead(1002, {"test_msg_2"});

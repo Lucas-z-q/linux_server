@@ -8,12 +8,14 @@
 #include "packet_codec.h"
 #include "protocol/auth_messages.h"
 #include "protocol/chat_messages.h"
+#include "protocol/friend_messages.h"
+#include "protocol/group_messages.h"
 
 // 本文件声明 JSON 编解码器。
 // 该类负责在原始字符串与协议对象之间转换，不承担业务校验职责。
 //
 // TODO(lzq): 为 decodeMessage 增加更细粒度的字段校验错误信息。
-// TODO(lzq): 为 auth 之外的聊天消息补充解析与填充函数。
+// TODO(lzq): 为新增协议继续补充结构化解析与填充函数。
 // TODO(lzq): 统一编码时的字段输出顺序，便于测试断言。
 
 namespace chat {
@@ -57,6 +59,42 @@ class JsonCodec {
 
     // 将拉取离线消息响应业务数据写回通用响应对象。
     void fillPullOfflineMessagesResponse(Response &resp, const PullOfflineMessagesResponseData &data) const;
+
+    bool parseMessageAckRequest(const Message &msg, MessageAckRequest &req, std::string &err) const;
+
+    bool parseMarkMessageReadRequest(const Message &msg, MarkMessageReadRequest &req, std::string &err) const;
+
+    void fillMessageStateUpdateResponse(Response &resp, const MessageStateUpdateResponseData &data) const;
+
+    // 从通用消息中提取添加好友请求结构。
+    bool parseAddFriendRequest(const Message &msg, AddFriendRequest &req, std::string &err) const;
+
+    // 从通用消息中提取同意好友请求结构。
+    bool parseAcceptFriendRequest(const Message &msg, AcceptFriendRequest &req, std::string &err) const;
+
+    // 从通用消息中提取删除好友请求结构。
+    bool parseDeleteFriendRequest(const Message &msg, DeleteFriendRequest &req, std::string &err) const;
+
+    // 将好友关系操作响应业务数据写回通用响应对象。
+    void fillFriendshipActionResponse(Response &resp, const FriendshipActionResponseData &data) const;
+
+    // 将删除好友响应业务数据写回通用响应对象。
+    void fillDeleteFriendResponse(Response &resp, const DeleteFriendResponseData &data) const;
+
+    // 将好友列表响应业务数据写回通用响应对象。
+    void fillListFriendsResponse(Response &resp, const ListFriendsResponseData &data) const;
+
+    bool parseCreateGroupRequest(const Message &msg, CreateGroupRequest &req, std::string &err) const;
+
+    bool parseAddGroupMemberRequest(const Message &msg, AddGroupMemberRequest &req, std::string &err) const;
+
+    bool parseSendGroupMessageRequest(const Message &msg, SendGroupMessageRequest &req, std::string &err) const;
+
+    void fillCreateGroupResponse(Response &resp, const CreateGroupResponseData &data) const;
+
+    void fillAddGroupMemberResponse(Response &resp, const AddGroupMemberResponseData &data) const;
+
+    void fillSendGroupMessageResponse(Response &resp, const SendGroupMessageResponseData &data) const;
 };
 
 }  // namespace chat

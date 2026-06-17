@@ -26,6 +26,7 @@ class FakeMessageRepository : public chat::IMessageRepository {
     std::vector<std::string> delivered_message_ids;
     std::vector<std::string> read_message_ids;
     std::vector<std::string> existing_conversations;
+    std::vector<std::string> sequence_conversations;
     std::string last_before_message_id;  // Keep for field compatibility, though unused in the new listOfflineMessages
     std::string last_since_message_id;
 
@@ -72,10 +73,20 @@ class FakeMessageRepository : public chat::IMessageRepository {
                         .created = false};
             }
         }
-        created_messages.push_back(message);
+        chat::MessageRecord stored_message = message;
+        if (stored_message.sequence <= 0) {
+            int64_t next_sequence = 1;
+            for (const auto& existing : created_messages) {
+                if (existing.conversation_id == stored_message.conversation_id) {
+                    next_sequence = std::max(next_sequence, existing.sequence + 1);
+                }
+            }
+            stored_message.sequence = next_sequence;
+        }
+        created_messages.push_back(stored_message);
         return {.status = chat::RepositoryStatus::kOk,
-                .message_id = message.id,
-                .message = message,
+                .message_id = stored_message.id,
+                .message = stored_message,
                 .created = create_result_created};
     }
 

@@ -35,6 +35,8 @@ struct SendMessageResult {
 
     // 接收方当前所在的连接 ID。
     ConnectionId to_conn_id = 0;
+    std::vector<ConnectionId> to_conn_ids;
+    std::vector<ConnectionId> sender_sync_conn_ids;
 
     // 远端在线时由 Handler 构造协议 payload 后发布到目标 server。
     std::string remote_server_id;
@@ -51,6 +53,9 @@ struct SendMessageResult {
 
     // 会话 ID。
     std::string conversation_id;
+
+    // 会话内单调递增序号。
+    int64_t sequence = 0;
 
     // 消息状态。
     int32_t status = 0;
@@ -75,6 +80,13 @@ struct PullOfflineMessagesResult {
     bool has_more = false;
 };
 
+struct MessageStateUpdateResult {
+    ErrorCode code = ErrorCode::OK;
+    std::string message;
+    std::vector<std::string> message_ids;
+    int32_t affected_rows = 0;
+};
+
 // 负责处理单聊等即时通讯核心业务逻辑。
 class ChatService {
    public:
@@ -93,6 +105,10 @@ class ChatService {
 
     // 拉取离线消息。
     PullOfflineMessagesResult pullOfflineMessages(ConnectionId from_conn_id, const PullOfflineMessagesRequest& req);
+
+    MessageStateUpdateResult acknowledgeMessages(ConnectionId conn_id, const MessageAckRequest& req);
+
+    MessageStateUpdateResult markMessagesRead(ConnectionId conn_id, const MarkMessageReadRequest& req);
 
     // I/O 线程在推送/响应成功入队后回调，批量标记消息已投递。
     void markMessagesDelivered(UserId user_id, const std::vector<std::string>& message_ids);

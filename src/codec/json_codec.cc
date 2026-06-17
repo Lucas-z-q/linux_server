@@ -1,6 +1,38 @@
 #include "codec/json_codec.h"
 
 namespace chat {
+namespace {
+
+bool ParseMessageIds(const nlohmann::json &data, std::vector<std::string> *message_ids, std::string *err) {
+    if (data.contains("message_id")) {
+        if (!data["message_id"].is_string()) {
+            *err = "Invalid 'message_id' field in data: must be a string";
+            return false;
+        }
+        message_ids->push_back(data["message_id"].get<std::string>());
+    }
+    if (data.contains("message_ids")) {
+        if (!data["message_ids"].is_array()) {
+            *err = "Invalid 'message_ids' field in data: must be an array";
+            return false;
+        }
+        for (const auto &item : data["message_ids"]) {
+            if (!item.is_string()) {
+                *err = "Invalid 'message_ids' field in data: every item must be a string";
+                return false;
+            }
+            message_ids->push_back(item.get<std::string>());
+        }
+    }
+    if (message_ids->empty()) {
+        *err = "Missing 'message_id' or 'message_ids' field in data";
+        return false;
+    }
+    return true;
+}
+
+}  // namespace
+
 bool JsonCodec::decodeMessage(const std::string &raw, Message &msg, std::string &err) const {
     try {
         // 尝试解析json对象
@@ -150,6 +182,7 @@ bool JsonCodec::parseSendMessageRequest(const Message &msg, SendMessageRequest &
 void JsonCodec::fillSendMessageAck(Response &resp, const SendMessageAckData &data) const {
     resp.data["message_id"] = data.message_id;
     resp.data["conversation_id"] = data.conversation_id;
+    resp.data["sequence"] = data.sequence;
     resp.data["to_user_id"] = data.to_user_id;
     resp.data["status"] = data.status;
     resp.data["created_at"] = data.created_at;
@@ -158,6 +191,7 @@ void JsonCodec::fillSendMessageAck(Response &resp, const SendMessageAckData &dat
 void JsonCodec::fillMessagePush(Response &resp, const MessagePushData &data) const {
     resp.data["message_id"] = data.message_id;
     resp.data["conversation_id"] = data.conversation_id;
+    resp.data["sequence"] = data.sequence;
     resp.data["from_user_id"] = data.from_user_id;
     resp.data["from_username"] = data.from_username;
     resp.data["to_user_id"] = data.to_user_id;
@@ -208,6 +242,7 @@ void JsonCodec::fillPullOfflineMessagesResponse(Response &resp, const PullOfflin
         nlohmann::json item;
         item["message_id"] = m.message_id;
         item["conversation_id"] = m.conversation_id;
+        item["sequence"] = m.sequence;
         item["from_user_id"] = m.from_user_id;
         item["to_user_id"] = m.to_user_id;
         item["content"] = m.content;
@@ -218,4 +253,180 @@ void JsonCodec::fillPullOfflineMessagesResponse(Response &resp, const PullOfflin
     resp.data["messages"] = list_arr;
     resp.data["has_more"] = data.has_more;
 }
+
+bool JsonCodec::parseMessageAckRequest(const Message &msg, MessageAckRequest &req, std::string &err) const {
+    return ParseMessageIds(msg.data, &req.message_ids, &err);
+}
+
+bool JsonCodec::parseMarkMessageReadRequest(const Message &msg, MarkMessageReadRequest &req, std::string &err) const {
+    return ParseMessageIds(msg.data, &req.message_ids, &err);
+}
+
+void JsonCodec::fillMessageStateUpdateResponse(Response &resp, const MessageStateUpdateResponseData &data) const {
+    resp.data["message_ids"] = data.message_ids;
+    resp.data["affected_rows"] = data.affected_rows;
+}
+
+bool JsonCodec::parseAddFriendRequest(const Message &msg, AddFriendRequest &req, std::string &err) const {
+    if (!msg.data.contains("target_user_id")) {
+        err = "Missing 'target_user_id' field in data";
+        return false;
+    }
+    if (!msg.data["target_user_id"].is_number_integer()) {
+        err = "Invalid 'target_user_id' field in data: must be an integer";
+        return false;
+    }
+    req.target_user_id = msg.data["target_user_id"].get<UserId>();
+    return true;
+}
+
+bool JsonCodec::parseAcceptFriendRequest(const Message &msg, AcceptFriendRequest &req, std::string &err) const {
+    if (!msg.data.contains("requester_user_id")) {
+        err = "Missing 'requester_user_id' field in data";
+        return false;
+    }
+    if (!msg.data["requester_user_id"].is_number_integer()) {
+        err = "Invalid 'requester_user_id' field in data: must be an integer";
+        return false;
+    }
+    req.requester_user_id = msg.data["requester_user_id"].get<UserId>();
+    return true;
+}
+
+bool JsonCodec::parseDeleteFriendRequest(const Message &msg, DeleteFriendRequest &req, std::string &err) const {
+    if (!msg.data.contains("friend_user_id")) {
+        err = "Missing 'friend_user_id' field in data";
+        return false;
+    }
+    if (!msg.data["friend_user_id"].is_number_integer()) {
+        err = "Invalid 'friend_user_id' field in data: must be an integer";
+        return false;
+    }
+    req.friend_user_id = msg.data["friend_user_id"].get<UserId>();
+    return true;
+}
+
+void JsonCodec::fillFriendshipActionResponse(Response &resp, const FriendshipActionResponseData &data) const {
+    resp.data["requester_id"] = data.requester_id;
+    resp.data["addressee_id"] = data.addressee_id;
+    resp.data["friend_user_id"] = data.friend_user_id;
+    resp.data["status"] = ToProtocolFriendshipStatus(data.status);
+    if (!data.created_at.empty()) {
+        resp.data["created_at"] = data.created_at;
+    }
+    if (!data.updated_at.empty()) {
+        resp.data["updated_at"] = data.updated_at;
+    }
+}
+
+void JsonCodec::fillDeleteFriendResponse(Response &resp, const DeleteFriendResponseData &data) const {
+    resp.data["friend_user_id"] = data.friend_user_id;
+    resp.data["deleted"] = data.deleted;
+}
+
+void JsonCodec::fillListFriendsResponse(Response &resp, const ListFriendsResponseData &data) const {
+    nlohmann::json list_arr = nlohmann::json::array();
+    for (const auto &friend_item : data.friends) {
+        nlohmann::json item;
+        item["user_id"] = friend_item.user_id;
+        item["username"] = friend_item.username;
+        item["nickname"] = friend_item.nickname;
+        item["status"] = ToProtocolFriendshipStatus(friend_item.status);
+        item["direction"] = friend_item.direction;
+        item["created_at"] = friend_item.created_at;
+        item["updated_at"] = friend_item.updated_at;
+        list_arr.push_back(item);
+    }
+    resp.data["friends"] = list_arr;
+}
+
+bool JsonCodec::parseCreateGroupRequest(const Message &msg, CreateGroupRequest &req, std::string &err) const {
+    if (!msg.data.contains("name") || !msg.data["name"].is_string()) {
+        err = "Missing or invalid 'name' field in data";
+        return false;
+    }
+    req.name = msg.data["name"].get<std::string>();
+    req.member_ids.clear();
+    if (!msg.data.contains("member_ids")) {
+        return true;
+    }
+    if (!msg.data["member_ids"].is_array()) {
+        err = "Invalid 'member_ids' field in data: must be an array";
+        return false;
+    }
+    for (const auto &item : msg.data["member_ids"]) {
+        if (!item.is_number_integer()) {
+            err = "Invalid 'member_ids' field in data: every item must be an integer";
+            return false;
+        }
+        req.member_ids.push_back(item.get<UserId>());
+    }
+    return true;
+}
+
+bool JsonCodec::parseAddGroupMemberRequest(const Message &msg, AddGroupMemberRequest &req, std::string &err) const {
+    if (!msg.data.contains("group_id") || !msg.data["group_id"].is_string()) {
+        err = "Missing or invalid 'group_id' field in data";
+        return false;
+    }
+    if (!msg.data.contains("user_id") || !msg.data["user_id"].is_number_integer()) {
+        err = "Missing or invalid 'user_id' field in data";
+        return false;
+    }
+    req.group_id = msg.data["group_id"].get<std::string>();
+    req.user_id = msg.data["user_id"].get<UserId>();
+    return true;
+}
+
+bool JsonCodec::parseSendGroupMessageRequest(const Message &msg, SendGroupMessageRequest &req, std::string &err) const {
+    if (!msg.data.contains("group_id") || !msg.data["group_id"].is_string()) {
+        err = "Missing or invalid 'group_id' field in data";
+        return false;
+    }
+    if (!msg.data.contains("client_msg_id") || !msg.data["client_msg_id"].is_string()) {
+        err = "Missing or invalid 'client_msg_id' field in data";
+        return false;
+    }
+    if (!msg.data.contains("content") || !msg.data["content"].is_string()) {
+        err = "Missing or invalid 'content' field in data";
+        return false;
+    }
+    req.group_id = msg.data["group_id"].get<std::string>();
+    req.client_msg_id = msg.data["client_msg_id"].get<std::string>();
+    req.content = msg.data["content"].get<std::string>();
+    return true;
+}
+
+void JsonCodec::fillCreateGroupResponse(Response &resp, const CreateGroupResponseData &data) const {
+    resp.data["group_id"] = data.group.id;
+    resp.data["name"] = data.group.name;
+    resp.data["owner_id"] = data.group.owner_id;
+    resp.data["conversation_id"] = data.group.conversation_id;
+    resp.data["member_ids"] = data.member_ids;
+}
+
+void JsonCodec::fillAddGroupMemberResponse(Response &resp, const AddGroupMemberResponseData &data) const {
+    resp.data["group_id"] = data.member.group_id;
+    resp.data["user_id"] = data.member.user_id;
+    resp.data["role"] = data.member.role;
+}
+
+void JsonCodec::fillSendGroupMessageResponse(Response &resp, const SendGroupMessageResponseData &data) const {
+    resp.data["group_id"] = data.group_id;
+    resp.data["conversation_id"] = data.conversation_id;
+    nlohmann::json messages = nlohmann::json::array();
+    for (const GroupMessageDelivery &message : data.messages) {
+        nlohmann::json item;
+        item["message_id"] = message.message_id;
+        item["group_id"] = message.group_id;
+        item["conversation_id"] = message.conversation_id;
+        item["sequence"] = message.sequence;
+        item["to_user_id"] = message.to_user_id;
+        item["status"] = message.status;
+        item["created_at"] = message.created_at;
+        messages.push_back(item);
+    }
+    resp.data["messages"] = messages;
+}
+
 }  // namespace chat

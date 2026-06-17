@@ -451,8 +451,12 @@ bool TcpServer::unregisterConnection(const std::shared_ptr<ConnectionContext> &c
 
     const chat::UserId user_id = context->meta().authenticated_user_id;
     const auto authenticated_it = authenticated_connections_.find(user_id);
-    if (authenticated_it != authenticated_connections_.end() && authenticated_it->second == context->conn_id()) {
-        authenticated_connections_.erase(authenticated_it);
+    if (authenticated_it != authenticated_connections_.end()) {
+        auto &connections = authenticated_it->second;
+        connections.erase(std::remove(connections.begin(), connections.end(), context->conn_id()), connections.end());
+        if (connections.empty()) {
+            authenticated_connections_.erase(authenticated_it);
+        }
     }
     return true;
 }
@@ -509,23 +513,22 @@ void TcpServer::dispatchConnectionClosed(chat::ConnectionId conn_id) {
 void TcpServer::bindAuthenticatedConnection(const std::shared_ptr<ConnectionContext> &context, chat::UserId user_id) {
     unbindAuthenticatedConnection(context);
 
-    const auto old_it = authenticated_connections_.find(user_id);
-    if (old_it != authenticated_connections_.end() && old_it->second != context->conn_id()) {
-        auto old_context = getConnectionContextById(old_it->second);
-        if (old_context) {
-            old_context->clearAuthenticatedUserId();
-        }
+    auto &connections = authenticated_connections_[user_id];
+    if (std::find(connections.begin(), connections.end(), context->conn_id()) == connections.end()) {
+        connections.push_back(context->conn_id());
     }
-
-    authenticated_connections_[user_id] = context->conn_id();
     context->setAuthenticatedUserId(user_id);
 }
 
 void TcpServer::unbindAuthenticatedConnection(const std::shared_ptr<ConnectionContext> &context) {
     const chat::UserId user_id = context->meta().authenticated_user_id;
     const auto it = authenticated_connections_.find(user_id);
-    if (it != authenticated_connections_.end() && it->second == context->conn_id()) {
-        authenticated_connections_.erase(it);
+    if (it != authenticated_connections_.end()) {
+        auto &connections = it->second;
+        connections.erase(std::remove(connections.begin(), connections.end(), context->conn_id()), connections.end());
+        if (connections.empty()) {
+            authenticated_connections_.erase(it);
+        }
     }
     context->clearAuthenticatedUserId();
 }

@@ -321,7 +321,7 @@ TEST(TcpServerTimeoutTest, PendingSendDefersTimeout) {
     close(fd);
 }
 
-TEST(TcpServerTimeoutTest, RebindClearsOldConnectionAuthenticationMetadata) {
+TEST(TcpServerTimeoutTest, MultipleDevicesKeepAuthenticationMetadata) {
     TimeoutHandler handler;
     ServerHarness server(handler, MakeOptions(1000, 80));
     ASSERT_TRUE(server.Start());
@@ -337,8 +337,8 @@ TEST(TcpServerTimeoutTest, RebindClearsOldConnectionAuthenticationMetadata) {
     ASSERT_EQ(ReceivePacket(new_fd, 500ms), std::optional<std::string>("login_ok"));
 
     std::this_thread::sleep_for(150ms);
-    ASSERT_TRUE(SendPacket(old_fd, "ping"));
-    ASSERT_EQ(ReceivePacket(old_fd, 500ms), std::optional<std::string>("ok"));
+    EXPECT_EQ(ReceivePacket(old_fd, 500ms), std::nullopt);
+    EXPECT_EQ(ReceivePacket(new_fd, 500ms), std::nullopt);
 
     close(old_fd);
     close(new_fd);

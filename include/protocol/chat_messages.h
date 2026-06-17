@@ -34,6 +34,9 @@ struct SendMessageAckData {
     // 会话 ID。
     std::string conversation_id;
 
+    // 会话内单调递增序号。
+    int64_t sequence = 0;
+
     // 接收者用户 ID。
     UserId to_user_id = 0;
 
@@ -51,6 +54,9 @@ struct MessagePushData {
 
     // 会话 ID。
     std::string conversation_id;
+
+    // 会话内单调递增序号。
+    int64_t sequence = 0;
 
     // 发送方用户 ID。
     UserId from_user_id = 0;
@@ -75,6 +81,7 @@ struct MessagePushData {
 struct OfflineMessage {
     std::string message_id;
     std::string conversation_id;
+    int64_t sequence = 0;
     UserId from_user_id = 0;
     UserId to_user_id = 0;
     std::string content;
@@ -101,6 +108,19 @@ struct PullOfflineMessagesResponseData {
 
     // 是否还有更多离线消息。
     bool has_more = false;
+};
+
+struct MessageAckRequest {
+    std::vector<std::string> message_ids;
+};
+
+struct MarkMessageReadRequest {
+    std::vector<std::string> message_ids;
+};
+
+struct MessageStateUpdateResponseData {
+    std::vector<std::string> message_ids;
+    int32_t affected_rows = 0;
 };
 
 }  // namespace chat

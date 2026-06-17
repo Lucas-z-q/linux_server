@@ -219,7 +219,7 @@ class TcpServer {
     // 保护 conn_id 到 ConnectionContext 的映射表。
     std::mutex connections_mutex_;
     std::unordered_map<uint64_t, std::shared_ptr<ConnectionContext>> connections_;  // 保存所有活跃连接的上下文
-    std::unordered_map<chat::UserId, chat::ConnectionId> authenticated_connections_;
+    std::unordered_map<chat::UserId, std::vector<chat::ConnectionId>> authenticated_connections_;
     std::deque<chat::ConnectionId> timeout_scan_queue_;
 
     // 保护 fd 到 ConnectionContext 的映射表。

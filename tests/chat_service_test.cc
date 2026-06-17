@@ -1,10 +1,12 @@
 #include "service/chat_service.h"
 
+#include <algorithm>
 #include <cassert>
 #include <iostream>
 #include <optional>
 #include <string>
 #include <unordered_map>
+#include <vector>
 
 #include "fake_message_repository.h"
 #include "fake_user_repository.h"
@@ -14,22 +16,30 @@ namespace {
 class FakeSessionManager : public chat::ISessionManager {
    public:
     std::unordered_map<chat::ConnectionId, chat::ConnectionSession> sessions;
-    std::unordered_map<chat::UserId, chat::ConnectionId> user_conns;
+    std::unordered_map<chat::UserId, std::vector<chat::ConnectionId>> user_conns;
 
     bool BindSession(chat::ConnectionId connection_id, const chat::ConnectionSession& session) override {
         sessions[connection_id] = session;
         if (session.authenticated) {
-            user_conns[session.user_id] = connection_id;
+            auto& connections = user_conns[session.user_id];
+            if (std::find(connections.begin(), connections.end(), connection_id) == connections.end()) {
+                connections.push_back(connection_id);
+            }
         }
         return true;
     }
 
     std::optional<chat::ConnectionId> GetConnectionId(chat::UserId user_id) override {
         auto it = user_conns.find(user_id);
-        if (it != user_conns.end()) {
-            return it->second;
+        if (it != user_conns.end() && !it->second.empty()) {
+            return it->second.back();
         }
         return std::nullopt;
+    }
+
+    std::vector<chat::ConnectionId> GetConnectionIds(chat::UserId user_id) override {
+        auto it = user_conns.find(user_id);
+        return it == user_conns.end() ? std::vector<chat::ConnectionId>{} : it->second;
     }
 
     std::optional<chat::ConnectionSession> GetSession(chat::ConnectionId connection_id) override {
@@ -43,7 +53,11 @@ class FakeSessionManager : public chat::ISessionManager {
     void ClearSession(chat::ConnectionId connection_id) override {
         auto it = sessions.find(connection_id);
         if (it != sessions.end()) {
-            user_conns.erase(it->second.user_id);
+            auto& connections = user_conns[it->second.user_id];
+            connections.erase(std::remove(connections.begin(), connections.end(), connection_id), connections.end());
+            if (connections.empty()) {
+                user_conns.erase(it->second.user_id);
+            }
             sessions.erase(it);
         }
     }
@@ -289,11 +303,47 @@ void TestSendMessageSuccess() {
     assert(result.server_time > 0);
     assert(!result.message_id.empty());
     assert(result.conversation_id == "conv_1_2");
+    assert(result.sequence == 1);
     assert(result.status == chat::ToProtocolMessageStatus(chat::MessageStatus::kStored));
     assert(result.created_at == result.server_time);
     assert(message_repo.created_messages.size() == 1);
+    assert(message_repo.created_messages[0].sequence == 1);
     assert(message_repo.created_messages[0].status == chat::MessageStatus::kStored);
     assert(message_repo.delivered_message_ids.empty());
+}
+
+void TestSendMessageTargetsAllRecipientDevicesAndSenderOtherDevices() {
+    FakeSessionManager session_manager;
+    FakeMessageRepository message_repo;
+    FakeUserRepository user_repo;
+    chat::ChatService chat_service(session_manager, message_repo, user_repo);
+
+    chat::ConnectionSession sender_session;
+    sender_session.authenticated = true;
+    sender_session.user_id = 1;
+    sender_session.username = "sender";
+    session_manager.BindSession(100, sender_session);
+    session_manager.BindSession(101, sender_session);
+
+    chat::ConnectionSession receiver_session;
+    receiver_session.authenticated = true;
+    receiver_session.user_id = 2;
+    receiver_session.username = "receiver";
+    session_manager.BindSession(200, receiver_session);
+    session_manager.BindSession(201, receiver_session);
+
+    chat::SendMessageRequest req;
+    req.client_msg_id = "msg_multi_device";
+    req.to_user_id = 2;
+    req.content = "hello devices";
+
+    auto result = chat_service.sendMessage(100, req);
+    assert(result.code == chat::ErrorCode::OK);
+    assert(result.to_conn_ids.size() == 2);
+    assert(result.to_conn_ids[0] == 200);
+    assert(result.to_conn_ids[1] == 201);
+    assert(result.sender_sync_conn_ids.size() == 1);
+    assert(result.sender_sync_conn_ids[0] == 101);
 }
 
 void TestSendMessageDuplicateClientMsgIdReturnsSameMessage() {
@@ -459,6 +509,7 @@ void TestPullOfflineMessagesSuccess() {
     offline.from_user_id = 2;
     offline.to_user_id = 1;
     offline.content = "offline";
+    offline.sequence = 7;
     offline.status = chat::MessageStatus::kStored;
     offline.created_at = 12345;
     message_repo.list_result.messages.push_back(offline);
@@ -471,6 +522,7 @@ void TestPullOfflineMessagesSuccess() {
     assert(result.code == chat::ErrorCode::OK);
     assert(result.messages.size() == 1);
     assert(result.messages[0].message_id == "m1");
+    assert(result.messages[0].sequence == 7);
     assert(result.messages[0].status == chat::ToProtocolMessageStatus(chat::MessageStatus::kStored));
     assert(result.has_more == false);
     assert(message_repo.delivered_message_ids.empty());
@@ -593,6 +645,88 @@ void TestPullOfflineMessagesReturnsAllWithoutDeliveryMutation() {
     assert(message_repo.delivered_message_ids.empty());
 }
 
+void TestMessageAckMarksMessagesDeliveredForLoggedInUser() {
+    FakeSessionManager session_manager;
+    FakeMessageRepository message_repo;
+    FakeUserRepository user_repo;
+    chat::ChatService chat_service(session_manager, message_repo, user_repo);
+
+    chat::ConnectionSession user_session;
+    user_session.authenticated = true;
+    user_session.user_id = 1;
+    user_session.username = "user1";
+    session_manager.BindSession(100, user_session);
+
+    chat::MessageRecord first;
+    first.id = "m1";
+    first.conversation_id = "conv_1_2";
+    first.client_msg_id = "c1";
+    first.from_user_id = 2;
+    first.to_user_id = 1;
+    first.content = "first";
+    first.status = chat::MessageStatus::kStored;
+    message_repo.created_messages.push_back(first);
+
+    chat::MessageRecord second = first;
+    second.id = "m2";
+    second.client_msg_id = "c2";
+    second.content = "second";
+    message_repo.created_messages.push_back(second);
+
+    chat::MessageAckRequest req;
+    req.message_ids = {"m1", "m2"};
+
+    auto result = chat_service.acknowledgeMessages(100, req);
+    assert(result.code == chat::ErrorCode::OK);
+    assert(result.affected_rows == 2);
+    assert(message_repo.delivered_message_ids.size() == 2);
+    assert(message_repo.delivered_message_ids[0] == "m1");
+    assert(message_repo.delivered_message_ids[1] == "m2");
+}
+
+void TestMessageAckRejectsInvalidMessageId() {
+    FakeSessionManager session_manager;
+    FakeMessageRepository message_repo;
+    FakeUserRepository user_repo;
+    chat::ChatService chat_service(session_manager, message_repo, user_repo);
+
+    chat::ConnectionSession user_session;
+    user_session.authenticated = true;
+    user_session.user_id = 1;
+    user_session.username = "user1";
+    session_manager.BindSession(100, user_session);
+
+    chat::MessageAckRequest req;
+    req.message_ids = {"bad id"};
+
+    auto result = chat_service.acknowledgeMessages(100, req);
+    assert(result.code == chat::ErrorCode::INVALID_PARAM);
+    assert(message_repo.delivered_message_ids.empty());
+}
+
+void TestMarkMessageReadMarksMessagesReadForLoggedInUser() {
+    FakeSessionManager session_manager;
+    FakeMessageRepository message_repo;
+    FakeUserRepository user_repo;
+    chat::ChatService chat_service(session_manager, message_repo, user_repo);
+
+    chat::ConnectionSession user_session;
+    user_session.authenticated = true;
+    user_session.user_id = 1;
+    user_session.username = "user1";
+    session_manager.BindSession(100, user_session);
+
+    chat::MarkMessageReadRequest req;
+    req.message_ids = {"m1", "m2"};
+
+    auto result = chat_service.markMessagesRead(100, req);
+    assert(result.code == chat::ErrorCode::OK);
+    assert(result.affected_rows == 2);
+    assert(message_repo.read_message_ids.size() == 2);
+    assert(message_repo.read_message_ids[0] == "m1");
+    assert(message_repo.read_message_ids[1] == "m2");
+}
+
 void TestPullOfflineMessagesRejectsTwoCursors() {
     FakeSessionManager session_manager;
     FakeMessageRepository message_repo;
@@ -646,6 +780,7 @@ int main() {
     TestSendMessageRejectsInvalidTargetUserId();
     TestSendMessageDoesNotMarkDeliveredBeforePushAck();
     TestSendMessageSuccess();
+    TestSendMessageTargetsAllRecipientDevicesAndSenderOtherDevices();
     TestSendMessageDuplicateClientMsgIdReturnsSameMessage();
     TestSendMessageDeduplicatedDeliveredDoesNotPushAgain();
     TestSendMessageDeduplicatedConflict();
@@ -656,6 +791,9 @@ int main() {
     TestPullOfflineMessagesFiltersToLoggedInUser();
     TestPullOfflineMessagesDoesNotMarkDeliveredBeforeClientAck();
     TestPullOfflineMessagesReturnsAllWithoutDeliveryMutation();
+    TestMessageAckMarksMessagesDeliveredForLoggedInUser();
+    TestMessageAckRejectsInvalidMessageId();
+    TestMarkMessageReadMarksMessagesReadForLoggedInUser();
     TestPullOfflineMessagesRejectsTwoCursors();
     TestPullOfflineMessagesRejectsOversizedLimit();
     std::cout << "[PASS] chat service tests passed\n";

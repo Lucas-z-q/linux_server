@@ -77,6 +77,7 @@ struct MessageResultBuffers {
     std::array<char, 65> id{};
     std::array<char, 65> conversation_id{};
     std::array<char, 65> client_msg_id{};
+    std::int64_t sequence = 0;
     std::int64_t from_user_id = 0;
     std::int64_t to_user_id = 0;
     std::array<char, 4097> content{};
@@ -86,28 +87,30 @@ struct MessageResultBuffers {
     std::int64_t read_at = 0;
     bool delivered_is_null = false;
     bool read_is_null = false;
-    std::array<unsigned long, 10> lengths{};
-    std::array<MYSQL_BIND, 10> bindings{};
+    std::array<unsigned long, 11> lengths{};
+    std::array<MYSQL_BIND, 11> bindings{};
 
     MessageResultBuffers() {
         BindStringResult(&bindings[0], &id, &lengths[0]);
         BindStringResult(&bindings[1], &conversation_id, &lengths[1]);
-        BindStringResult(&bindings[2], &client_msg_id, &lengths[2]);
-        bindings[3].buffer_type = MYSQL_TYPE_LONGLONG;
-        bindings[3].buffer = &from_user_id;
+        bindings[2].buffer_type = MYSQL_TYPE_LONGLONG;
+        bindings[2].buffer = &sequence;
+        BindStringResult(&bindings[3], &client_msg_id, &lengths[3]);
         bindings[4].buffer_type = MYSQL_TYPE_LONGLONG;
-        bindings[4].buffer = &to_user_id;
-        BindStringResult(&bindings[5], &content, &lengths[5]);
-        bindings[6].buffer_type = MYSQL_TYPE_LONG;
-        bindings[6].buffer = &status;
-        bindings[7].buffer_type = MYSQL_TYPE_LONGLONG;
-        bindings[7].buffer = &created_at;
+        bindings[4].buffer = &from_user_id;
+        bindings[5].buffer_type = MYSQL_TYPE_LONGLONG;
+        bindings[5].buffer = &to_user_id;
+        BindStringResult(&bindings[6], &content, &lengths[6]);
+        bindings[7].buffer_type = MYSQL_TYPE_LONG;
+        bindings[7].buffer = &status;
         bindings[8].buffer_type = MYSQL_TYPE_LONGLONG;
-        bindings[8].buffer = &delivered_at;
-        bindings[8].is_null = &delivered_is_null;
+        bindings[8].buffer = &created_at;
         bindings[9].buffer_type = MYSQL_TYPE_LONGLONG;
-        bindings[9].buffer = &read_at;
-        bindings[9].is_null = &read_is_null;
+        bindings[9].buffer = &delivered_at;
+        bindings[9].is_null = &delivered_is_null;
+        bindings[10].buffer_type = MYSQL_TYPE_LONGLONG;
+        bindings[10].buffer = &read_at;
+        bindings[10].is_null = &read_is_null;
     }
 
     std::optional<chat::MessageRecord> Build() const {
@@ -118,10 +121,11 @@ struct MessageResultBuffers {
         chat::MessageRecord record;
         record.id.assign(id.data(), lengths[0]);
         record.conversation_id.assign(conversation_id.data(), lengths[1]);
-        record.client_msg_id.assign(client_msg_id.data(), lengths[2]);
+        record.sequence = sequence;
+        record.client_msg_id.assign(client_msg_id.data(), lengths[3]);
         record.from_user_id = from_user_id;
         record.to_user_id = to_user_id;
-        record.content.assign(content.data(), lengths[5]);
+        record.content.assign(content.data(), lengths[6]);
         record.status = parsed_status;
         record.created_at = created_at;
         record.delivered_at = delivered_is_null ? 0 : delivered_at;
@@ -131,7 +135,7 @@ struct MessageResultBuffers {
 };
 
 std::string MessageSelectColumns() {
-    return "id, conversation_id, client_msg_id, from_user_id, to_user_id, content, status, created_at, "
+    return "id, conversation_id, sequence, client_msg_id, from_user_id, to_user_id, content, status, created_at, "
            "delivered_at, read_at";
 }
 
@@ -219,6 +223,24 @@ chat::RepositoryStatus ExecuteUpdate(chat::PooledConnection& connection, const s
         *affected_rows = statement.AffectedRows();
     }
     return chat::RepositoryStatus::kOk;
+}
+
+std::optional<std::int64_t> SelectLastInsertId(chat::PooledConnection& connection) {
+    chat::MysqlStatement statement(connection->nativeHandle());
+    std::vector<chat::StatementParam> params;
+    if (!statement.Prepare("SELECT LAST_INSERT_ID()") || !statement.Execute(&params) || !statement.StoreResult()) {
+        StatementFailure(connection, statement, "select last insert id", chat::RepositoryStatus::kQueryFailed);
+        return std::nullopt;
+    }
+    std::int64_t value = 0;
+    MYSQL_BIND binding{};
+    binding.buffer_type = MYSQL_TYPE_LONGLONG;
+    binding.buffer = &value;
+    if (!statement.BindResult(&binding)) {
+        StatementFailure(connection, statement, "bind last insert id", chat::RepositoryStatus::kQueryFailed);
+        return std::nullopt;
+    }
+    return statement.Fetch() == 0 ? std::optional<std::int64_t>(value) : std::nullopt;
 }
 
 std::string Placeholders(std::size_t count) {
@@ -344,15 +366,30 @@ CreateMessageResult MessageRepository::createMessage(const MessageRecord& messag
         }
     }
 
+    my_ulonglong sequence_update_rows = 0;
+    status = ExecuteUpdate(connection, "UPDATE conversations SET last_seq=LAST_INSERT_ID(last_seq + 1) WHERE id=?",
+                           {StatementParam::String(message.conversation_id)}, "allocate conversation sequence",
+                           RepositoryStatus::kQueryFailed, &sequence_update_rows);
+    if (status != RepositoryStatus::kOk || sequence_update_rows != 1) {
+        Rollback(connection);
+        return {.status = status == RepositoryStatus::kOk ? RepositoryStatus::kQueryFailed : status};
+    }
+    const std::optional<std::int64_t> sequence = SelectLastInsertId(connection);
+    if (!sequence || *sequence <= 0) {
+        Rollback(connection);
+        return {.status = RepositoryStatus::kQueryFailed};
+    }
+
     unsigned int mysql_error = 0;
     status = ExecuteUpdate(
         connection,
-        "INSERT INTO messages(id, conversation_id, client_msg_id, from_user_id, to_user_id, content, status, "
-        "created_at, delivered_at, read_at) VALUES(?,?,?,?,?,?,?,?,NULL,NULL)",
+        "INSERT INTO messages(id, conversation_id, sequence, client_msg_id, from_user_id, to_user_id, content, "
+        "status, created_at, delivered_at, read_at) VALUES(?,?,?,?,?,?,?,?,?,NULL,NULL)",
         {StatementParam::String(message.id), StatementParam::String(message.conversation_id),
-         StatementParam::String(message.client_msg_id), StatementParam::Int64(message.from_user_id),
-         StatementParam::Int64(message.to_user_id), StatementParam::String(message.content),
-         StatementParam::Int32(ToStorageMessageStatus(message.status)), StatementParam::Int64(message.created_at)},
+         StatementParam::Int64(*sequence), StatementParam::String(message.client_msg_id),
+         StatementParam::Int64(message.from_user_id), StatementParam::Int64(message.to_user_id),
+         StatementParam::String(message.content), StatementParam::Int32(ToStorageMessageStatus(message.status)),
+         StatementParam::Int64(message.created_at)},
         "insert message", RepositoryStatus::kInsertFailed, nullptr, &mysql_error);
     if (status != RepositoryStatus::kOk) {
         Rollback(connection);
@@ -375,7 +412,10 @@ CreateMessageResult MessageRepository::createMessage(const MessageRecord& messag
         Rollback(connection);
         return {.status = RepositoryStatus::kQueryFailed};
     }
-    return {.status = RepositoryStatus::kOk, .message_id = message.id, .message = message, .created = true};
+    MessageRecord stored_message = message;
+    stored_message.sequence = *sequence;
+    return {
+        .status = RepositoryStatus::kOk, .message_id = stored_message.id, .message = stored_message, .created = true};
 }
 
 FindMessageResult MessageRepository::findMessageByClientMsgId(UserId from_user_id, const std::string& client_msg_id) {

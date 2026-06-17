@@ -14,8 +14,7 @@
 
 // 本文件声明用户服务层接口。
 // Service 层负责编排注册、登录和登出流程，并协调 Repository 与会话状态。
-// TODO(lzq): 将密码哈希逻辑迁移到独立 PasswordHasher 组件。
-// TODO(lzq): 为登录限流、重复登录策略和审计日志预留扩展点。
+// TODO(lzq): 为重复登录策略和审计日志预留扩展点。
 
 namespace chat {
 
