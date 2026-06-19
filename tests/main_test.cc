@@ -1,28 +1,23 @@
-#include "app/main_runner.h"
-
 #include <cstdlib>
 #include <iostream>
 
-namespace
-{
+#include "app/main_runner.h"
 
-void Expect(bool condition, const char* message)
-{
-    if (!condition)
-    {
+namespace {
+
+void Expect(bool condition, const char* message) {
+    if (!condition) {
         std::cerr << "[FAIL] " << message << '\n';
         std::exit(1);
     }
 }
 
-void TestRunMainReturnsZeroAndRunsHook()
-{
+void TestRunMainReturnsZeroAndRunsHook() {
     bool start_called = false;
     bool hook_called = false;
 
     const int rc = RunMain(
-        [&]()
-        {
+        [&]() {
             start_called = true;
             return true;
         },
@@ -33,14 +28,12 @@ void TestRunMainReturnsZeroAndRunsHook()
     Expect(rc == 0, "RunMain should return 0 when server startup succeeds");
 }
 
-void TestRunMainReturnsOneAndSkipsHookOnFailure()
-{
+void TestRunMainReturnsOneAndSkipsHookOnFailure() {
     bool start_called = false;
     bool hook_called = false;
 
     const int rc = RunMain(
-        [&]()
-        {
+        [&]() {
             start_called = true;
             return false;
         },
@@ -53,8 +46,7 @@ void TestRunMainReturnsOneAndSkipsHookOnFailure()
 
 }  // namespace
 
-int main()
-{
+int main() {
     TestRunMainReturnsZeroAndRunsHook();
     TestRunMainReturnsOneAndSkipsHookOnFailure();
     std::cout << "[PASS] main control flow tests passed\n";

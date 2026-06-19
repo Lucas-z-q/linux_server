@@ -33,3 +33,10 @@ CLAUDE.md
 # OS files
 .DS_Store
 Thumbs.db
+
+# Project-specific local agent files
+AGENTS.md
+.codegraph/
+
+# Server config with real credentials; only server.example.json is committed
+config/server.json

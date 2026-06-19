@@ -3,9 +3,12 @@
 #include <sys/socket.h>
 #include <unistd.h>
 
+#include <atomic>
 #include <chrono>
 #include <cstring>
+#include <mutex>
 #include <thread>
+#include <vector>
 
 #include "model/connection_session.h"
 #include "net/IMessageHandler.h"
@@ -14,7 +17,8 @@
 // 一个模拟工作线程被慢速业务阻塞的 Handler
 class SlowHandler : public IMessageHandler {
    public:
-    HandleResult handle(const std::string& request, uint64_t conn_id) override {
+    HandleResult handle(const std::string& request, const RequestContext& context) override {
+        (void)context;
         // 刻意让 worker 线程沉睡，以便触发在处理期间调用 server.stop()
         std::this_thread::sleep_for(std::chrono::milliseconds(100));
         HandleResult result;
@@ -24,6 +28,11 @@ class SlowHandler : public IMessageHandler {
     void onConnectionClosed(uint64_t conn_id) override {}
     void applyBindSession(uint64_t conn_id, const chat::ConnectionSession& session) override {}
     void applyUnbindSession(uint64_t conn_id) override {}
+    bool isConnectionBoundToUser(chat::ConnectionId conn_id, chat::UserId user_id) override {
+        (void)conn_id;
+        (void)user_id;
+        return true;
+    }
 };
 
 // 验证：重复调用 TcpServer::stop() 不崩溃，严格幂等
@@ -124,4 +133,226 @@ TEST(TcpServerShutdownTest, ShutdownWhileProcessingRequests) {
     close(client_fd);
 
     // 能顺利到达这里证明死锁、悬空fd操作、崩溃均未发生。
+}
+
+class ShutdownOrderHandler : public IMessageHandler {
+   public:
+    HandleResult handle(const std::string& request, const RequestContext& context) override {
+        (void)request;
+        (void)context;
+        return {};
+    }
+
+    void onConnectionClosed(chat::ConnectionId conn_id) override {
+        (void)conn_id;
+        std::lock_guard<std::mutex> lock(mutex);
+        cleanup_thread = std::this_thread::get_id();
+        events.push_back("session_cleanup");
+    }
+
+    bool isConnectionBoundToUser(chat::ConnectionId conn_id, chat::UserId user_id) override {
+        (void)conn_id;
+        (void)user_id;
+        return false;
+    }
+
+    std::mutex mutex;
+    std::vector<std::string> events;
+    std::thread::id cleanup_thread;
+};
+
+TEST(TcpServerShutdownTest, StopsExternalSourceBeforeWorkerCleanupAndWaitsForCleanup) {
+    ShutdownOrderHandler handler;
+    TcpServerTimeoutOptions options;
+    options.scan_interval_ms = 10;
+    TcpServer server("127.0.0.1", 0, handler, options);
+    server.setPreShutdownHook([&handler]() {
+        std::lock_guard<std::mutex> lock(handler.mutex);
+        handler.events.push_back("push_stream_stop");
+    });
+
+    std::thread::id io_thread_id;
+    std::thread server_thread([&]() {
+        io_thread_id = std::this_thread::get_id();
+        server.start();
+    });
+
+    uint16_t server_port = 0;
+    for (int i = 0; i < 50; ++i) {
+        server_port = server.getPort();
+        if (server_port != 0) {
+            break;
+        }
+        std::this_thread::sleep_for(std::chrono::milliseconds(10));
+    }
+    ASSERT_NE(server_port, 0);
+
+    int client_fd = socket(AF_INET, SOCK_STREAM, 0);
+    ASSERT_GE(client_fd, 0);
+    struct sockaddr_in server_addr {};
+    server_addr.sin_family = AF_INET;
+    server_addr.sin_port = htons(server_port);
+    inet_pton(AF_INET, "127.0.0.1", &server_addr.sin_addr);
+    ASSERT_EQ(connect(client_fd, reinterpret_cast<struct sockaddr*>(&server_addr), sizeof(server_addr)), 0);
+    std::this_thread::sleep_for(std::chrono::milliseconds(20));
+
+    server.stop();
+    server_thread.join();
+
+    {
+        std::lock_guard<std::mutex> lock(handler.mutex);
+        ASSERT_EQ(handler.events.size(), 2u);
+        EXPECT_EQ(handler.events[0], "push_stream_stop");
+        EXPECT_EQ(handler.events[1], "session_cleanup");
+        EXPECT_NE(handler.cleanup_thread, io_thread_id);
+    }
+
+    char byte = '\0';
+    EXPECT_EQ(recv(client_fd, &byte, 1, MSG_DONTWAIT), 0);
+    close(client_fd);
+}
+
+// 模拟产生 push 且可调控 isConnectionBoundToUser 返回值的测试 Handler
+class PushTestHandler : public IMessageHandler {
+   public:
+    std::atomic<bool> bound_result{true};
+    std::atomic<bool> push_checked{false};
+
+    HandleResult handle(const std::string& request, const RequestContext& context) override {
+        (void)request;
+        HandleResult result;
+        result.response = "ack";
+
+        OutboundMessage push;
+        push.target_conn_id = context.conn_id;
+        push.target_user_id = 999;
+        push.payload = "pushed_msg";
+        result.pushes.push_back(push);
+        return result;
+    }
+
+    void onConnectionClosed(uint64_t conn_id) override {}
+    void applyBindSession(uint64_t conn_id, const chat::ConnectionSession& session) override {}
+    void applyUnbindSession(uint64_t conn_id) override {}
+
+    bool isConnectionBoundToUser(chat::ConnectionId conn_id, chat::UserId user_id) override {
+        (void)conn_id;
+        (void)user_id;
+        push_checked = true;
+        return bound_result.load();
+    }
+};
+
+// 验证：当目标连接 ID 存在但 target_user_id 与当前 Session 不匹配时，Push 消息被丢弃且不发往客户端
+TEST(TcpServerShutdownTest, PushDiscardedWhenConnectionRebound) {
+    PushTestHandler handler;
+    TcpServer server("127.0.0.1", 0, handler);
+
+    std::thread server_thread([&]() { server.start(); });
+
+    // 等待服务监听就绪并获取动态端口
+    uint16_t server_port = 0;
+    for (int i = 0; i < 50; ++i) {
+        server_port = server.getPort();
+        if (server_port != 0)
+            break;
+        std::this_thread::sleep_for(std::chrono::milliseconds(10));
+    }
+    ASSERT_NE(server_port, 0) << "Server failed to bind to a dynamic port";
+
+    // 1. 测试 bound_result = true，推送被成功投递
+    {
+        handler.bound_result = true;
+        handler.push_checked = false;
+
+        int client_fd = socket(AF_INET, SOCK_STREAM, 0);
+        ASSERT_GE(client_fd, 0);
+        struct sockaddr_in server_addr {};
+        server_addr.sin_family = AF_INET;
+        server_addr.sin_port = htons(server_port);
+        inet_pton(AF_INET, "127.0.0.1", &server_addr.sin_addr);
+
+        ASSERT_EQ(connect(client_fd, (struct sockaddr*)&server_addr, sizeof(server_addr)), 0);
+
+        const char* msg = "trigger\n";
+        send(client_fd, msg, strlen(msg), MSG_NOSIGNAL);
+
+        // 等待 I/O 线程和 worker 线程处理完成
+        for (int i = 0; i < 100; ++i) {
+            if (handler.push_checked.load())
+                break;
+            std::this_thread::sleep_for(std::chrono::milliseconds(10));
+        }
+        ASSERT_TRUE(handler.push_checked.load());
+
+        // 我们应该能从 socket 读到 "ack\n" 和 "pushed_msg\n"
+        std::string received;
+        char buff[128];
+        while (received.find("pushed_msg\n") == std::string::npos) {
+            ssize_t n = recv(client_fd, buff, sizeof(buff) - 1, 0);
+            ASSERT_GT(n, 0);
+            buff[n] = '\0';
+            received.append(buff);
+        }
+
+        EXPECT_NE(received.find("ack\n"), std::string::npos);
+        EXPECT_NE(received.find("pushed_msg\n"), std::string::npos);
+
+        close(client_fd);
+    }
+
+    // 2. 测试 bound_result = false，推送被丢弃
+    {
+        handler.bound_result = false;
+        handler.push_checked = false;
+
+        int client_fd = socket(AF_INET, SOCK_STREAM, 0);
+        ASSERT_GE(client_fd, 0);
+        struct sockaddr_in server_addr {};
+        server_addr.sin_family = AF_INET;
+        server_addr.sin_port = htons(server_port);
+        inet_pton(AF_INET, "127.0.0.1", &server_addr.sin_addr);
+
+        ASSERT_EQ(connect(client_fd, (struct sockaddr*)&server_addr, sizeof(server_addr)), 0);
+
+        const char* msg = "trigger\n";
+        send(client_fd, msg, strlen(msg), MSG_NOSIGNAL);
+
+        // 等待 I/O 线程和 worker 线程处理完成
+        for (int i = 0; i < 100; ++i) {
+            if (handler.push_checked.load())
+                break;
+            std::this_thread::sleep_for(std::chrono::milliseconds(10));
+        }
+        ASSERT_TRUE(handler.push_checked.load());
+
+        // 稍微等待一下确保推送如果在底层被发送，会被写入内核缓冲区
+        std::this_thread::sleep_for(std::chrono::milliseconds(50));
+
+        // 我们应该能读到 "ack\n"，但读不到 "pushed_msg\n"
+        std::string received;
+        char buff[128];
+        while (received.find("ack\n") == std::string::npos) {
+            ssize_t n = recv(client_fd, buff, sizeof(buff) - 1, 0);
+            ASSERT_GT(n, 0);
+            buff[n] = '\0';
+            received.append(buff);
+        }
+
+        EXPECT_NE(received.find("ack\n"), std::string::npos);
+        // 确认没有收到 pushed_msg
+        EXPECT_EQ(received.find("pushed_msg\n"), std::string::npos);
+
+        // 使用 MSG_DONTWAIT 确认没有后续推送数据
+        ssize_t n = recv(client_fd, buff, sizeof(buff), MSG_DONTWAIT);
+        EXPECT_EQ(n, -1);
+        EXPECT_TRUE(errno == EAGAIN || errno == EWOULDBLOCK);
+
+        close(client_fd);
+    }
+
+    server.stop();
+    if (server_thread.joinable()) {
+        server_thread.join();
+    }
 }

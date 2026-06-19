@@ -1,581 +1,298 @@
-# 线程池引入方案 Todo List
+# Linux C++ 聊天服务器后续开发 Todo List
 
-## 目标
+本文档记录聊天服务器从“认证服务器 + MySQL 连接池”演进到“可演示的长连接聊天系统”的任务拆解和当前完成状态。
 
-当前项目的 `TcpServer` 在 `epoll` 事件循环线程内直接执行：
+当前基础能力：
 
-`onReadable -> MessageHandler::handle -> UserService -> UserRepository`
+- 已具备 `epoll + 非阻塞 socket + worker 线程池` 网络框架。
+- 已具备 JSON 协议、packet codec、基础请求响应模型。
+- 已实现用户注册、登录、断线恢复、登出、心跳、`whoami`。
+- 已实现进程内 session 管理和本地多端在线连接管理。
+- 已实现 MySQL 用户、消息、好友和群组 Repository。
+- 已实现生产代码 prepared statement，用户输入不再通过 SQL 字符串拼接进入查询。
+- 已实现 bcrypt 密码哈希、旧哈希兼容升级、随机 token、Redis token 存储和撤销。
+- 已实现统一输入验证模块 `Validator`。
+- 已实现 `send_message` 在线单聊消息转发、发送方多端同步和 `message_push` 主动推送。
+- 已实现离线消息持久化、拉取、客户端 `message_ack` 和 `mark_message_read`。
+- 已实现 conversation 内单调递增消息序号。
+- 已接入 Redis 连接池、在线状态、用户缓存、消息去重、限流和跨节点消息路由。
+- 已实现好友申请、同意、删除和好友列表。
+- 已实现小群创建、成员添加和群消息 fanout。
+- 已实现统一配置加载、脱敏输出、异步日志、连接空闲超时和心跳超时回收。
 
-其中 `UserRepository` 会进行阻塞式数据库访问。随着连接数和请求数增加，这会导致网络线程被业务处理和数据库调用阻塞，影响整个服务端的吞吐和响应延迟。
+## 阶段总览
 
-本次改造目标：
+| 阶段 | 模块 | 优先级 | 状态 |
+| --- | --- | --- | --- |
+| 1 | 消息转发核心业务实现 | P0 | **已完成** |
+| 2 | 离线消息与消息持久化系统 | P0 | **已完成** |
+| 3 | Redis 集成与分布式支持 | P1 | **已完成** |
+| 4 | 配置系统完善 | P1 | **已完成** |
+| 5 | 日志系统实现 | P1 | **已完成** |
+| 6 | 连接管理与超时回收 | P1 | **已完成** |
+| 7 | 系统安全性增强 | P1 | **已完成** |
+| 8 | 聊天业务模型完善 | P2 | **已完成（第一版）** |
 
-- 保持当前 `epoll + 非阻塞 socket` 的 I/O 模型不变
-- 引入业务线程池，将消息处理从 I/O 线程剥离
-- 保持 socket 收发仍由 I/O 线程统一负责，避免多线程直接操作 fd
-- 为后续数据库连接池、异步业务扩展打基础
+优先级说明：
 
-## 总体思路
+- P0：形成聊天服务器最小可演示闭环必须完成。
+- P1：让项目具备生产化亮点和稳定性必须完成。
+- P2：扩展聊天产品能力，可在核心闭环后逐步实现。
 
-建议采用“单 I/O 线程 + 业务线程池 + 完成队列”的模型。
+## 1. 消息转发核心业务实现
 
-在连接生命周期管理上，优先采用：
+### 1.1 协议与数据结构
 
-- `std::shared_ptr<ConnectionContext>` 持有活跃连接状态
-- 在线程任务和完成结果中只传递 `std::weak_ptr<ConnectionContext>`
+- [x] 定义 `send_message` 请求结构。
+  - 状态：`SendMessageRequest` 包含 `to_user_id`、`content`、`client_msg_id`。
 
-而不是优先依赖 `conn_id + generation`。
+- [x] 定义服务端主动推送事件结构。
+  - 状态：`MessagePushData` 包含消息 ID、会话 ID、会话内 `sequence`、发送方、接收方、内容和服务端时间。
 
-`conn_id` 仍然可以保留用于日志、监控和排障，但“连接是否还活着”应优先由 `weak_ptr.lock()` 判定。
+### 1.2 在线用户查找
 
-职责划分如下：
+- [x] 扩展 SessionManager 支持 `user_id -> connection_id` 查询。
+  - 状态：`GetConnectionId(UserId)` 保留兼容路径。
 
-- I/O 线程：
-  - `accept/read/write/close`
-  - 拆包
-  - 将完整请求投递到线程池
-  - 从完成队列取出响应并追加到待发送缓冲
-- 工作线程：
-  - 执行业务处理
-  - 调用 `MessageHandler::handle`
-  - 生成响应字符串
-  - 将结果投递回完成队列
+- [x] 明确多端登录第一版策略。
+  - 状态：当前采用本地连接级多端策略，`GetConnectionIds(UserId)` 返回同一用户在本节点的所有已认证连接。
 
-关键原则：
+### 1.3 主动推送链路
 
-- 工作线程不直接调用 `send`
-- 工作线程不直接关闭连接
-- 连接生命周期和发送缓冲区仍由 `TcpServer` 主线程统一管理
-- 任何异步结果都必须在回到 I/O 线程后再决定是否发送
-- `weak_ptr.lock()` 只用于判断连接是否仍然存在，不意味着 worker 可以直接操作连接 fd
+- [x] 为 TcpServer 增加按 `connection_id` 主动推送接口。
+  - 状态：`TcpServer::deliverRemotePush()` 支持跨线程安全投递，worker 线程不直接操作 socket。
 
-## 推荐新增组件
+- [x] 将 MessageHandler 的返回模型扩展为支持“响应 + 额外推送”。
+  - 状态：`HandleResult` 包含 push 任务、session 副作用和消息投递信息。
 
-### 1. 线程池
+### 1.4 send_message 业务逻辑
 
-建议新增：
+- [x] 实现 `send_message` 完整处理流程。
+  - 状态：`MessageHandler::handleSendMessage()` 和 `ChatService::sendMessage()` 完成登录校验、参数验证、幂等、持久化、在线推送、离线保留、Redis 路由和发送方多端同步。
 
-- `include/concurrency/thread_pool.h`
-- `src/concurrency/thread_pool.cc`
+### 1.5 错误处理策略
 
-线程池能力建议保持最小可用：
+- [x] 建立消息转发错误码。
+  - 状态：`error_code.h` 包含消息、限流、幂等、好友和群组错误码。
 
-- 构造时指定线程数
-- `start()`
-- `stop()`
-- `submit(Task)`
-- 内部任务队列
-- `condition_variable + mutex`
-- 支持优雅停机
+## 2. 离线消息与消息持久化系统
 
-任务函数可以先用 `std::function<void()>`，避免一开始引入过多模板复杂度。
+### 2.1 MySQL 表结构
 
-### 2. 请求任务结构
+- [x] 设计 `conversations` 表。
+  - 状态：支持 `single`、`group` 类型，`single_chat_key` 唯一约束，`last_seq` 分配会话内序号。
 
-建议新增一个轻量结构，例如：
+- [x] 设计 `messages` 表。
+  - 状态：包含 `sequence`、幂等唯一索引、离线查询索引和会话序号唯一索引。
 
-- `RequestTask`
-  - `std::weak_ptr<ConnectionContext> connection`
-  - `ConnectionId conn_id`
-  - `std::string request`
+### 2.2 Repository 与 Service
 
-说明：
+- [x] 新增 `MessageRepository`。
+  - 状态：支持 `createMessage()`、`listOfflineMessages()`、`markDelivered()`、`markRead()`、`findOrCreateSingleConversation()`、`findMessageByClientMsgId()`。
 
-- `conn_id` 主要用于日志、排障和业务接口兼容
-- 真正的生命周期判断依赖 `connection.lock()`
-- 第一版通常不需要额外引入 `generation`
+- [x] 新增 `ChatService`。
+  - 状态：支持发送单聊、拉取离线、ACK、已读、跨节点 push 发布和本地多端同步。
 
-### 3. 完成结果结构
+### 2.3 离线写入与拉取
 
-建议新增一个轻量结构，例如：
+- [x] 实现目标用户离线时自动存储消息。
+  - 状态：离线目标仍成功入库，发送方收到 `send_message_resp`。
 
-- `ResponseTask`
-  - `std::weak_ptr<ConnectionContext> connection`
-  - `ConnectionId conn_id`
-  - `std::string response`
+- [x] 实现 `pull_offline_messages`。
+  - 状态：支持 `limit` 和 `since_message_id` 游标分页，返回 `sequence` 和 `has_more`。
 
-后续如果需要支持“仅通知关闭连接”或“异步广播”，可以在这里继续扩展字段。
+### 2.4 消息状态管理
 
-### 3.1 连接上下文对象
+- [x] 实现消息投递状态更新。
+  - 状态：客户端发送 `message_ack` 后服务端调用 `markDelivered()`，不再把在线 push 或离线拉取入队等同于客户端确认。
 
-建议不要继续把连接状态分散在多个 `unordered_map` 中单独维护，而是新增一个由智能指针托管的连接上下文对象，例如：
+- [x] 实现已读回执接口。
+  - 状态：`mark_message_read` 支持单个 `message_id` 或批量 `message_ids`，成功后调用 `markRead()`。
 
-- `ConnectionContext`
-  - `ConnectionId conn_id`
-  - `int fd`
-  - `std::string pending_send`
-  - `chat::PacketCodec packet_codec`
-  - `ConnectionMeta meta`
+## 3. Redis 集成与分布式支持
 
-推荐职责：
+### 3.1 Redis 客户端与连接池
 
-- `TcpServer` 持有活跃连接的 `shared_ptr`
-- 异步任务只持有 `weak_ptr`
-- 当连接关闭且主线程从活跃连接表移除后，若没有其他 `shared_ptr` 持有者，该连接状态会自然析构
+- [x] 选择并接入 Redis C/C++ 客户端。
+  - 状态：使用 `hiredis`，封装 `RedisConnection`、`RedisClient`，CMake 支持系统依赖或 FetchContent。
 
-这样可以天然避免：
+- [x] 实现 Redis 连接池。
+  - 状态：`RedisPool` 支持最小/最大连接数、借用超时、坏连接丢弃、统计信息和优雅停机。
 
-- 旧任务命中“新 fd”
-- 旧任务命中“新连接复用的逻辑标识”
-- 单纯依赖 `conn_id` 或代次判断带来的额外管理复杂度
+### 3.2 在线状态与 session 迁移
 
-### 4. 完成队列唤醒机制
+- [x] 设计 Redis 在线状态 key。
+  - 状态：`RedisSessionStore` 管理 token key、user presence key 和 connection presence key，支持 TTL 和心跳刷新。
 
-建议使用 `eventfd` 通知 `epoll` 线程“有新的业务处理结果”。
+- [x] 将 session 存储抽象为接口。
+  - 状态：`IGlobalSessionStore` 抽象全局 token 和 presence，本地 `SessionManager` 管理进程内连接状态。
 
-原因：
+### 3.3 分布式消息路由
 
-- 与当前 `epoll` 模型契合
-- 比轮询简单高效
-- 能让 I/O 线程继续保持事件驱动
+- [x] 设计多节点在线路由模型。
+  - 状态：每个节点配置 `server_id`，同节点直接推送，跨节点通过 Redis Stream。
 
-可新增：
+- [x] 接入 Redis Stream 作为跨节点投递通道。
+  - 状态：`RedisPushStream` 支持 Stream、consumer group、pending 重试、死信队列和投递去重。
 
-- `eventfd` 文件描述符
-- 一个线程安全的完成队列
-- `TcpServer` 中对该 fd 的 `EPOLLIN` 监听
+### 3.4 缓存策略
 
-关键细节：
+- [x] 缓存用户基础信息。
+  - 状态：`CachedUserRepository` 缓存 `findById` 和 `findByUsername`，Redis 故障时回源。
 
-- worker 每次投递完成结果后，向 `eventfd` 写入一个 `uint64_t(1)`
-- I/O 线程收到 `EPOLLIN` 后必须读取 `eventfd`
-- 读取后应立即批量消费完成队列，而不是一次只取一个结果
-- 推荐做法是把共享完成队列 `swap` 到局部队列中，再在锁外处理
+## 4. 配置系统完善
 
-## 分步实现清单
+- [x] 选择并定义配置文件格式。
+  - 状态：使用 JSON 配置，包含 server、mysql、redis、log、timeout、connection、heartbeat 配置段。
 
-### 第一阶段：抽出通用线程池
+- [x] 实现 `ConfigLoader`。
+  - 状态：支持 `--config`、`CHAT_CONFIG_PATH`、环境变量覆盖、类型校验和范围校验。
 
-- [ ] 新增线程池类，支持提交 `std::function<void()>`
-- [ ] 支持固定数量 worker 线程
-- [ ] 支持析构或 `stop()` 时停止接收新任务
-- [ ] 支持清晰的停机语义
-  - 推荐：不再接收新任务，但允许已入队任务跑完
-- [ ] 编写线程池单测
+- [x] 将硬编码配置迁移到配置文件。
+  - 状态：监听地址、MySQL、Redis、日志、连接和心跳超时均由 `ServerConfig` 驱动。
 
-这一阶段先不接入 `TcpServer`，单独把基础设施写稳。
+- [x] 实现配置脱敏输出。
+  - 状态：启动日志通过 `ServerConfig::ToSafeString()` 隐藏敏感字段。
 
-### 第二阶段：在 `TcpServer` 中接入业务任务投递
+## 5. 日志系统实现
 
-- [ ] 新增 `ConnectionContext` 结构，收口连接级状态
-- [ ] 在 `TcpServer` 中增加线程池成员
-- [ ] 在 `TcpServer` 中将活跃连接表改为持有 `shared_ptr<ConnectionContext>`
-- [ ] 在 `TcpServer` 中增加请求投递逻辑
-- [ ] 将当前 `onReadable` 中的同步调用
-  - `handler_.handle(packet, conn_id)`
-  - 改为投递到线程池
-- [ ] 保留当前拆包逻辑不变
-- [ ] 保留当前连接关闭逻辑不变
+- [x] 实现轻量级 Logger。
+  - 状态：支持 `DEBUG`、`INFO`、`WARN`、`ERROR`，每条日志包含时间戳、线程 ID、级别和模块名。
 
-这一阶段的目标是“请求异步处理”，但先不急着让 worker 直接触发网络发送。
+- [x] 替换现有标准输出。
+  - 状态：项目代码统一使用 `LOG_*` 宏。
 
-### 第三阶段：增加完成队列与主线程回投
+- [x] 支持日志文件输出和滚动。
+  - 状态：支持按大小滚动和保留最近 N 个日志文件。
 
-- [ ] 在 `TcpServer` 中新增线程安全完成队列
-- [ ] 新增 `eventfd` 并注册到 `epoll`
-- [ ] worker 线程在业务处理完成后：
-  - 将 `ResponseTask` 放入完成队列
-  - 向 `eventfd` 写入唤醒信号
-- [ ] I/O 线程新增 `onWorkerResultReadable()` 之类的方法
-- [ ] I/O 线程收到唤醒后先读取 `eventfd` 计数器
-- [ ] I/O 线程收到唤醒后批量消费完成队列
-- [ ] 完成队列通过 `swap` 到局部变量后，在锁外处理
-- [ ] 对每条结果执行：
-  - 对 `weak_ptr` 执行 `lock()`
-  - 若拿到连接对象，则编码并加入该连接的 `pending_send`
-  - 打开 `EPOLLOUT`
-  - 若 `lock()` 失败，则直接丢弃响应
+- [x] 支持异步日志写入。
+  - 状态：后台线程异步写入，停机时 drain 队列并 flush。
 
-这是整个方案的核心闭环。
+## 6. 连接管理与超时回收
 
-### 第四阶段：连接失效与并发安全补强
+- [x] 补齐连接元信息。
+  - 状态：`ConnectionMeta` 包含连接 ID、fd、peer、收发时间、认证用户、统计计数和状态。
 
-- [ ] 确认连接状态是否已经完整收口到 `ConnectionContext`
-- [ ] 确认异步任务只持有 `weak_ptr`，不意外延长连接生命周期
-- [ ] 明确连接关闭时如何处理未完成任务
-  - 推荐：允许任务完成，但发送前通过 `weak_ptr.lock()` 检查连接是否仍存在
-- [ ] 确认 `SessionManager` 的线程安全边界
-- [ ] 确认 `MessageHandler`、`UserService` 的共享使用是安全的
-- [ ] 确认完成队列、待发送缓冲、fd 映射的锁粒度不会造成死锁
-- [ ] 明确 worker 即使 `lock()` 成功，也不直接操作 fd 或 `epoll`
+- [x] 实现定时扫描机制。
+  - 状态：`TcpServer` 使用 timerfd 周期唤醒 I/O 线程并有界扫描连接。
 
-### 第五阶段：停机与资源回收
-
-- [ ] `TcpServer::stop()` 中增加线程池停止流程
-- [ ] 确保先停止接收新连接/新任务，再回收线程池
-- [ ] 明确 `eventfd` 的关闭顺序
-- [ ] 确保不会在 `epoll` 已关闭后继续往完成队列回投结果
-- [ ] 为重复调用 `stop()` 保持幂等
+- [x] 实现心跳超时踢下线。
+  - 状态：已认证连接超过 heartbeat timeout 后自动断线并清理本地 session。
 
-## 实际开发顺序
+- [x] 断线流程同步 Redis。
+  - 状态：`RedisSessionStore::ClearPresence()` 校验 `connection_id` 和 token 后删除 presence，避免误删新连接状态。
 
-下面这份顺序更适合真正开工时照着推进，目标是先把最稳定、最独立的部分做完，再逐步把并发能力接进主链路。
+## 7. 系统安全性增强
 
-### Step 1：先抽线程池基础设施
+### 7.1 密码安全
 
-- [ ] 新增 `ThreadPool` 头文件和实现文件
-- [ ] 只支持最小功能：
-  - 固定 worker 数量
-  - `submit`
-  - `stop`
-  - 等待任务
-- [ ] 先不接入 `TcpServer`
-- [ ] 先写 `thread_pool_test`
+- [x] 替换 `std::hash` 密码哈希。
+  - 状态：新增 `IPasswordHasher` 和 `BcryptPasswordHasher`，注册保存 bcrypt 哈希；登录兼容旧十进制哈希并在成功登录后升级为 bcrypt。
 
-完成标准：
+### 7.2 Token 安全
 
-- 能独立编译
-- 单测通过
-- 停机语义明确
+- [x] 重构 token 生成机制。
+  - 状态：`UserService::generateToken()` 使用 `getrandom` 生成 64 字符十六进制随机 token。
 
-### Step 2：抽连接上下文对象
+- [x] 增加重放保护策略。
+  - 状态：Redis 保存有效 token，登出和重复登录会撤销旧 token；`resume_session` 和带 token 的受保护请求会校验 Redis token 状态。
 
-- [ ] 新增 `ConnectionContext`
-- [ ] 把原来分散在 `TcpServer` 内部的连接级状态识别出来
-  - `fd`
-  - `conn_id`
-  - `pending_send`
-  - `packet_codec`
-  - `ConnectionMeta`
-- [ ] 决定哪些状态保留在 `TcpServer`，哪些迁移到 `ConnectionContext`
+### 7.3 SQL 安全
 
-建议目标：
+- [x] 将用户 Repository 改为 prepared statement。
+  - 状态：`UserRepository` 的查找、创建和密码哈希更新均使用 `MysqlStatement` 绑定参数。
 
-- 连接自身的数据尽量放进 `ConnectionContext`
-- `TcpServer` 只保留“活跃连接表”和事件循环控制逻辑
-
-### Step 3：把活跃连接表改成 `shared_ptr`
+- [x] 将消息 Repository 使用 prepared statement。
+  - 状态：`MessageRepository` 创建会话、创建消息、查询离线、ACK、已读和幂等查询均使用绑定参数。
 
-- [ ] `TcpServer` 改为持有 `shared_ptr<ConnectionContext>`
-- [ ] 新连接建立时创建 `shared_ptr`
-- [ ] 连接关闭时从活跃连接表移除
-- [ ] 保持当前同步业务逻辑不变，先确保连接管理改造本身是稳定的
+### 7.4 输入验证
 
-这一步先不要引入线程池投递，重点是把生命周期托管模型先立起来。
+- [x] 建立统一输入验证模块。
+  - 状态：`Validator` 覆盖 username、password、nickname、message content、client message id、message id、conversation id、cursor 和 token，Service 层统一调用。
 
-完成后建议先做一次回归：
+## 8. 聊天业务模型完善
 
-- [ ] 编译通过
-- [ ] 原有测试不过多回退
-- [ ] 单连接收发行为不变
+### 8.1 好友关系
 
-### Step 4：接入线程池请求投递
+- [x] 设计好友表。
+  - 状态：`friendships` 表支持 pending、accepted、blocked，并通过无向唯一索引防重复。
 
-- [ ] 定义 `RequestTask`
-  - `weak_ptr<ConnectionContext>`
-  - `conn_id`
-  - `request`
-- [ ] 在 `onReadable` 拆出完整包后，不再同步执行 `handler_.handle`
-- [ ] 改为把任务投递到线程池
-- [ ] worker 内部执行：
-  - `connection.lock()`
-  - 若连接已失效，直接放弃处理或尽早返回
-  - 若连接仍有效，执行 `handler_.handle`
+- [x] 实现好友接口。
+  - 状态：已新增 `FriendRepository`、`FriendService` 和 `add_friend`、`accept_friend`、`delete_friend`、`list_friends` 协议分支。
 
-这里的重点不是发送，而是先把“异步处理请求”跑通。
+### 8.2 单聊会话
 
-### Step 5：接入完成队列和 `eventfd`
+- [x] 完善单聊 conversation 管理。
+  - 状态：`findOrCreateSingleConversation()` 自动创建或复用同一对用户的单聊 conversation。
 
-- [ ] 定义 `ResponseTask`
-  - `weak_ptr<ConnectionContext>`
-  - `conn_id`
-  - `response`
-- [ ] 在 `TcpServer` 中增加完成队列
-- [ ] 增加 `eventfd`
-- [ ] 将 `eventfd` 注册到 `epoll`
-- [ ] worker 完成业务处理后：
-  - `std::move(response)` 放入完成队列
-  - 写 `eventfd`
+### 8.3 群聊
 
-这是把线程池真正接回网络层的关键一步。
+- [x] 设计群组和成员表。
+  - 状态：`groups`、`group_members` 和 `conversation_members` 已定义，群角色支持 owner、admin、member。
 
-### Step 6：在 I/O 线程消费完成结果
+- [x] 实现群消息群发。
+  - 状态：`create_group`、`add_group_member`、`send_group_message` 已实现；第一版按小群 fanout 为每个接收成员创建消息，在线成员收到 `group_message_push`，离线成员后续可拉取。
 
-- [ ] 新增 `onWorkerResultReadable()`
-- [ ] 在该函数中先读取 `eventfd`
-- [ ] 把完成队列整体 `swap` 到局部变量
-- [ ] 在锁外逐个处理结果
-- [ ] 对每个结果：
-  - `weak_ptr.lock()`
-  - 成功则追加到连接发送缓冲
-  - 开启 `EPOLLOUT`
-  - 失败则丢弃
+### 8.4 消息可靠性
 
-完成这一步后，整条异步闭环才算真正成立。
+- [x] 设计消息 ACK 机制。
+  - 状态：`message_ack` 支持单条和批量 ACK，成功后消息状态推进为 `delivered`。
 
-### Step 7：收尾并发边界
+- [x] 实现消息去重。
+  - 状态：`MessageDedupCache` 和 `(from_user_id, client_msg_id)` 唯一索引共同保证幂等。
 
-- [ ] 检查 worker 是否有任何直接操作 fd 的路径
-- [ ] 检查连接关闭时是否可能与回投结果竞争
-- [ ] 检查锁顺序，避免潜在死锁
-- [ ] 明确消息是否允许乱序返回
-- [ ] 检查 `stop()` 时线程池、`eventfd`、`epoll` 的关闭顺序
+- [x] 实现消息序号。
+  - 状态：`conversations.last_seq` 在事务中分配，`messages.sequence` 在同一 conversation 内单调递增且唯一。
 
-### Step 8：做回归和并发测试
+### 8.5 多端登录
 
-- [ ] 跑现有单测和集成测试
-- [ ] 补 `thread_pool_test`
-- [ ] 补“连接关闭后结果被丢弃”的测试
-- [ ] 补“多个完成结果一次唤醒批量处理”的测试
-- [ ] 补并发连接/并发请求测试
-- [ ] 做一次手工联调
+- [x] 制定多端登录策略。
+  - 状态：第一版采用本地连接级多端策略，同一用户可在同一节点绑定多个连接；不引入显式 `device_id`。
 
-## 开工时的优先级建议
+- [x] 实现多端消息同步。
+  - 状态：单聊发送后，接收者同节点所有在线连接收到 `message_push`，发送者其他同节点连接收到 `message_sync_push`。
 
-如果按“最不容易把系统搞坏”的方式推进，推荐优先级如下：
+## 推荐实施路线完成情况
 
-1. `ThreadPool`
-2. `ConnectionContext`
-3. 活跃连接表改造为 `shared_ptr`
-4. 请求异步投递
-5. 完成队列
-6. `eventfd`
-7. I/O 线程回投发送
-8. 停机与异常处理
-9. 并发与回归测试
+### 第 1 周：安全加固
 
-## 不建议一口气同时做的事情
+- [x] 引入 bcrypt 替换简单密码哈希。
+- [x] 封装 MySQL prepared statement 并改造 UserRepository 和 MessageRepository。
+- [x] 建立统一输入验证模块。
+- [x] 实现已读回执协议接口。
 
-为了降低回归风险，下面这些改动不要和线程池首版一起混做：
+### 第 2 周：消息可靠性增强
 
-- [ ] 数据库连接池
-- [ ] 消息严格顺序保证
-- [ ] 多 I/O 线程模型
-- [ ] 业务线程池分层
-- [ ] 大规模协议重构
+- [x] 实现客户端消息 ACK 协议。
+- [x] 实现 conversation 内单调递增消息序号。
+- [x] 实现 token 撤销和重放保护策略。
 
-建议先把“单 I/O 线程 + 业务线程池 + `weak_ptr` 生命周期管理”这一版做稳，再继续演进。
+### 第 3 周：好友关系与群聊基础
 
-## 建议修改位置
+- [x] 设计并实现好友表和好友接口。
+- [x] 设计群组表并实现群消息群发。
 
-### 必改文件
+### 第 4 周：多端登录与产品打磨
 
-- [ ] [src/TcpServer.cc](/home/lzq/coding/linux_server/src/TcpServer.cc)
-- [ ] [include/net/TcpServer.h](/home/lzq/coding/linux_server/include/net/TcpServer.h)
-- [ ] [CMakeLists.txt](/home/lzq/coding/linux_server/CMakeLists.txt)
+- [x] 制定并实现本地多端登录策略。
+- [x] 实现本地多端消息同步。
+- [x] 端到端集成测试覆盖核心路径。
 
-### 建议新增文件
+## 全局验收标准
 
-- [ ] [include/concurrency/thread_pool.h](/home/lzq/coding/linux_server/include/concurrency/thread_pool.h)
-- [ ] [src/concurrency/thread_pool.cc](/home/lzq/coding/linux_server/src/concurrency/thread_pool.cc)
-- [ ] [include/net/connection_context.h](/home/lzq/coding/linux_server/include/net/connection_context.h)
+- [x] `cmake --build build` 通过。
+- [x] `ctest --test-dir build --output-on-failure` 通过。
+- [x] 两个客户端可完成注册、登录、在线单聊、登出。
+- [x] 目标用户离线时消息写入 MySQL，重新登录后可拉取。
+- [x] Redis 中能看到在线状态和 session 信息。
+- [x] 服务端日志有统一格式，关键错误可排查。
+- [x] 空闲连接和心跳超时连接能自动清理。
+- [x] 密码、token、数据库密码和 Redis 密码不会以明文形式出现在日志中。
+- [x] 主要业务路径有单元测试或集成测试覆盖。
 
-### 可能需要补充的测试文件
+## 后续增强项
 
-- [ ] [tests/thread_pool_test.cc](/home/lzq/coding/linux_server/tests/thread_pool_test.cc)
-- [ ] [tests/server_integration_test.cc](/home/lzq/coding/linux_server/tests/server_integration_test.cc)
-- [ ] [tests/auth_integration_test.cc](/home/lzq/coding/linux_server/tests/auth_integration_test.cc)
-
-## 设计注意点
-
-### 1. 优先用 `shared_ptr/weak_ptr` 管理连接生命周期
-
-推荐模型：
-
-- `TcpServer` 的活跃连接表持有 `shared_ptr<ConnectionContext>`
-- `RequestTask` / `ResponseTask` 中只保存 `weak_ptr<ConnectionContext>`
-- I/O 线程回收结果时通过 `weak_ptr.lock()` 判断连接是否仍有效
-
-这样比单纯依赖 `conn_id` 或 `generation` 更自然，也更不容易出错。
-
-`conn_id` 仍然有价值，但应主要用于：
-
-- 日志
-- 会话标识
-- 监控统计
-- 业务接口兼容
-
-如未来确实有特殊复用场景，再考虑补充 `generation`，但不是第一优先项。
-
-### 2. 不要让 worker 线程直接发包
-
-如果工作线程直接操作 socket，会立刻把当前单线程 I/O 模型变成“多线程并发碰 fd”，复杂度会上升很多，包括：
-
-- 写事件竞争
-- 连接关闭竞争
-- 缓冲区一致性问题
-- `epoll` 状态修改竞争
-
-因此必须坚持：
-
-- worker 只产出结果
-- I/O 线程统一发送
-
-### 3. 不要在第一版里同时引入数据库连接池
-
-线程池和数据库连接池都是并发改造点，最好拆开做。
-
-第一版先接受“多个 worker 各自调用当前 `UserRepository` 建连逻辑”：
-
-- 实现简单
-- 更容易定位问题
-- 改动边界清晰
-
-当线程池稳定后，再继续演进数据库连接池。
-
-### 4. 充分使用 Move 语义，先不要过早引入复杂所有权模型
-
-`RequestTask` 和 `ResponseTask` 中的 `std::string` 会在多个阶段流转，因此要尽量减少不必要拷贝。
-
-建议第一版采用：
-
-- 按值接收任务对象
-- 入队时 `std::move`
-- 出队时 `std::move`
-- worker 产出结果时继续 `std::move`
-
-例如关注以下流转点：
-
-- `packet` 放入 `RequestTask`
-- `RequestTask` 放入任务队列
-- worker 从任务队列取出任务
-- `response` 放入 `ResponseTask`
-- `ResponseTask` 放入完成队列
-
-第一版不建议为了“零拷贝”过早引入：
-
-- `std::unique_ptr<std::string>`
-- `std::shared_ptr<Message>`
-
-原因：
-
-- 可读性会下降
-- 额外堆分配和引用计数未必更划算
-- 当前链路本身也还不是严格零拷贝
-
-### 5. 注意消息顺序语义
-
-同一个连接如果连续发送多条请求，异步处理后响应返回顺序可能和请求到达顺序不同。
-
-这在当前协议里未必是错，但必须明确：
-
-- 如果系统允许乱序响应，现状即可
-- 如果希望同连接内严格按请求顺序返回，需要额外设计串行队列或序号屏障
-
-建议第一版先接受“可能乱序”，但在文档和测试中明确这一点。
-
-### 6. `eventfd` 的读写必须完整闭环
-
-建议明确以下规则：
-
-- worker 每完成一次结果投递，向 `eventfd` 写入一个 8 字节整数
-- I/O 线程收到 `EPOLLIN` 后必须读取 `eventfd`
-- 如果采用非阻塞模式，可循环读取直到 `EAGAIN`
-- 读取完成后，批量处理完成队列
-
-如果只写不读，特别是在 LT 模式下，`epoll_wait` 会反复被唤醒。
-
-### 7. 关注锁的边界
-
-建议遵循以下规则：
-
-- 取任务时只持有任务队列锁
-- 操作完成队列时只持有完成队列锁
-- 操作单连接 `pending_send` 时只持有对应发送缓冲锁或连接状态锁
-- 不在持锁时执行数据库访问或业务处理
-- 完成队列处理采用“锁内 swap，锁外遍历”
-
-目标是避免“锁内做慢操作”。
-
-## 测试方案
-
-测试应分为四层：线程池单测、`TcpServer` 行为测试、认证链路回归测试、压力与异常测试。
-
-### 一、线程池单元测试
-
-新增 `thread_pool_test`，至少覆盖以下场景：
-
-- [ ] 能正常启动并执行单个任务
-- [ ] 能执行多个任务
-- [ ] 多个 worker 确实可以并发执行任务
-- [ ] `stop()` 后不再接受新任务
-- [ ] 已入队任务在停机前可以执行完成
-- [ ] 析构时不会卡死
-- [ ] 任务抛异常时不会导致整个线程池线程提前退出
-  - 如果第一版不处理异常，也要明确测试和限制
-
-### 二、TcpServer 接入后的集成测试
-
-重点验证“异步化后，行为与之前一致”。
-
-建议新增或补充以下测试：
-
-- [ ] 单请求仍可正常收发
-- [ ] `heartbeat` 路由结果不变
-- [ ] `login/register/logout/whoami` 行为不变
-- [ ] 无效 JSON 仍能返回错误响应
-- [ ] 未登录连接的 `whoami/logout` 仍返回既有错误
-- [ ] 连接关闭后异步任务结果不会误发送
-- [ ] `weak_ptr.lock()` 失败时结果会被安全丢弃
-- [ ] `eventfd` 唤醒后能正确读出计数并完成批量回投
-
-### 三、并发场景测试
-
-建议补充至少一种可重复执行的并发测试：
-
-- [ ] 多个客户端同时发起 `heartbeat`
-- [ ] 多个客户端同时发起 `login`
-- [ ] 同一连接连续发送多条请求
-- [ ] 同一用户多连接重复登录，确认 `SessionManager` 行为符合预期
-- [ ] 大量短连接快速建立/关闭时，服务端不会崩溃
-
-这里的关注点不是极限性能，而是：
-
-- 不崩溃
-- 不死锁
-- 不出现明显错乱响应
-
-### 四、异常与边界测试
-
-- [ ] worker 执行期间连接已关闭
-- [ ] `eventfd` 收到多次唤醒时能够批量消费完成队列
-- [ ] `eventfd` 在主线程处理中被正确读取，不会造成重复空唤醒
-- [ ] 响应为空字符串时不会错误开启 `EPOLLOUT`
-- [ ] 停机过程中仍有未完成业务任务
-- [ ] 高并发下 `pending_send_` 不会无限增长
-- [ ] 半包、多包、超大包行为与当前逻辑一致
-
-## 推荐测试顺序
-
-1. 先完成线程池单测
-2. 再完成 `TcpServer` 接入后的基础集成测试
-3. 再补并发测试
-4. 最后做手工压测和日志观察
-
-## 手工验证建议
-
-除了自动化测试，建议至少做一次手工联调：
-
-- [ ] 启动服务端
-- [ ] 用 `client` 连续发送多条请求
-- [ ] 观察服务端在并发请求下是否仍可接受新连接
-- [ ] 人工验证连接关闭后不会报错刷屏
-- [ ] 观察日志中是否出现：
-  - 重复关闭
-  - 找不到 `conn_id`
-  - `epoll_ctl` 修改失败
-  - 任务停机时丢失或悬挂
-  - `eventfd` 被重复唤醒但完成队列为空
-
-## 验收标准
-
-满足以下条件可认为线程池第一版接入完成：
-
-- [ ] I/O 线程不再直接执行业务处理
-- [ ] socket 收发仍只由 `TcpServer` 主线程负责
-- [ ] 活跃连接生命周期由 `shared_ptr/weak_ptr` 方案稳定管理
-- [ ] 现有认证相关测试全部通过
-- [ ] 新增线程池测试通过
-- [ ] 并发场景下无崩溃、无死锁、无明显响应异常
-- [ ] 停机流程稳定，不出现线程泄漏或资源泄漏
-
-## 第二阶段可选优化
-
-线程池第一版稳定后，可以继续规划：
-
-- [ ] 数据库连接池
-- [ ] 区分 I/O 任务与重业务任务的不同线程池
-- [ ] 基于消息类型做任务优先级
-- [ ] 同连接串行化执行，保证响应顺序
-- [ ] 增加任务队列长度限制和过载保护
-- [ ] 增加业务耗时统计和线程池监控指标
+- 跨节点多端 presence 可从用户级扩展为 `user_id -> device_id -> connection`。
+- 消息状态当前是消息级 ACK，后续可扩展为按设备维度的 ACK/read receipt。
+- 群聊当前适合小群 fanout，后续可增加大群分片、异步投递任务和历史消息查询接口。
+- 协议当前以换行分包，后续可升级为长度前缀协议。

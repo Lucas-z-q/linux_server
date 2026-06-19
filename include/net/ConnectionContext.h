@@ -1,6 +1,9 @@
 #ifndef LINUX_SERVER_INCLUDE_NET_CONNECTION_CONTEXT_H_
 #define LINUX_SERVER_INCLUDE_NET_CONNECTION_CONTEXT_H_
 
+#include <sys/types.h>
+
+#include <atomic>
 #include <cstddef>
 #include <cstdint>
 #include <mutex>
@@ -11,27 +14,29 @@
 #include "codec/packet_codec.h"
 #include "common/types.h"
 #include "net/ConnectionMeta.h"
+#include "net/TcpConnection.h"
 
 // 表示单个网络连接的上下文和状态。
 // 它封装了文件描述符、连接 ID、元数据、
 // 应用层待发送缓冲区，以及用于处理输入数据帧的数据包编解码器。
 class ConnectionContext {
    private:
-    int fd_;                      // 套接字文件描述符。
+    TcpConnection connection_;
     chat::ConnectionId conn_id_;  // 此连接的唯一标识符。
     std::string pending_send_;    // 等待通过套接字发送的数据缓冲区。
 
     chat::PacketCodec packet_codec_;  // 用于将连续字节流解析为独立数据包的编解码器。
     ConnectionMeta meta_;             // 连接的元数据和统计信息。
 
-    std::mutex request_mutex_;              // 保护同连接请求串行化状态。
-    bool request_in_flight_;                // 是否已有请求正在 worker 中处理。
+    std::mutex request_mutex_;  // 保护同连接请求串行化状态。
+    bool request_in_flight_;    // 是否已有请求正在 worker 中处理或等待投递标记闭环。
     std::queue<std::string> pending_requests_;  // 等待按连接顺序处理的请求队列。
+    std::atomic<int> pending_delivery_marks_{0};  // 跨连接推送未完成投递标记数，阻塞新请求直至清零。
 
    public:
     // 构造一个新的 ConnectionContext。
     // 使用给定的对端信息初始化元数据，并将当前时间设置为连接时间和最后活跃时间戳。
-    ConnectionContext(int fd, chat::ConnectionId conn_id, const std::string& peer_ip, uint16_t peer_port);
+    ConnectionContext(TcpConnection conn, chat::ConnectionId conn_id);
     ~ConnectionContext() = default;
 
     // 返回底层的套接字文件描述符。
@@ -42,6 +47,15 @@ class ConnectionContext {
 
     // 返回连接元数据的只读引用。
     const ConnectionMeta& meta() const;
+
+    // 从底层连接接收字节流数据。
+    ssize_t recv(char* buffer, size_t size);
+
+    // 向底层连接尝试发送一段数据，允许部分写入。
+    ssize_t sendSome(const char* data, size_t len);
+
+    // 关闭底层连接。
+    void closeConnection();
 
     // 将一块原始字节数据送入数据包编解码器。
     // 从数据块中解析出的完整数据包将追加到 `packets` 中。
@@ -72,18 +86,35 @@ class ConnectionContext {
     // 标记当前请求完成，并取出同连接的下一个待处理请求。
     bool finishRequestAndPopNext(std::string& next_request);
 
+    // 投递围栏解除后，如果连接空闲，则取出队首请求继续处理。
+    bool popNextRequestIfIdle(std::string& next_request);
+
     // 清空当前连接尚未处理的请求。
     void clearPendingRequests();
 
+    // 递增跨连接推送未完成投递计数，阻塞新请求提交。
+    void incrementPendingDeliveryMarks() { pending_delivery_marks_.fetch_add(1); }
+
+    // 递减跨连接推送未完成投递计数。
+    void decrementPendingDeliveryMarks() { pending_delivery_marks_.fetch_sub(1); }
+
+    // 判断连接是否有请求、待发送数据或投递围栏，超时扫描应暂缓关闭。
+    bool shouldDeferTimeout();
+
     // 在接收到数据后更新元数据。
     // 递增接收次数，并将 `bytes` 累加到接收总字节数中。
-    // 同时更新最后活跃时间戳。
     void touchOnRecv(size_t bytes);
+
+    // 在解析出完整非空协议包后更新协议活跃时间。
+    void touchOnPacket();
 
     // 在发送数据后更新元数据。
     // 递增发送次数，并将 `bytes` 累加到发送总字节数中。
-    // 同时更新最后活跃时间戳。
     void touchOnSend(size_t bytes);
+
+    // 设置或清除当前连接绑定的认证用户 ID。
+    void setAuthenticatedUserId(chat::UserId user_id);
+    void clearAuthenticatedUserId();
 
     // 将连接状态标记为 CLOSING（正在关闭）。
     void markClosing();

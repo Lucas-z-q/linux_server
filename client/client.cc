@@ -2,6 +2,7 @@
 #include <netinet/in.h>
 #include <sys/socket.h>
 #include <unistd.h>
+
 #include <cstring>
 #include <iostream>
 #include <string>
@@ -53,8 +54,7 @@ int main() {
     const std::string request = codec.encode(buffer);
     size_t total_sent = 0;
     while (total_sent < request.size()) {
-        const ssize_t n = write(client_fd, request.data() + total_sent,
-                                request.size() - total_sent);
+        const ssize_t n = write(client_fd, request.data() + total_sent, request.size() - total_sent);
         if (n <= 0) {
             perror("Write failed");
             close(client_fd);

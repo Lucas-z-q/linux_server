@@ -10,85 +10,116 @@ using namespace chat;
 namespace {
 
 void TestEncodeAppendsNewline() {
-  PacketCodec codec;
-  const std::string payload = R"({"msg_type":"heartbeat","seq":1,"data":{}})";
-  const std::string encoded = codec.encode(payload);
+    PacketCodec codec;
+    const std::string payload = R"({"msg_type":"heartbeat","seq":1,"data":{}})";
+    const std::string encoded = codec.encode(payload);
 
-  assert(encoded == payload + "\n");
+    assert(encoded == payload + "\n");
 }
 
 void TestFeedReturnsMultiplePacketsFromSingleChunk() {
-  PacketCodec codec;
-  std::vector<std::string> packets;
-  const bool ok = codec.feed("first\nsecond\n", packets);
+    PacketCodec codec;
+    std::vector<std::string> packets;
+    const bool ok = codec.feed("first\nsecond\n", packets);
 
-  assert(ok);
-  assert(packets.size() == 2);
-  assert(packets[0] == "first");
-  assert(packets[1] == "second");
+    assert(ok);
+    assert(packets.size() == 2);
+    assert(packets[0] == "first");
+    assert(packets[1] == "second");
 }
 
 void TestFeedBuffersHalfPacketUntilDelimiterArrives() {
-  PacketCodec codec;
-  std::vector<std::string> packets;
+    PacketCodec codec;
+    std::vector<std::string> packets;
 
-  const bool first_ok = codec.feed("part", packets);
-  assert(first_ok);
-  assert(packets.empty());
+    const bool first_ok = codec.feed("part", packets);
+    assert(first_ok);
+    assert(packets.empty());
 
-  const bool second_ok = codec.feed("ial\n", packets);
-  assert(second_ok);
-  assert(packets.size() == 1);
-  assert(packets[0] == "partial");
+    const bool second_ok = codec.feed("ial\n", packets);
+    assert(second_ok);
+    assert(packets.size() == 1);
+    assert(packets[0] == "partial");
 }
 
 void TestFeedReturnsEmptyPacketForBlankLine() {
-  PacketCodec codec;
-  std::vector<std::string> packets;
-  const bool ok = codec.feed("\n", packets);
+    PacketCodec codec;
+    std::vector<std::string> packets;
+    const bool ok = codec.feed("\n", packets);
 
-  assert(ok);
-  assert(packets.size() == 1);
-  assert(packets[0].empty());
+    assert(ok);
+    assert(packets.size() == 1);
+    assert(packets[0].empty());
 }
 
 void TestFeedStripsTrailingCarriageReturnForCrlfPackets() {
-  PacketCodec codec;
-  std::vector<std::string> packets;
+    PacketCodec codec;
+    std::vector<std::string> packets;
 
-  const bool ok = codec.feed("first\r\nsecond\r\n", packets);
+    const bool ok = codec.feed("first\r\nsecond\r\n", packets);
 
-  assert(ok);
-  assert(packets.size() == 2);
-  assert(packets[0] == "first");
-  assert(packets[1] == "second");
+    assert(ok);
+    assert(packets.size() == 2);
+    assert(packets[0] == "first");
+    assert(packets[1] == "second");
 }
 
 void TestFeedRejectsOversizedBufferedPacket() {
-  PacketCodec codec;
-  std::vector<std::string> packets;
-  const std::string oversized(PacketCodec::kMaxPacketSize + 1, 'x');
+    PacketCodec codec;
+    std::vector<std::string> packets;
+    const std::string oversized(PacketCodec::kMaxPacketSize + 1, 'x');
 
-  const bool ok = codec.feed(oversized, packets);
+    const bool ok = codec.feed(oversized, packets);
 
-  assert(!ok);
-  assert(packets.empty());
+    assert(!ok);
+    assert(packets.empty());
 
-  const bool recovery_ok = codec.feed("ok\n", packets);
-  assert(recovery_ok);
-  assert(packets.size() == 1);
-  assert(packets[0] == "ok");
+    const bool recovery_ok = codec.feed("ok\n", packets);
+    assert(recovery_ok);
+    assert(packets.size() == 1);
+    assert(packets[0] == "ok");
+}
+
+void TestFeedAcceptsManySmallPacketsBeyondBufferLimit() {
+    PacketCodec codec;
+    std::vector<std::string> packets;
+    std::string chunk;
+    const std::size_t packet_count = PacketCodec::kMaxPacketSize / 2 + 10;
+    for (std::size_t i = 0; i < packet_count; ++i) {
+        chunk += "x\n";
+    }
+
+    const bool ok = codec.feed(chunk, packets);
+
+    assert(ok);
+    assert(packets.size() == packet_count);
+    for (const std::string& packet : packets) {
+        assert(packet == "x");
+    }
+}
+
+void TestFeedRejectsOversizedCompletePacket() {
+    PacketCodec codec;
+    std::vector<std::string> packets;
+    const std::string oversized(PacketCodec::kMaxPacketSize + 1, 'x');
+
+    const bool ok = codec.feed(oversized + "\n", packets);
+
+    assert(!ok);
+    assert(packets.empty());
 }
 
 }  // namespace
 
 int main() {
-  TestEncodeAppendsNewline();
-  TestFeedReturnsMultiplePacketsFromSingleChunk();
-  TestFeedBuffersHalfPacketUntilDelimiterArrives();
-  TestFeedReturnsEmptyPacketForBlankLine();
-  TestFeedStripsTrailingCarriageReturnForCrlfPackets();
-  TestFeedRejectsOversizedBufferedPacket();
-  std::cout << "[PASS] packet codec tests passed\n";
-  return 0;
+    TestEncodeAppendsNewline();
+    TestFeedReturnsMultiplePacketsFromSingleChunk();
+    TestFeedBuffersHalfPacketUntilDelimiterArrives();
+    TestFeedReturnsEmptyPacketForBlankLine();
+    TestFeedStripsTrailingCarriageReturnForCrlfPackets();
+    TestFeedRejectsOversizedBufferedPacket();
+    TestFeedAcceptsManySmallPacketsBeyondBufferLimit();
+    TestFeedRejectsOversizedCompletePacket();
+    std::cout << "[PASS] packet codec tests passed\n";
+    return 0;
 }

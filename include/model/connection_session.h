@@ -16,17 +16,17 @@ namespace chat {
 
 // 表示一个连接当前对应的登录态信息。
 struct ConnectionSession {
-  // 当前连接是否已经完成认证。
-  bool authenticated = false;
+    // 当前连接是否已经完成认证。
+    bool authenticated = false;
 
-  // 当前连接绑定的用户 ID。
-  UserId user_id = 0;
+    // 当前连接绑定的用户 ID。
+    UserId user_id = 0;
 
-  // 当前连接绑定的用户名。
-  std::string username;
+    // 当前连接绑定的用户名。
+    std::string username;
 
-  // 当前连接最近一次登录生成的令牌。
-  std::string token;
+    // 当前连接最近一次登录生成的令牌。
+    std::string token;
 };
 
 }  // namespace chat
