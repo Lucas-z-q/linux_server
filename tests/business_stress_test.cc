@@ -1446,47 +1446,80 @@ bool Passed(const StressOptions& options, const StressMetrics& metrics) {
            metrics.push_validation_errors.load() == 0 && metrics.ErrorCount() == 0;
 }
 
-int RunStress(const StressOptions& options) {
-    const std::vector<StressUserPair> user_pairs = BuildMemoryUserPairs(options.run_id, options.pairs);
-    StressUserRepository user_repository(user_pairs);
-    StressMessageRepository message_repository;
-    chat::SessionManager session_manager;
-    FastPasswordHasher password_hasher;
-    chat::UserService user_service(user_repository, session_manager, nullptr, nullptr, {}, &password_hasher);
-    chat::ChatService chat_service(session_manager, message_repository, user_repository);
-    chat::MessageHandler handler(user_service, chat_service);
+struct StressServerBundle {
+    chat::ServerConfig config;
+    std::vector<StressUserPair> user_pairs;
+    std::unique_ptr<StressUserRepository> memory_user_repository;
+    std::unique_ptr<StressMessageRepository> memory_message_repository;
+    std::unique_ptr<chat::SessionManager> session_manager;
+    std::unique_ptr<FastPasswordHasher> fast_password_hasher;
+    std::unique_ptr<chat::UserService> user_service;
+    std::unique_ptr<chat::ChatService> chat_service;
+    std::unique_ptr<chat::MessageHandler> handler;
+    std::unique_ptr<TcpServer> server;
+    std::thread server_thread;
+    std::atomic<bool> server_done{false};
+    bool server_start_result = false;
+    int actual_port = 0;
+
+    bool StartAndWaitReady(const StressOptions& options, std::string* error) {
+        server_thread = std::thread([this]() {
+            server_start_result = server->start();
+            server_done.store(true);
+        });
+        return WaitForServerReady(server.get(), server_done, options, &actual_port, error);
+    }
+
+    void StopAndJoin() {
+        if (server) {
+            server->stop();
+        }
+        if (server_thread.joinable()) {
+            server_thread.join();
+        }
+    }
+};
+
+std::unique_ptr<StressServerBundle> CreateMemoryBackend(const StressOptions& options) {
+    auto bundle = std::make_unique<StressServerBundle>();
+    bundle->user_pairs = BuildMemoryUserPairs(options.run_id, options.pairs);
+    bundle->memory_user_repository = std::make_unique<StressUserRepository>(bundle->user_pairs);
+    bundle->memory_message_repository = std::make_unique<StressMessageRepository>();
+    bundle->session_manager = std::make_unique<chat::SessionManager>();
+    bundle->fast_password_hasher = std::make_unique<FastPasswordHasher>();
+    bundle->user_service =
+        std::make_unique<chat::UserService>(*bundle->memory_user_repository, *bundle->session_manager, nullptr, nullptr,
+                                            chat::RedisConfig{}, bundle->fast_password_hasher.get());
+    bundle->chat_service = std::make_unique<chat::ChatService>(
+        *bundle->session_manager, *bundle->memory_message_repository, *bundle->memory_user_repository);
+    bundle->handler = std::make_unique<chat::MessageHandler>(*bundle->user_service, *bundle->chat_service);
 
     TcpServerTimeoutOptions timeout_options;
     timeout_options.idle_timeout_ms = 300000;
     timeout_options.heartbeat_timeout_ms = 90000;
     timeout_options.scan_interval_ms = 1000;
-    TcpServer server(kServerIp, static_cast<uint16_t>(options.port), handler, timeout_options);
+    bundle->server =
+        std::make_unique<TcpServer>(kServerIp, static_cast<uint16_t>(options.port), *bundle->handler, timeout_options);
+    return bundle;
+}
 
+int RunStress(const StressOptions& options) {
+    std::unique_ptr<StressServerBundle> bundle = CreateMemoryBackend(options);
     StressMetrics metrics;
     StressDurations durations;
-    std::atomic<bool> server_done{false};
-    bool server_start_result = false;
-    std::thread server_thread([&]() {
-        server_start_result = server.start();
-        server_done.store(true);
-    });
 
-    int actual_port = 0;
     std::string readiness_error;
-    if (!WaitForServerReady(&server, server_done, options, &actual_port, &readiness_error)) {
+    if (!bundle->StartAndWaitReady(options, &readiness_error)) {
         ++metrics.server_errors;
         metrics.AddError("server_errors", readiness_error);
-        server.stop();
-        if (server_thread.joinable()) {
-            server_thread.join();
-        }
+        bundle->StopAndJoin();
         PrintReport(options, metrics, durations, std::nullopt);
         return 1;
     }
 
     const auto login_started = Clock::now();
     std::vector<std::unique_ptr<StressPairSession>> sessions =
-        LoginClientWorkers(actual_port, options, user_pairs, &metrics);
+        LoginClientWorkers(bundle->actual_port, options, bundle->user_pairs, &metrics);
     durations.login_duration_ms = ElapsedMs(login_started, Clock::now());
 
     RunMessageWorkers(&sessions, options, &metrics, "warmup", options.warmup_messages, false);
@@ -1495,11 +1528,8 @@ int RunStress(const StressOptions& options) {
     RunMessageWorkers(&sessions, options, &metrics, "measure", options.messages_per_pair, true);
     durations.message_duration_ms = ElapsedMs(message_started, Clock::now());
 
-    server.stop();
-    if (server_thread.joinable()) {
-        server_thread.join();
-    }
-    if (!server_start_result) {
+    bundle->StopAndJoin();
+    if (!bundle->server_start_result) {
         ++metrics.server_errors;
         metrics.AddError("server_errors", "server.start returned false");
     }
