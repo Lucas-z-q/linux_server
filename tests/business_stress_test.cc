@@ -32,10 +32,16 @@
 #include <variant>
 #include <vector>
 
+#include "cache/cached_user_repository.h"
+#include "cache/message_dedup_cache.h"
+#include "cache/redis_rate_limiter.h"
 #include "codec/packet_codec.h"
 #include "common/error_code.h"
+#include "common/logger.h"
 #include "common/types.h"
+#include "config/config_loader.h"
 #include "config/server_config.h"
+#include "db/db_pool.h"
 #include "db/message_repository.h"
 #include "db/user_repository.h"
 #include "handler/message_handler.h"
@@ -43,10 +49,14 @@
 #include "model/user_record.h"
 #include "net/TcpServer.h"
 #include "nlohmann/json.hpp"
+#include "redis/redis_client.h"
+#include "redis/redis_pool.h"
 #include "security/password_hasher.h"
+#include "server/redis_session_store.h"
 #include "server/session_manager.h"
 #include "service/chat_service.h"
 #include "service/user_service.h"
+#include "stream/redis_push_stream.h"
 
 namespace {
 
@@ -1449,6 +1459,18 @@ bool Passed(const StressOptions& options, const StressMetrics& metrics) {
 struct StressServerBundle {
     chat::ServerConfig config;
     std::vector<StressUserPair> user_pairs;
+    std::unique_ptr<chat::DbPool> db_pool;
+    std::unique_ptr<chat::UserRepository> real_user_repository;
+    std::unique_ptr<chat::CachedUserRepository> cached_user_repository;
+    chat::IUserRepository* active_user_repository = nullptr;
+    std::unique_ptr<chat::MessageRepository> real_message_repository;
+    std::unique_ptr<chat::RedisPool> redis_pool;
+    std::unique_ptr<chat::RedisClient> redis_client;
+    std::unique_ptr<chat::RedisSessionStore> redis_session_store;
+    std::unique_ptr<chat::RedisRateLimiter> redis_rate_limiter;
+    std::unique_ptr<chat::MessageDedupCache> message_dedup_cache;
+    std::unique_ptr<chat::RedisPushStream> redis_push_stream;
+    std::unique_ptr<chat::BcryptPasswordHasher> bcrypt_password_hasher;
     std::unique_ptr<StressUserRepository> memory_user_repository;
     std::unique_ptr<StressMessageRepository> memory_message_repository;
     std::unique_ptr<chat::SessionManager> session_manager;
@@ -1474,11 +1496,80 @@ struct StressServerBundle {
         if (server) {
             server->stop();
         }
+        if (redis_push_stream) {
+            redis_push_stream->Stop();
+        }
         if (server_thread.joinable()) {
             server_thread.join();
         }
+        if (redis_push_stream) {
+            redis_push_stream->Stop();
+        }
     }
 };
+
+std::optional<chat::ServerConfig> LoadRealConfig(const StressOptions& options, StressMetrics* metrics) {
+    chat::ConfigResult config_result = chat::ConfigLoader::Load(options.config_path);
+    if (std::holds_alternative<chat::ConfigError>(config_result)) {
+        ++metrics->config_errors;
+        metrics->AddError("config_errors", std::get<chat::ConfigError>(config_result).message);
+        return std::nullopt;
+    }
+    chat::ServerConfig config = std::get<chat::ServerConfig>(config_result);
+    if (config.redis.enabled) {
+        config.redis.key_prefix = config.redis.key_prefix + ":" + options.run_id;
+    }
+    return config;
+}
+
+bool LoadExistingStressUser(const std::string& username, chat::IUserRepository* repository, chat::UserId* user_id,
+                            StressMetrics* metrics) {
+    const chat::FindUserResult result = repository->findByUsername(username);
+    if (result.status != chat::RepositoryStatus::kOk || !result.user.has_value()) {
+        ++metrics->prepare_errors;
+        metrics->AddError("prepare_errors", username + ": existing user not found");
+        return false;
+    }
+    *user_id = result.user->id;
+    return true;
+}
+
+bool RegisterStressUser(const std::string& username, chat::UserService* user_service, chat::UserId* user_id,
+                        StressMetrics* metrics) {
+    chat::RegisterRequest request{username, kPassword, username};
+    chat::RegisterResult result = user_service->registerUser(request, "");
+    if (result.code != chat::ErrorCode::OK) {
+        ++metrics->prepare_errors;
+        metrics->AddError("prepare_errors", username + ": " + result.message);
+        return false;
+    }
+    *user_id = result.data.user_id;
+    return true;
+}
+
+bool PrepareRealUsers(const StressOptions& options, chat::UserService* user_service,
+                      chat::IUserRepository* active_user_repository, std::vector<StressUserPair>* user_pairs,
+                      StressMetrics* metrics) {
+    for (StressUserPair& pair : *user_pairs) {
+        if (options.prepare_users) {
+            if (!RegisterStressUser(pair.alice_username, user_service, &pair.alice_id, metrics)) {
+                return false;
+            }
+            if (!RegisterStressUser(pair.bob_username, user_service, &pair.bob_id, metrics)) {
+                return false;
+            }
+            continue;
+        }
+
+        if (!LoadExistingStressUser(pair.alice_username, active_user_repository, &pair.alice_id, metrics)) {
+            return false;
+        }
+        if (!LoadExistingStressUser(pair.bob_username, active_user_repository, &pair.bob_id, metrics)) {
+            return false;
+        }
+    }
+    return true;
+}
 
 std::unique_ptr<StressServerBundle> CreateMemoryBackend(const StressOptions& options) {
     auto bundle = std::make_unique<StressServerBundle>();
@@ -1503,9 +1594,125 @@ std::unique_ptr<StressServerBundle> CreateMemoryBackend(const StressOptions& opt
     return bundle;
 }
 
+std::unique_ptr<StressServerBundle> CreateRealBackend(const StressOptions& options, chat::ServerConfig config,
+                                                      StressMetrics* metrics) {
+    auto bundle = std::make_unique<StressServerBundle>();
+    bundle->config = config;
+    bundle->user_pairs.reserve(static_cast<std::size_t>(options.pairs));
+    for (int i = 0; i < options.pairs; ++i) {
+        bundle->user_pairs.push_back(StressUserPair{i, StressUsername(options.run_id, "alice", i),
+                                                    StressUsername(options.run_id, "bob", i), 0, 0});
+    }
+
+    bundle->db_pool = std::make_unique<chat::DbPool>(bundle->config.mysql, bundle->config.mysql_pool);
+    const chat::DbPoolInitResult db_result = bundle->db_pool->init();
+    if (!db_result.success) {
+        ++metrics->mysql_init_errors;
+        metrics->AddError("mysql_init_errors", chat::DbPoolErrorToString(db_result.error));
+        return nullptr;
+    }
+
+    bundle->real_user_repository = std::make_unique<chat::UserRepository>(bundle->db_pool.get());
+    bundle->active_user_repository = bundle->real_user_repository.get();
+
+    if (bundle->config.redis.enabled) {
+        bundle->redis_pool = std::make_unique<chat::RedisPool>(bundle->config.redis);
+        const chat::RedisPoolInitResult redis_result = bundle->redis_pool->Init();
+        if (!redis_result.ok()) {
+            ++metrics->redis_init_errors;
+            metrics->AddError("redis_init_errors", redis_result.message);
+            return nullptr;
+        }
+        bundle->redis_client = std::make_unique<chat::RedisClient>(bundle->redis_pool.get());
+        bundle->cached_user_repository = std::make_unique<chat::CachedUserRepository>(
+            bundle->real_user_repository.get(), bundle->redis_client.get(), bundle->config.redis);
+        bundle->active_user_repository = bundle->cached_user_repository.get();
+        bundle->redis_session_store =
+            std::make_unique<chat::RedisSessionStore>(bundle->redis_client.get(), bundle->config.redis);
+        bundle->redis_rate_limiter =
+            std::make_unique<chat::RedisRateLimiter>(bundle->redis_client.get(), bundle->config.redis);
+        bundle->message_dedup_cache =
+            std::make_unique<chat::MessageDedupCache>(bundle->redis_client.get(), bundle->config.redis);
+        bundle->redis_push_stream =
+            std::make_unique<chat::RedisPushStream>(bundle->redis_client.get(), bundle->config.redis);
+        if (!bundle->redis_push_stream->Initialize()) {
+            ++metrics->redis_init_errors;
+            metrics->AddError("redis_init_errors", "RedisPushStream initialization failed");
+            return nullptr;
+        }
+    }
+
+    bundle->real_message_repository = std::make_unique<chat::MessageRepository>(bundle->db_pool.get());
+    bundle->session_manager = std::make_unique<chat::SessionManager>();
+    if (options.password_hasher == PasswordHasherMode::kBcrypt) {
+        bundle->bcrypt_password_hasher = std::make_unique<chat::BcryptPasswordHasher>();
+    } else {
+        bundle->fast_password_hasher = std::make_unique<FastPasswordHasher>();
+    }
+    chat::IPasswordHasher* password_hasher =
+        options.password_hasher == PasswordHasherMode::kBcrypt
+            ? static_cast<chat::IPasswordHasher*>(bundle->bcrypt_password_hasher.get())
+            : static_cast<chat::IPasswordHasher*>(bundle->fast_password_hasher.get());
+
+    bundle->user_service = std::make_unique<chat::UserService>(
+        *bundle->active_user_repository, *bundle->session_manager, bundle->redis_session_store.get(),
+        bundle->redis_rate_limiter.get(), bundle->config.redis, password_hasher);
+    if (!PrepareRealUsers(options, bundle->user_service.get(), bundle->active_user_repository, &bundle->user_pairs,
+                          metrics)) {
+        return nullptr;
+    }
+
+    bundle->chat_service = std::make_unique<chat::ChatService>(
+        *bundle->session_manager, *bundle->real_message_repository, *bundle->active_user_repository,
+        bundle->redis_rate_limiter.get(), bundle->message_dedup_cache.get(), bundle->config.redis,
+        bundle->redis_session_store.get(), bundle->redis_push_stream.get());
+    bundle->handler = std::make_unique<chat::MessageHandler>(*bundle->user_service, *bundle->chat_service);
+
+    TcpServerTimeoutOptions timeout_options;
+    timeout_options.idle_timeout_ms = bundle->config.connection.idle_timeout_ms;
+    timeout_options.heartbeat_timeout_ms = bundle->config.heartbeat.timeout_ms;
+    timeout_options.scan_interval_ms = 1000;
+    bundle->server =
+        std::make_unique<TcpServer>(kServerIp, static_cast<uint16_t>(options.port), *bundle->handler, timeout_options);
+
+    if (bundle->redis_push_stream) {
+        bundle->redis_push_stream->SetDeliveryCallback(
+            [server = bundle->server.get(), &config = bundle->config](const chat::RemotePushEvent& event) {
+                return server->deliverRemotePush(event, std::chrono::milliseconds(config.timeout.remote_push_ms));
+            });
+        bundle->redis_push_stream->SetMarkDeliveredCallback([message_repo = bundle->real_message_repository.get()](
+                                                                chat::UserId user_id, const std::string& message_id) {
+            return message_repo->markDelivered(user_id, {message_id}).status == chat::RepositoryStatus::kOk;
+        });
+        bundle->server->setPreShutdownHook([stream = bundle->redis_push_stream.get()]() { stream->Stop(); });
+        bundle->redis_push_stream->Start();
+    }
+
+    return bundle;
+}
+
 int RunStress(const StressOptions& options) {
-    std::unique_ptr<StressServerBundle> bundle = CreateMemoryBackend(options);
     StressMetrics metrics;
+    std::optional<chat::ServerConfig> real_config;
+    std::unique_ptr<StressServerBundle> bundle;
+    if (options.backend == StressBackend::kReal) {
+        real_config = LoadRealConfig(options, &metrics);
+        if (!real_config.has_value()) {
+            StressDurations durations;
+            PrintReport(options, metrics, durations, std::nullopt);
+            std::cout << "  status=FAIL\n";
+            return 1;
+        }
+        bundle = CreateRealBackend(options, *real_config, &metrics);
+    } else {
+        bundle = CreateMemoryBackend(options);
+    }
+    if (!bundle) {
+        StressDurations durations;
+        PrintReport(options, metrics, durations, real_config);
+        std::cout << "  status=FAIL\n";
+        return 1;
+    }
     StressDurations durations;
 
     std::string readiness_error;
@@ -1513,7 +1720,7 @@ int RunStress(const StressOptions& options) {
         ++metrics.server_errors;
         metrics.AddError("server_errors", readiness_error);
         bundle->StopAndJoin();
-        PrintReport(options, metrics, durations, std::nullopt);
+        PrintReport(options, metrics, durations, real_config);
         return 1;
     }
 
@@ -1534,7 +1741,7 @@ int RunStress(const StressOptions& options) {
         metrics.AddError("server_errors", "server.start returned false");
     }
 
-    PrintReport(options, metrics, durations, std::nullopt);
+    PrintReport(options, metrics, durations, real_config);
     if (!Passed(options, metrics)) {
         std::cout << "  status=FAIL\n";
         return 1;
