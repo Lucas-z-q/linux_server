@@ -1386,7 +1386,7 @@ void PrintLatencyLine(const std::string& name, const std::vector<double>& values
 }
 
 void PrintReport(const StressOptions& options, const StressMetrics& metrics, const StressDurations& durations,
-                 const std::optional<chat::ServerConfig>& config) {
+                 const std::optional<chat::ServerConfig>& config, int actual_port) {
     const int64_t expected_messages = static_cast<int64_t>(options.pairs) * options.messages_per_pair;
     const LatencySamples samples = metrics.SnapshotSamples();
     const double message_duration_seconds = durations.message_duration_ms / 1000.0;
@@ -1396,7 +1396,8 @@ void PrintReport(const StressOptions& options, const StressMetrics& metrics, con
     std::cout << "\nBusiness stress test report\n"
               << "  backend=" << BackendName(options.backend) << "\n"
               << "  run_id=" << options.run_id << "\n"
-              << "  password_hasher=" << PasswordHasherName(options.password_hasher) << "\n";
+              << "  password_hasher=" << PasswordHasherName(options.password_hasher) << "\n"
+              << "  actual_port=" << actual_port << "\n";
     if (options.password_hasher == PasswordHasherMode::kFast) {
         std::cout << "  login_latency_note=fast hasher does not include production bcrypt cost\n";
     }
@@ -1407,8 +1408,15 @@ void PrintReport(const StressOptions& options, const StressMetrics& metrics, con
                   << "\n"
                   << "  redis_enabled=" << (config->redis.enabled ? "true" : "false") << "\n";
         if (config->redis.enabled) {
+            const std::string suffix = ":" + options.run_id;
+            std::string configured_prefix = config->redis.key_prefix;
+            if (configured_prefix.size() > suffix.size() &&
+                configured_prefix.compare(configured_prefix.size() - suffix.size(), suffix.size(), suffix) == 0) {
+                configured_prefix.resize(configured_prefix.size() - suffix.size());
+            }
             std::cout << "  redis=" << config->redis.host << ":" << config->redis.port << "/" << config->redis.database
                       << "\n"
+                      << "  redis_key_prefix_config=" << configured_prefix << "\n"
                       << "  redis_key_prefix_effective=" << config->redis.key_prefix << "\n";
         }
     }
@@ -1699,7 +1707,7 @@ int RunStress(const StressOptions& options) {
         real_config = LoadRealConfig(options, &metrics);
         if (!real_config.has_value()) {
             StressDurations durations;
-            PrintReport(options, metrics, durations, std::nullopt);
+            PrintReport(options, metrics, durations, std::nullopt, 0);
             std::cout << "  status=FAIL\n";
             return 1;
         }
@@ -1709,7 +1717,7 @@ int RunStress(const StressOptions& options) {
     }
     if (!bundle) {
         StressDurations durations;
-        PrintReport(options, metrics, durations, real_config);
+        PrintReport(options, metrics, durations, real_config, 0);
         std::cout << "  status=FAIL\n";
         return 1;
     }
@@ -1720,7 +1728,7 @@ int RunStress(const StressOptions& options) {
         ++metrics.server_errors;
         metrics.AddError("server_errors", readiness_error);
         bundle->StopAndJoin();
-        PrintReport(options, metrics, durations, real_config);
+        PrintReport(options, metrics, durations, real_config, bundle ? bundle->actual_port : 0);
         return 1;
     }
 
@@ -1741,7 +1749,7 @@ int RunStress(const StressOptions& options) {
         metrics.AddError("server_errors", "server.start returned false");
     }
 
-    PrintReport(options, metrics, durations, real_config);
+    PrintReport(options, metrics, durations, real_config, bundle ? bundle->actual_port : 0);
     if (!Passed(options, metrics)) {
         std::cout << "  status=FAIL\n";
         return 1;
