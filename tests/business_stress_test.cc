@@ -604,6 +604,11 @@ struct LatencySamples {
     std::vector<double> ack_ms;
 };
 
+struct StressDurations {
+    double login_duration_ms = 0.0;
+    double message_duration_ms = 0.0;
+};
+
 class StressMetrics {
    public:
     void AddLoginLatency(double ms) { AddSample(&LatencySamples::login_ms, ms); }
@@ -629,10 +634,16 @@ class StressMetrics {
     }
 
     int64_t ErrorCount() const {
-        return connect_errors.load() + login_errors.load() + send_errors.load() + push_errors.load() +
-               ack_errors.load() + protocol_errors.load() + server_errors.load();
+        return config_errors.load() + prepare_errors.load() + mysql_init_errors.load() + redis_init_errors.load() +
+               connect_errors.load() + login_errors.load() + send_errors.load() + lost_pushes.load() +
+               duplicate_pushes.load() + push_validation_errors.load() + ack_errors.load() + protocol_errors.load() +
+               server_errors.load();
     }
 
+    std::atomic<int64_t> config_errors{0};
+    std::atomic<int64_t> prepare_errors{0};
+    std::atomic<int64_t> mysql_init_errors{0};
+    std::atomic<int64_t> redis_init_errors{0};
     std::atomic<int64_t> login_success{0};
     std::atomic<int64_t> login_errors{0};
     std::atomic<int64_t> send_success{0};
@@ -641,7 +652,6 @@ class StressMetrics {
     std::atomic<int64_t> lost_pushes{0};
     std::atomic<int64_t> duplicate_pushes{0};
     std::atomic<int64_t> push_validation_errors{0};
-    std::atomic<int64_t> push_errors{0};
     std::atomic<int64_t> ack_success{0};
     std::atomic<int64_t> ack_errors{0};
     std::atomic<int64_t> protocol_errors{0};
@@ -1146,10 +1156,7 @@ void RecordSendError(StressMetrics* metrics, const std::string& detail) {
     metrics->AddError("send_errors", detail);
 }
 
-void RecordPushError(StressMetrics* metrics, const std::string& detail) {
-    ++metrics->push_errors;
-    metrics->AddError("push_errors", detail);
-}
+void RecordPushError(StressMetrics* metrics, const std::string& detail) { metrics->AddError("push", detail); }
 
 void RecordAckError(StressMetrics* metrics, const std::string& detail) {
     ++metrics->ack_errors;
@@ -1307,17 +1314,40 @@ void PrintLatencyLine(const std::string& name, const std::vector<double>& values
               << name << "_p95_ms=" << Percentile(values, 95.0) << "\n";
 }
 
-void PrintReport(const StressOptions& options, const StressMetrics& metrics, double total_duration_ms) {
+void PrintReport(const StressOptions& options, const StressMetrics& metrics, const StressDurations& durations,
+                 const std::optional<chat::ServerConfig>& config) {
     const int64_t expected_messages = static_cast<int64_t>(options.pairs) * options.messages_per_pair;
     const LatencySamples samples = metrics.SnapshotSamples();
-    const double duration_seconds = total_duration_ms / 1000.0;
+    const double message_duration_seconds = durations.message_duration_ms / 1000.0;
     const double messages_per_second =
-        duration_seconds > 0.0 ? static_cast<double>(metrics.send_success.load()) / duration_seconds : 0.0;
+        message_duration_seconds > 0.0 ? static_cast<double>(expected_messages) / message_duration_seconds : 0.0;
 
     std::cout << "\nBusiness stress test report\n"
-              << "  pairs=" << options.pairs << " messages_per_pair=" << options.messages_per_pair
+              << "  backend=" << BackendName(options.backend) << "\n"
+              << "  run_id=" << options.run_id << "\n"
+              << "  password_hasher=" << PasswordHasherName(options.password_hasher) << "\n";
+    if (options.password_hasher == PasswordHasherMode::kFast) {
+        std::cout << "  login_latency_note=fast hasher does not include production bcrypt cost\n";
+    }
+    if (config.has_value()) {
+        std::cout << "  config_server_port_ignored=" << config->server.listen_port << "\n"
+                  << "  mysql=" << config->mysql.host << ":" << config->mysql.port << "/" << config->mysql.database
+                  << " pool=" << config->mysql_pool.min_connections << ".." << config->mysql_pool.max_connections
+                  << "\n"
+                  << "  redis_enabled=" << (config->redis.enabled ? "true" : "false") << "\n";
+        if (config->redis.enabled) {
+            std::cout << "  redis=" << config->redis.host << ":" << config->redis.port << "/" << config->redis.database
+                      << "\n"
+                      << "  redis_key_prefix_effective=" << config->redis.key_prefix << "\n";
+        }
+    }
+    std::cout << "  pairs=" << options.pairs << " messages_per_pair=" << options.messages_per_pair
               << " client_workers=" << options.client_workers << "\n"
               << "  expected_messages=" << expected_messages << "\n"
+              << "  config_errors=" << metrics.config_errors.load()
+              << " prepare_errors=" << metrics.prepare_errors.load()
+              << " mysql_init_errors=" << metrics.mysql_init_errors.load()
+              << " redis_init_errors=" << metrics.redis_init_errors.load() << "\n"
               << "  login_success=" << metrics.login_success.load() << " login_errors=" << metrics.login_errors.load()
               << "\n"
               << "  send_success=" << metrics.send_success.load() << " send_errors=" << metrics.send_errors.load()
@@ -1333,7 +1363,8 @@ void PrintReport(const StressOptions& options, const StressMetrics& metrics, dou
     PrintLatencyLine("send", samples.send_ms);
     PrintLatencyLine("push", samples.push_ms);
     PrintLatencyLine("ack", samples.ack_ms);
-    std::cout << "  total_duration_ms=" << std::fixed << std::setprecision(2) << total_duration_ms << "\n"
+    std::cout << "  login_duration_ms=" << std::fixed << std::setprecision(2) << durations.login_duration_ms << "\n"
+              << "  message_duration_ms=" << durations.message_duration_ms << "\n"
               << "  messages_per_second=" << messages_per_second << "\n";
 
     const std::vector<std::string> errors = metrics.SnapshotErrors();
@@ -1347,9 +1378,11 @@ void PrintReport(const StressOptions& options, const StressMetrics& metrics, dou
 
 bool Passed(const StressOptions& options, const StressMetrics& metrics) {
     const int64_t expected_messages = static_cast<int64_t>(options.pairs) * options.messages_per_pair;
-    return metrics.send_success.load() == expected_messages && metrics.pushes_received.load() == expected_messages &&
-           metrics.ack_success.load() == expected_messages && metrics.lost_pushes.load() == 0 &&
-           metrics.duplicate_pushes.load() == 0 && metrics.ErrorCount() == 0;
+    const int64_t expected_logins = static_cast<int64_t>(options.pairs) * 2;
+    return metrics.login_success.load() == expected_logins && metrics.send_success.load() == expected_messages &&
+           metrics.pushes_received.load() == expected_messages && metrics.ack_success.load() == expected_messages &&
+           metrics.lost_pushes.load() == 0 && metrics.duplicate_pushes.load() == 0 &&
+           metrics.push_validation_errors.load() == 0 && metrics.ErrorCount() == 0;
 }
 
 int RunStress(const StressOptions& options) {
@@ -1369,6 +1402,7 @@ int RunStress(const StressOptions& options) {
     TcpServer server(kServerIp, static_cast<uint16_t>(options.port), handler, timeout_options);
 
     StressMetrics metrics;
+    StressDurations durations;
     std::atomic<bool> server_done{false};
     bool server_start_result = false;
     std::thread server_thread([&]() {
@@ -1385,13 +1419,13 @@ int RunStress(const StressOptions& options) {
         if (server_thread.joinable()) {
             server_thread.join();
         }
-        PrintReport(options, metrics, 0.0);
+        PrintReport(options, metrics, durations, std::nullopt);
         return 1;
     }
 
     const auto started = Clock::now();
     RunClientWorkers(actual_port, options, &metrics);
-    const double total_duration_ms = ElapsedMs(started, Clock::now());
+    durations.message_duration_ms = ElapsedMs(started, Clock::now());
 
     server.stop();
     if (server_thread.joinable()) {
@@ -1402,7 +1436,7 @@ int RunStress(const StressOptions& options) {
         metrics.AddError("server_errors", "server.start returned false");
     }
 
-    PrintReport(options, metrics, total_duration_ms);
+    PrintReport(options, metrics, durations, std::nullopt);
     if (!Passed(options, metrics)) {
         std::cout << "  status=FAIL\n";
         return 1;
