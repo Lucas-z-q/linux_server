@@ -14,6 +14,7 @@ This is a real-dependency integration stress test. It does not replace the curre
 - Create Redis runtime components only when `redis.enabled=true`.
 - Keep `--port` as the stress harness listen-port override, defaulting to `0`.
 - Keep user/database setup outside timed message measurement.
+- Keep login timing separate from message throughput timing.
 - Print enough dependency and port information to interpret results.
 - Keep the target manually run and outside default `ctest`.
 
@@ -120,7 +121,7 @@ actual_port=43127
 config_server_port_ignored=8080
 ```
 
-This avoids changing production `ConfigLoader` validation, where `server.listen_port` remains `1..65535`.
+Other server config fields may still be loaded when needed, but `listen_ip` and `listen_port` are controlled by stress options. This avoids changing production `ConfigLoader` validation, where `server.listen_port` remains `1..65535`.
 
 ## Architecture
 
@@ -147,13 +148,15 @@ StartAndWaitReady:
   validate that a client can connect
 
 StopAndJoin:
-  stop RedisPushStream if present
-  call server.stop()
+  request server shutdown by calling server.stop()
+  rely on TcpServer pre-shutdown hook to stop and join RedisPushStream if present
+  call RedisPushStream::Stop() again as an idempotent fallback if present
   join server_thread
+  ensure no background callback can enter TcpServer, ChatService, SessionManager, repositories, or pools
   then allow dependencies to destruct in reverse ownership order
 ```
 
-The server thread must never outlive the objects referenced by the handler, services, repositories, Redis stream callbacks, or pools.
+The server thread and any Redis stream worker must never outlive the objects referenced by the handler, services, repositories, Redis stream callbacks, or pools.
 
 ## Backend Factories
 
@@ -200,6 +203,21 @@ redis.enabled=true:
 
 If Redis is enabled and initialization fails, the run exits before prepare or measure and reports `redis_init_errors`.
 
+The effective Redis key prefix should include the run ID:
+
+```text
+effective_redis_key_prefix = config.redis.key_prefix + ":" + run_id
+```
+
+The report prints both values:
+
+```text
+redis_key_prefix_config=stress
+redis_key_prefix_effective=stress:<run_id>
+```
+
+This prevents sessions, presence, rate limits, message deduplication, and push stream state from leaking across stress runs when Redis cleanup is not part of the first version.
+
 ## Password Hasher Modes
 
 `real` backend password hashing is parameterized:
@@ -221,11 +239,11 @@ The default is `fast` because the main purpose of this stress test is the messag
 
 ## Data Flow
 
-The run has three phases.
+The run has four phases.
 
 ### Prepare
 
-Generate a unique `run_id`, or use the value from `--run-id`, then create users through the real repository path when `--backend=real` and `--prepare-users=true`.
+Generate a unique `run_id`, or use the value from `--run-id`, then create users through the business path when `--backend=real` and `--prepare-users=true`.
 
 Usernames:
 
@@ -246,35 +264,40 @@ Prepare failures are reported as `prepare_errors` and stop the run before measur
 
 When `--prepare-users=false`, the binary skips user creation and assumes the selected `run_id` users already exist with password hashes compatible with `--password-hasher`.
 
+Prepare should use `UserService` or an equivalent prepare helper that shares the selected password hasher and preserves cache consistency assumptions. It must not write arbitrary repository rows with a hash format that `UserService::login` cannot verify. If `--prepare-users=true` and a generated username already exists, the first version reports `prepare_errors` and stops instead of reusing existing users.
+
+### Login
+
+Open Alice and Bob TCP connections and log both users in. Login latency is measured and reported separately as `login_p50_ms`, `login_p95_ms`, and `login_duration_ms`. Login time must not be included in message throughput.
+
 ### Warmup
 
 `--warmup-messages=N` sends optional messages before measurement. The default is `0`. Warmup results are validated but excluded from throughput and latency percentiles.
 
-### Measure
+### Message Measure
 
 Measure only:
 
 ```text
-login
 send_message
 message_push
 message_ack
 ```
 
-Registration, schema creation, database cleanup, and Redis cleanup are outside the timed measure phase.
+Registration, schema creation, database cleanup, Redis cleanup, and login are outside the timed message measure phase.
 
 ## Data Isolation
 
 MySQL isolation in the first version is by unique `run_id` data. The binary does not delete MySQL rows. Users should run against a dedicated stress database such as `chat_stress`.
 
-Redis isolation should use a dedicated Redis database or key prefix in config:
+Redis isolation should use a dedicated Redis database or base key prefix in config:
 
 ```text
 redis.database=15
 redis.key_prefix=stress
 ```
 
-The report prints Redis database and key prefix when Redis is enabled. This makes accidental use of a development Redis namespace visible.
+The report prints Redis database, configured base key prefix, and effective run-scoped key prefix when Redis is enabled. This makes accidental use of a development Redis namespace visible and reduces cross-run contamination.
 
 ## Metrics and Report
 
@@ -304,8 +327,11 @@ Business stress test report
   backend=real
   actual_port=43127 config_server_port_ignored=8080
   mysql=127.0.0.1:3306/chat_stress pool=4..16
-  redis_enabled=true redis=127.0.0.1:6379/15 key_prefix=stress
+  redis_enabled=true redis=127.0.0.1:6379/15
+  redis_key_prefix_config=stress
+  redis_key_prefix_effective=stress:stress_20260621_...
   password_hasher=fast
+  login_latency_note=fast hasher does not include production bcrypt cost
   run_id=stress_20260621_...
   pairs=100 messages_per_pair=20 client_workers=8
   expected_messages=2000
@@ -315,20 +341,26 @@ Latency and throughput remain:
 
 ```text
 login_p50_ms / login_p95_ms
+login_duration_ms
 send_p50_ms / send_p95_ms
 push_p50_ms / push_p95_ms
 ack_p50_ms / ack_p95_ms
-total_duration_ms
+message_duration_ms
 messages_per_second
 ```
 
-Only successful operations contribute latency samples. Failures are counted separately, and the first several error messages are printed.
+Only successful operations contribute latency samples. Failures are counted separately, and the first several error messages are printed. `messages_per_second` is calculated from the message measure phase only:
+
+```text
+messages_per_second = expected_messages / message_duration_seconds
+```
 
 ## Success Criteria
 
 A measured run passes only when:
 
 ```text
+login_success == pairs * 2
 send_success == pairs * messages_per_pair
 push_received == pairs * messages_per_pair
 ack_success == pairs * messages_per_pair
@@ -354,7 +386,7 @@ Runtime errors are counted in the existing categories:
 - `connect_errors`: client socket creation, connect, or timeout failures.
 - `login_errors`: login response failure, seq mismatch, or missing token.
 - `send_errors`: send response failure or invalid send response fields.
-- `push_errors`: missing, duplicate, or invalid push.
+- `lost_push`, `duplicate_push`, and `push_validation_errors`: missing, duplicate, or invalid push.
 - `ack_errors`: ack response failure or invalid ack response fields.
 - `protocol_errors`: JSON parse failure or unmatched response.
 
@@ -365,6 +397,8 @@ The binary exits non-zero for any initialization error or failed success criteri
 Keep `business_stress_test` as a normal build target, not a CTest target.
 
 Real backend will need additional sources and libraries already used by the main server, including database, Redis, cache, stream, config, and app runtime sources. The implementation plan should update `CMakeLists.txt` without registering `add_test` for this target.
+
+If real-backend sources introduce build portability issues on machines without optional dependencies, the implementation may add a narrow CMake option such as `BUILD_REAL_STRESS_BACKEND`. If the main `server` target already requires those dependencies in the local project, no extra option is required for the first version.
 
 ## Verification
 
