@@ -949,6 +949,16 @@ class StressClientConnection {
     std::mutex close_mutex_;
 };
 
+struct StressPairSession {
+    StressUserPair pair;
+    StressClientConnection alice;
+    StressClientConnection bob;
+    chat::SeqId alice_seq = 1;
+    chat::SeqId bob_seq = 1;
+    std::string alice_token;
+    std::string bob_token;
+};
+
 bool ExpectEnvelope(const nlohmann::json& value, const std::string& msg_type, chat::SeqId seq, chat::ErrorCode code,
                     std::string* error) {
     if (!value.is_object() || !value.contains("msg_type") || !value.contains("seq") || !value.contains("code") ||
@@ -1187,66 +1197,74 @@ bool LoginClient(StressClientConnection* client, const std::string& username, ch
     return true;
 }
 
-void RunPair(int pair_index, int port, const StressOptions& options, StressMetrics* metrics,
-             std::mutex* connect_mutex) {
-    const StressUserPair pair{pair_index, StressUsername(options.run_id, "alice", pair_index),
-                              StressUsername(options.run_id, "bob", pair_index), AliceUserId(pair_index),
-                              BobUserId(pair_index)};
-    StressClientConnection alice;
-    StressClientConnection bob;
+std::unique_ptr<StressPairSession> LoginPair(const StressUserPair& pair, int port, const StressOptions& options,
+                                             StressMetrics* metrics, std::mutex* connect_mutex) {
+    auto session = std::make_unique<StressPairSession>();
+    session->pair = pair;
+
     std::string error;
     {
         std::lock_guard<std::mutex> lock(*connect_mutex);
-        if (!alice.Connect(kServerIp, port, options.connect_timeout_ms, &error)) {
-            RecordConnectError(metrics, "alice_" + std::to_string(pair_index) + ": " + error);
-            return;
+        if (!session->alice.Connect(kServerIp, port, options.connect_timeout_ms, &error)) {
+            ++metrics->connect_errors;
+            metrics->AddError("connect_errors", "pair " + std::to_string(pair.pair_index) + " alice: " + error);
+            return nullptr;
         }
-        if (!bob.Connect(kServerIp, port, options.connect_timeout_ms, &error)) {
-            RecordConnectError(metrics, "bob_" + std::to_string(pair_index) + ": " + error);
-            return;
+        if (!session->bob.Connect(kServerIp, port, options.connect_timeout_ms, &error)) {
+            ++metrics->connect_errors;
+            metrics->AddError("connect_errors", "pair " + std::to_string(pair.pair_index) + " bob: " + error);
+            return nullptr;
         }
     }
 
-    chat::SeqId alice_seq = 1;
-    chat::SeqId bob_seq = 1;
-    std::string alice_token;
-    std::string bob_token;
-    if (!LoginClient(&alice, pair.alice_username, pair.alice_id, &alice_seq, options, metrics, &alice_token)) {
-        return;
+    if (!LoginClient(&session->alice, pair.alice_username, pair.alice_id, &session->alice_seq, options, metrics,
+                     &session->alice_token)) {
+        return nullptr;
     }
-    if (!LoginClient(&bob, pair.bob_username, pair.bob_id, &bob_seq, options, metrics, &bob_token)) {
-        return;
+    if (!LoginClient(&session->bob, pair.bob_username, pair.bob_id, &session->bob_seq, options, metrics,
+                     &session->bob_token)) {
+        return nullptr;
     }
+    return session;
+}
 
+void RunMessagesForPair(StressPairSession* session, const StressOptions& options, StressMetrics* metrics,
+                        const std::string& phase, int message_count, bool record_success_metrics) {
     std::unordered_set<std::string> seen_pushes;
-    for (int message_index = 0; message_index < options.messages_per_pair; ++message_index) {
+    for (int message_index = 0; message_index < message_count; ++message_index) {
+        const int pair_index = session->pair.pair_index;
         const std::string content = MakeContent(pair_index, message_index, options.content_size);
+        const std::string client_msg_id = MakeClientMessageId(options.run_id, phase, pair_index, message_index);
 
-        nlohmann::json send_data;
-        send_data["client_msg_id"] = MakeClientMessageId(options.run_id, "measure", pair.pair_index, message_index);
-        send_data["to_user_id"] = pair.bob_id;
-        send_data["content"] = content;
+        nlohmann::json data;
+        data["to_user_id"] = session->pair.bob_id;
+        data["client_msg_id"] = client_msg_id;
+        data["content"] = content;
 
         nlohmann::json send_response;
+        std::string error;
+        const chat::SeqId send_seq = session->alice_seq++;
+        const auto send_started = Clock::now();
+        if (!session->alice.SendRequestAndWait("send_message", send_seq, session->alice_token, data,
+                                               options.request_timeout_ms, &send_response, &error)) {
+            RecordSendError(metrics, "pair " + std::to_string(pair_index) + ": " + error);
+            return;
+        }
+
         std::string message_id;
         std::string conversation_id;
-        const chat::SeqId send_seq = alice_seq++;
-        const auto send_started = Clock::now();
-        if (!alice.SendRequestAndWait("send_message", send_seq, alice_token, send_data, options.request_timeout_ms,
-                                      &send_response, &error)) {
+        if (!ValidateSendResponse(send_response, send_seq, session->pair.bob_id, &message_id, &conversation_id,
+                                  &error)) {
             RecordSendError(metrics, "pair " + std::to_string(pair_index) + ": " + error);
             return;
         }
-        if (!ValidateSendResponse(send_response, send_seq, pair.bob_id, &message_id, &conversation_id, &error)) {
-            RecordSendError(metrics, "pair " + std::to_string(pair_index) + ": " + error);
-            return;
+        if (record_success_metrics) {
+            ++metrics->send_success;
+            metrics->AddSendLatency(ElapsedMs(send_started, Clock::now()));
         }
-
-        ++metrics->send_success;
-        metrics->AddSendLatency(ElapsedMs(send_started, Clock::now()));
 
         nlohmann::json push;
-        if (!bob.WaitForPush(options.push_timeout_ms, &push, &error)) {
+        if (!session->bob.WaitForPush(options.push_timeout_ms, &push, &error)) {
             ++metrics->lost_pushes;
             RecordPushError(metrics, "pair " + std::to_string(pair_index) + ": " + error);
             return;
@@ -1256,22 +1274,25 @@ void RunPair(int pair_index, int port, const StressOptions& options, StressMetri
             RecordPushError(metrics, "pair " + std::to_string(pair_index) + ": duplicate push");
             return;
         }
-        if (!ValidatePush(push, message_id, conversation_id, pair.alice_id, pair.bob_id, content, &error)) {
+        if (!ValidatePush(push, message_id, conversation_id, session->pair.alice_id, session->pair.bob_id, content,
+                          &error)) {
             ++metrics->push_validation_errors;
             RecordPushError(metrics, "pair " + std::to_string(pair_index) + ": " + error);
             return;
         }
         seen_pushes.insert(message_id);
-        ++metrics->pushes_received;
-        metrics->AddPushLatency(ElapsedMs(send_started, Clock::now()));
+        if (record_success_metrics) {
+            ++metrics->pushes_received;
+            metrics->AddPushLatency(ElapsedMs(send_started, Clock::now()));
+        }
 
         nlohmann::json ack_data;
         ack_data["message_id"] = message_id;
         nlohmann::json ack_response;
-        const chat::SeqId ack_seq = bob_seq++;
+        const chat::SeqId ack_seq = session->bob_seq++;
         const auto ack_started = Clock::now();
-        if (!bob.SendRequestAndWait("message_ack", ack_seq, bob_token, ack_data, options.request_timeout_ms,
-                                    &ack_response, &error)) {
+        if (!session->bob.SendRequestAndWait("message_ack", ack_seq, session->bob_token, ack_data,
+                                             options.request_timeout_ms, &ack_response, &error)) {
             RecordAckError(metrics, "pair " + std::to_string(pair_index) + ": " + error);
             return;
         }
@@ -1279,12 +1300,17 @@ void RunPair(int pair_index, int port, const StressOptions& options, StressMetri
             RecordAckError(metrics, "pair " + std::to_string(pair_index) + ": " + error);
             return;
         }
-        ++metrics->ack_success;
-        metrics->AddAckLatency(ElapsedMs(ack_started, Clock::now()));
+        if (record_success_metrics) {
+            ++metrics->ack_success;
+            metrics->AddAckLatency(ElapsedMs(ack_started, Clock::now()));
+        }
     }
 }
 
-void RunClientWorkers(int port, const StressOptions& options, StressMetrics* metrics) {
+std::vector<std::unique_ptr<StressPairSession>> LoginClientWorkers(int port, const StressOptions& options,
+                                                                   const std::vector<StressUserPair>& pairs,
+                                                                   StressMetrics* metrics) {
+    std::vector<std::unique_ptr<StressPairSession>> sessions(pairs.size());
     std::atomic<int> next_pair{0};
     std::mutex connect_mutex;
     const int worker_count = std::min(options.client_workers, options.pairs);
@@ -1298,9 +1324,44 @@ void RunClientWorkers(int port, const StressOptions& options, StressMetrics* met
                     break;
                 }
                 if (options.verbose) {
-                    std::cerr << "[worker " << worker_index << "] pair " << pair_index << "\n";
+                    std::cerr << "[login worker " << worker_index << "] pair " << pair_index << "\n";
                 }
-                RunPair(pair_index, port, options, metrics, &connect_mutex);
+                sessions[static_cast<std::size_t>(pair_index)] =
+                    LoginPair(pairs[static_cast<std::size_t>(pair_index)], port, options, metrics, &connect_mutex);
+            }
+        });
+    }
+    for (std::thread& worker : workers) {
+        worker.join();
+    }
+    return sessions;
+}
+
+void RunMessageWorkers(std::vector<std::unique_ptr<StressPairSession>>* sessions, const StressOptions& options,
+                       StressMetrics* metrics, const std::string& phase, int message_count,
+                       bool record_success_metrics) {
+    if (message_count == 0) {
+        return;
+    }
+    std::atomic<int> next_pair{0};
+    const int worker_count = std::min(options.client_workers, options.pairs);
+    std::vector<std::thread> workers;
+    workers.reserve(static_cast<std::size_t>(worker_count));
+    for (int worker_index = 0; worker_index < worker_count; ++worker_index) {
+        workers.emplace_back([&, worker_index]() {
+            while (true) {
+                const int pair_index = next_pair.fetch_add(1);
+                if (pair_index >= options.pairs) {
+                    break;
+                }
+                StressPairSession* session = (*sessions)[static_cast<std::size_t>(pair_index)].get();
+                if (session == nullptr) {
+                    continue;
+                }
+                if (options.verbose) {
+                    std::cerr << "[" << phase << " worker " << worker_index << "] pair " << pair_index << "\n";
+                }
+                RunMessagesForPair(session, options, metrics, phase, message_count, record_success_metrics);
             }
         });
     }
@@ -1423,9 +1484,16 @@ int RunStress(const StressOptions& options) {
         return 1;
     }
 
-    const auto started = Clock::now();
-    RunClientWorkers(actual_port, options, &metrics);
-    durations.message_duration_ms = ElapsedMs(started, Clock::now());
+    const auto login_started = Clock::now();
+    std::vector<std::unique_ptr<StressPairSession>> sessions =
+        LoginClientWorkers(actual_port, options, user_pairs, &metrics);
+    durations.login_duration_ms = ElapsedMs(login_started, Clock::now());
+
+    RunMessageWorkers(&sessions, options, &metrics, "warmup", options.warmup_messages, false);
+
+    const auto message_started = Clock::now();
+    RunMessageWorkers(&sessions, options, &metrics, "measure", options.messages_per_pair, true);
+    durations.message_duration_ms = ElapsedMs(message_started, Clock::now());
 
     server.stop();
     if (server_thread.joinable()) {
