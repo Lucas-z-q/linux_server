@@ -15,10 +15,12 @@
 #include <cstdint>
 #include <cstdlib>
 #include <cstring>
+#include <ctime>
 #include <deque>
 #include <iomanip>
 #include <iostream>
 #include <limits>
+#include <memory>
 #include <mutex>
 #include <optional>
 #include <sstream>
@@ -27,11 +29,13 @@
 #include <unordered_map>
 #include <unordered_set>
 #include <utility>
+#include <variant>
 #include <vector>
 
 #include "codec/packet_codec.h"
 #include "common/error_code.h"
 #include "common/types.h"
+#include "config/server_config.h"
 #include "db/message_repository.h"
 #include "db/user_repository.h"
 #include "handler/message_handler.h"
@@ -53,15 +57,39 @@ constexpr const char* kPassword = "password123";
 constexpr chat::UserId kFirstStressUserId = 100000;
 constexpr int kMaxStoredErrors = 12;
 
+enum class StressBackend {
+    kMemory,
+    kReal,
+};
+
+enum class PasswordHasherMode {
+    kFast,
+    kBcrypt,
+};
+
+struct StressUserPair {
+    int pair_index = 0;
+    std::string alice_username;
+    std::string bob_username;
+    chat::UserId alice_id = 0;
+    chat::UserId bob_id = 0;
+};
+
 struct StressOptions {
+    StressBackend backend = StressBackend::kMemory;
+    PasswordHasherMode password_hasher = PasswordHasherMode::kFast;
+    std::string config_path;
+    std::string run_id;
     int pairs = 50;
     int messages_per_pair = 10;
+    int warmup_messages = 0;
     int client_workers = 4;
     int port = 0;
     int connect_timeout_ms = 1000;
     int request_timeout_ms = 3000;
     int push_timeout_ms = 3000;
     int content_size = 32;
+    bool prepare_users = true;
     bool verbose = false;
 };
 
@@ -71,8 +99,6 @@ struct ParsedOptions {
     StressOptions options;
     std::string error;
 };
-
-std::string UserName(const std::string& prefix, int pair_index) { return prefix + "_" + std::to_string(pair_index); }
 
 chat::UserId AliceUserId(int pair_index) { return kFirstStressUserId + static_cast<chat::UserId>(pair_index) * 2; }
 
@@ -86,10 +112,6 @@ std::string MakeContent(int pair_index, int message_index, int content_size) {
         content.resize(static_cast<std::size_t>(content_size));
     }
     return content;
-}
-
-std::string MakeClientMessageId(int pair_index, int message_index) {
-    return "cmsg_" + std::to_string(pair_index) + "_" + std::to_string(message_index);
 }
 
 std::string PairKey(chat::UserId user_a, chat::UserId user_b) {
@@ -108,8 +130,107 @@ chat::Timestamp NowSeconds() { return std::chrono::system_clock::to_time_t(std::
 
 std::string EncodeFakePasswordHash(const std::string& password) { return "fast$" + password; }
 
+std::string BackendName(StressBackend backend) {
+    switch (backend) {
+        case StressBackend::kMemory:
+            return "memory";
+        case StressBackend::kReal:
+            return "real";
+    }
+    return "memory";
+}
+
+std::string PasswordHasherName(PasswordHasherMode mode) {
+    switch (mode) {
+        case PasswordHasherMode::kFast:
+            return "fast";
+        case PasswordHasherMode::kBcrypt:
+            return "bcrypt";
+    }
+    return "fast";
+}
+
+bool ParseBackend(const std::string& value, StressBackend* out) {
+    if (value == "memory") {
+        *out = StressBackend::kMemory;
+        return true;
+    }
+    if (value == "real") {
+        *out = StressBackend::kReal;
+        return true;
+    }
+    return false;
+}
+
+bool ParsePasswordHasherMode(const std::string& value, PasswordHasherMode* out) {
+    if (value == "fast") {
+        *out = PasswordHasherMode::kFast;
+        return true;
+    }
+    if (value == "bcrypt") {
+        *out = PasswordHasherMode::kBcrypt;
+        return true;
+    }
+    return false;
+}
+
+bool IsValidRunId(const std::string& run_id) {
+    if (run_id.empty() || run_id.size() > 64) {
+        return false;
+    }
+    for (char ch : run_id) {
+        const bool ok =
+            (ch >= 'a' && ch <= 'z') || (ch >= 'A' && ch <= 'Z') || (ch >= '0' && ch <= '9') || ch == '-' || ch == '_';
+        if (!ok) {
+            return false;
+        }
+    }
+    return true;
+}
+
+std::string GenerateRunId() {
+    const auto now = std::chrono::system_clock::now();
+    const std::time_t now_time = std::chrono::system_clock::to_time_t(now);
+    std::tm local_time;
+    localtime_r(&now_time, &local_time);
+
+    const auto micros = std::chrono::duration_cast<std::chrono::microseconds>(now.time_since_epoch()).count();
+    std::ostringstream out;
+    out << std::put_time(&local_time, "%Y%m%d_%H%M%S") << "_" << (micros % 1000000);
+    return out.str();
+}
+
+std::string StressUsername(const std::string& run_id, const std::string& role, int pair_index) {
+    const std::string run_suffix = run_id.size() > 16 ? run_id.substr(run_id.size() - 16) : run_id;
+    const char role_code = role.empty() ? 'u' : role[0];
+    std::ostringstream out;
+    out << "st_" << run_suffix << "_" << role_code << "_" << std::setw(6) << std::setfill('0') << pair_index;
+    return out.str();
+}
+
+std::vector<StressUserPair> BuildMemoryUserPairs(const std::string& run_id, int pairs) {
+    std::vector<StressUserPair> result;
+    result.reserve(static_cast<std::size_t>(pairs));
+    for (int i = 0; i < pairs; ++i) {
+        result.push_back(StressUserPair{i, StressUsername(run_id, "alice", i), StressUsername(run_id, "bob", i),
+                                        AliceUserId(i), BobUserId(i)});
+    }
+    return result;
+}
+
+std::string MakeClientMessageId(const std::string& run_id, const std::string& phase, int pair_index,
+                                int message_index) {
+    return run_id + "_" + phase + "_" + std::to_string(pair_index) + "_" + std::to_string(message_index);
+}
+
 void PrintUsage(std::ostream& output) {
     output << "Usage: business_stress_test [options]\n"
+           << "  --backend=memory|real\n"
+           << "  --config=PATH\n"
+           << "  --password-hasher=fast|bcrypt\n"
+           << "  --run-id=VALUE\n"
+           << "  --prepare-users=true|false\n"
+           << "  --warmup-messages=N\n"
            << "  --pairs=N\n"
            << "  --messages-per-pair=N\n"
            << "  --client-workers=N\n"
@@ -173,7 +294,21 @@ ParsedOptions ParseOptions(int argc, char** argv) {
         const std::string value = arg.substr(eq + 1);
 
         bool valid = false;
-        if (name == "pairs") {
+        if (name == "backend") {
+            valid = ParseBackend(value, &parsed.options.backend);
+        } else if (name == "config") {
+            parsed.options.config_path = value;
+            valid = !value.empty();
+        } else if (name == "password-hasher") {
+            valid = ParsePasswordHasherMode(value, &parsed.options.password_hasher);
+        } else if (name == "run-id") {
+            parsed.options.run_id = value;
+            valid = IsValidRunId(value);
+        } else if (name == "prepare-users") {
+            valid = ParseBool(value, &parsed.options.prepare_users);
+        } else if (name == "warmup-messages") {
+            valid = ParseInteger(value, 0, 100000, &parsed.options.warmup_messages);
+        } else if (name == "pairs") {
             valid = ParseInteger(value, 1, 100000, &parsed.options.pairs);
         } else if (name == "messages-per-pair") {
             valid = ParseInteger(value, 1, 100000, &parsed.options.messages_per_pair);
@@ -202,6 +337,22 @@ ParsedOptions ParseOptions(int argc, char** argv) {
         }
     }
 
+    if (parsed.options.backend == StressBackend::kReal && parsed.options.config_path.empty()) {
+        parsed.error = "--config is required when --backend=real";
+        return parsed;
+    }
+    if (!parsed.options.prepare_users && parsed.options.run_id.empty()) {
+        parsed.error = "--run-id is required when --prepare-users=false";
+        return parsed;
+    }
+    if (parsed.options.run_id.empty()) {
+        parsed.options.run_id = GenerateRunId();
+    }
+    if (!IsValidRunId(parsed.options.run_id)) {
+        parsed.error = "invalid --run-id: " + parsed.options.run_id;
+        return parsed;
+    }
+
     parsed.ok = true;
     return parsed;
 }
@@ -224,10 +375,10 @@ class FastPasswordHasher : public chat::IPasswordHasher {
 
 class StressUserRepository : public chat::IUserRepository {
    public:
-    explicit StressUserRepository(int pairs) {
-        for (int i = 0; i < pairs; ++i) {
-            AddUser(AliceUserId(i), UserName("alice", i), UserName("Alice", i));
-            AddUser(BobUserId(i), UserName("bob", i), UserName("Bob", i));
+    explicit StressUserRepository(const std::vector<StressUserPair>& pairs) {
+        for (const StressUserPair& pair : pairs) {
+            AddUser(pair.alice_id, pair.alice_username, pair.alice_username);
+            AddUser(pair.bob_id, pair.bob_username, pair.bob_username);
         }
     }
 
@@ -1031,6 +1182,9 @@ bool LoginClient(StressClientConnection* client, const std::string& username, ch
 
 void RunPair(int pair_index, int port, const StressOptions& options, StressMetrics* metrics,
              std::mutex* connect_mutex) {
+    const StressUserPair pair{pair_index, StressUsername(options.run_id, "alice", pair_index),
+                              StressUsername(options.run_id, "bob", pair_index), AliceUserId(pair_index),
+                              BobUserId(pair_index)};
     StressClientConnection alice;
     StressClientConnection bob;
     std::string error;
@@ -1050,12 +1204,10 @@ void RunPair(int pair_index, int port, const StressOptions& options, StressMetri
     chat::SeqId bob_seq = 1;
     std::string alice_token;
     std::string bob_token;
-    const chat::UserId alice_id = AliceUserId(pair_index);
-    const chat::UserId bob_id = BobUserId(pair_index);
-    if (!LoginClient(&alice, UserName("alice", pair_index), alice_id, &alice_seq, options, metrics, &alice_token)) {
+    if (!LoginClient(&alice, pair.alice_username, pair.alice_id, &alice_seq, options, metrics, &alice_token)) {
         return;
     }
-    if (!LoginClient(&bob, UserName("bob", pair_index), bob_id, &bob_seq, options, metrics, &bob_token)) {
+    if (!LoginClient(&bob, pair.bob_username, pair.bob_id, &bob_seq, options, metrics, &bob_token)) {
         return;
     }
 
@@ -1064,8 +1216,8 @@ void RunPair(int pair_index, int port, const StressOptions& options, StressMetri
         const std::string content = MakeContent(pair_index, message_index, options.content_size);
 
         nlohmann::json send_data;
-        send_data["client_msg_id"] = MakeClientMessageId(pair_index, message_index);
-        send_data["to_user_id"] = bob_id;
+        send_data["client_msg_id"] = MakeClientMessageId(options.run_id, "measure", pair.pair_index, message_index);
+        send_data["to_user_id"] = pair.bob_id;
         send_data["content"] = content;
 
         nlohmann::json send_response;
@@ -1078,7 +1230,7 @@ void RunPair(int pair_index, int port, const StressOptions& options, StressMetri
             RecordSendError(metrics, "pair " + std::to_string(pair_index) + ": " + error);
             return;
         }
-        if (!ValidateSendResponse(send_response, send_seq, bob_id, &message_id, &conversation_id, &error)) {
+        if (!ValidateSendResponse(send_response, send_seq, pair.bob_id, &message_id, &conversation_id, &error)) {
             RecordSendError(metrics, "pair " + std::to_string(pair_index) + ": " + error);
             return;
         }
@@ -1097,7 +1249,7 @@ void RunPair(int pair_index, int port, const StressOptions& options, StressMetri
             RecordPushError(metrics, "pair " + std::to_string(pair_index) + ": duplicate push");
             return;
         }
-        if (!ValidatePush(push, message_id, conversation_id, alice_id, bob_id, content, &error)) {
+        if (!ValidatePush(push, message_id, conversation_id, pair.alice_id, pair.bob_id, content, &error)) {
             ++metrics->push_validation_errors;
             RecordPushError(metrics, "pair " + std::to_string(pair_index) + ": " + error);
             return;
@@ -1201,7 +1353,8 @@ bool Passed(const StressOptions& options, const StressMetrics& metrics) {
 }
 
 int RunStress(const StressOptions& options) {
-    StressUserRepository user_repository(options.pairs);
+    const std::vector<StressUserPair> user_pairs = BuildMemoryUserPairs(options.run_id, options.pairs);
+    StressUserRepository user_repository(user_pairs);
     StressMessageRepository message_repository;
     chat::SessionManager session_manager;
     FastPasswordHasher password_hasher;
