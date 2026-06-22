@@ -4,6 +4,8 @@
 
 本次记录覆盖 `business_stress_test` 的一次在线单聊业务链路压测。压测目标是验证真实 TCP 连接、换行 JSON 分包、消息处理器、登录态绑定、在线消息推送和消息 ACK 是否能在并发客户端下保持业务正确性。
 
+真实 MySQL 后端的业务压力测试和 in-memory benchmark 对比见 [Real Backend 业务压力测试报告](real_backend_stress_report.md)。
+
 测试命令：
 
 ```bash
