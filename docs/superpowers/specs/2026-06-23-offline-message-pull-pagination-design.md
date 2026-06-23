@@ -12,7 +12,8 @@ This is a test-only change. The production protocol, repository behavior, servic
 - Verify five stored messages are returned in send order as `2 + 2 + 1`.
 - Verify `has_more` is `true` for the first two pages and `false` for the final non-empty page.
 - Verify each subsequent page uses the previous page's last `message_id` as `since_message_id`.
-- Verify ACK affects exactly the messages returned on the current page.
+- Verify each page is ACKed with one batch `message_ids` request.
+- Verify ACK affects exactly the messages returned on the current page and echoes the ACKed ids.
 - Verify the final pull after all ACKs returns an empty `messages` array with `has_more=false`.
 
 ## Non Goals
@@ -31,6 +32,8 @@ The first pull will represent `since_message_id=0` from the requested scenario b
 
 The test will reuse the existing `auth_test_server` process, users, socket helpers, packet framing, and JSON envelope assertions. It will not introduce a new binary or new CMake target.
 
+`auth_test_server` uses `FakeMessageRepository` and `InMemorySessionStore`. This test proves the TCP protocol, handler dispatch, `ChatService` pagination call, fake repository cursor behavior, ACK state transition, and response shapes. It does not prove the real MySQL pagination SQL; that can be covered separately in repository integration tests.
+
 ## Test Flow
 
 ```text
@@ -45,21 +48,21 @@ Page 1:
   Bob sends pull_offline_messages with limit=2 and no since_message_id.
   Response contains message 1 and message 2 in order.
   has_more is true.
-  Bob ACKs both message ids.
+  Bob ACKs both message ids in one message_ids array.
   affected_rows is 2.
 
 Page 2:
   Bob sends pull_offline_messages with limit=2 and since_message_id=<page 1 last message_id>.
   Response contains message 3 and message 4 in order.
   has_more is true.
-  Bob ACKs both message ids.
+  Bob ACKs both message ids in one message_ids array.
   affected_rows is 2.
 
 Page 3:
   Bob sends pull_offline_messages with limit=2 and since_message_id=<page 2 last message_id>.
   Response contains message 5.
   has_more is false.
-  Bob ACKs the message id.
+  Bob ACKs the message id in one message_ids array.
   affected_rows is 1.
 
 Final pull:
@@ -84,6 +87,13 @@ For every pull response:
 - Each item has the expected `message_id`, `from_user_id`, `to_user_id`, and `content`.
 - Message order matches Alice's send order.
 
+Across all non-empty pull responses:
+
+- The pulled `message_id` list has five ids.
+- The five pulled ids are unique.
+- The pulled ids exactly match the five ids recorded from Alice's send responses.
+- The pulled ids appear in the same order as Alice's send responses.
+
 For every ACK response:
 
 - The response envelope is `message_ack_resp` with `ErrorCode::OK`.
@@ -100,8 +110,21 @@ Use unique `client_msg_id` values and message contents for this scenario, such a
 
 The auth integration server uses its in-memory repositories for one test-binary run. Existing scenarios ACK the Bob messages they create, and this scenario ACKs each returned page before moving forward, so the final pull should observe an empty offline queue.
 
+The test should add the message content prefix to the final `auth_integration_test` log redaction `forbidden` list. This keeps the existing guard effective if future logging accidentally includes business message content from the pagination scenario.
+
+## Cursor Semantics
+
+The fake repository finds the cursor position before filtering for `MessageStatus::kStored`, so using the last message id from the previous page remains valid after that page has been ACKed and moved to delivered. With five stored messages and `limit=2`, the expected pages are:
+
+```text
+Page 1: messages 1 and 2, has_more=true
+Page 2: messages 3 and 4, has_more=true
+Page 3: message 5, has_more=false
+Final: empty, has_more=false
+```
+
 ## Implementation Notes
 
-Small local helpers in `tests/auth_integration_test.cc` are acceptable if they keep the test readable, such as a helper to send one message, collect pull results, or ACK a vector of message ids. Helpers should remain scoped to the test file and follow the current assert-based style.
+Small local helpers in `tests/auth_integration_test.cc` are acceptable if they keep the test readable, such as a helper to send one message, collect pull results, or ACK a vector of message ids with the batch `message_ids` field. Helpers should remain scoped to the test file and follow the current assert-based style.
 
 The new test should be called from the existing `main()` in `tests/auth_integration_test.cc`, and the existing `auth_integration_test` CTest target should remain the only target involved.
