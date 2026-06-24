@@ -94,13 +94,21 @@ RedisPool / RedisClient
 
 ## 构建目标
 
-`CMakeLists.txt` 是构建入口。
+根目录 `CMakeLists.txt` 负责项目设置和子目录装配，第三方依赖集中在 `cmake/Dependencies.cmake`，生产源码、客户端和测试分别由 `src/CMakeLists.txt`、`client/CMakeLists.txt` 和 `tests/CMakeLists.txt` 管理。
 
-- `server`：主聊天服务器。
-- `client`：简单 TCP 客户端。
-- `chat_logger`：日志静态库。
-- `security_runtime`、`redis_runtime`：按功能拆出的运行时库。
-- `*_test`：单元测试、集成测试和真实 MySQL/Redis 集成测试。
+- `chat_common`：日志、输入校验和密码哈希。
+- `chat_codec`：TCP 分包、JSON 编解码和协议辅助。
+- `chat_net`：连接上下文、epoll 服务端和线程池。
+- `chat_db`：MySQL 连接、连接池和仓储实现。
+- `chat_redis`：Redis 客户端、缓存、全局会话和推送流。
+- `chat_service`：本地会话管理和业务服务。
+- `chat_handler`：协议路由和业务编排。
+- `chat_server_app`：配置加载和启动辅助。
+- `server`：只编译 `src/main.cc`，链接上述生产库。
+- `client`：简单 TCP 客户端，只链接 `chat_codec`。
+- `*_test`：只编译测试自身源码，并链接需要的生产库。
+
+兼容 alias `chat_logger`、`security_runtime` 和 `redis_runtime` 分别指向 `chat_common`、`chat_common` 和 `chat_redis`。仓库内部的新构建声明统一使用 `chat_*` 目标。
 
 主要依赖包括 POSIX threads、MySQL client、hiredis、GoogleTest 和 nlohmann/json。系统缺少 GoogleTest 或 hiredis 时，CMake 会尝试通过 `FetchContent` 构建。
 
