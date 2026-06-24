@@ -318,6 +318,32 @@ add_executable(auth_test_server
 target_include_directories(auth_test_server PRIVATE include third_party)
 target_link_libraries(auth_test_server PRIVATE chat_logger security_runtime Threads::Threads)
 
+add_executable(business_stress_test
+    tests/business_stress_test.cc
+    src/TcpServer.cc
+    src/TcpConnection.cc
+    src/ConnectionContext.cc
+    src/codec/json_codec.cc
+    src/codec/packet_codec.cc
+    src/config/config_loader.cc
+    src/db/db_pool.cc
+    src/db/db_connection.cc
+    src/db/mysql_statement.cc
+    src/db/user_repository.cc
+    src/db/message_repository.cc
+    src/handler/message_handler.cc
+    src/protocol/protocol_helper.cc
+    src/server/session_manager.cc
+    src/service/user_service.cc
+    src/service/chat_service.cc
+    src/service/friend_service.cc
+    src/service/group_service.cc
+    src/concurrency/thread_pool.cc
+)
+
+target_include_directories(business_stress_test PRIVATE include third_party tests)
+target_link_libraries(business_stress_test PRIVATE chat_logger redis_runtime security_runtime ${MYSQLCLIENT_LIB} Threads::Threads)
+
 add_executable(auth_integration_test
     tests/auth_integration_test.cc
     src/codec/packet_codec.cc

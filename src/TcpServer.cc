@@ -3,6 +3,7 @@
 #include <arpa/inet.h>
 #include <fcntl.h>
 #include <netinet/in.h>
+#include <netinet/tcp.h>
 #include <sys/epoll.h>
 #include <sys/eventfd.h>
 #include <sys/socket.h>
@@ -115,7 +116,7 @@ bool TcpServer::bindAddress() {
 }
 
 bool TcpServer::startListen() {
-    if (listen(listen_fd_, 5) < 0) {
+    if (listen(listen_fd_, SOMAXCONN) < 0) {
         LOG_ERROR("TcpServer") << "listen failed errno=" << errno << " error=" << std::strerror(errno);
         return false;
     }
@@ -383,6 +384,13 @@ void TcpServer::acceptLoop(int epoll_fd) {
                 }
 
                 if (!set_nonblocking(client_fd)) {
+                    close(client_fd);
+                    continue;
+                }
+                const int nodelay = 1;
+                if (setsockopt(client_fd, IPPROTO_TCP, TCP_NODELAY, &nodelay, sizeof(nodelay)) < 0) {
+                    LOG_ERROR("TcpServer") << "setsockopt TCP_NODELAY failed fd=" << client_fd << " errno=" << errno
+                                           << " error=" << std::strerror(errno);
                     close(client_fd);
                     continue;
                 }

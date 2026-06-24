@@ -98,6 +98,30 @@ cmake --build build
 - `build/client`：简单 TCP 客户端
 - `build/*_test`：测试程序
 
+## Docker 本地开发
+
+使用 Docker Compose 可以同时启动聊天服务器、MySQL 和 Redis，无需在宿主机安装 C++ 构建依赖或数据库服务：
+
+```bash
+cp .env.example .env
+docker compose up --build -d
+docker compose ps
+```
+
+查看服务端日志：
+
+```bash
+docker compose logs -f server
+```
+
+停止环境但保留数据卷：
+
+```bash
+docker compose down
+```
+
+完整的启动、心跳验证、依赖调试和数据重置说明见 [Docker 开发环境](README_DOCKER.md)。
+
 ## 数据库初始化
 
 先创建目标数据库，然后执行 schema：

@@ -40,3 +40,7 @@ AGENTS.md
 
 # Server config with real credentials; only server.example.json is committed
 config/server.json
+config/stress.real.local.json
+
+# Local Docker Compose environment
+.env

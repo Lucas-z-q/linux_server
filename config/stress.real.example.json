@@ -1,0 +1,61 @@
+{
+  "server": {
+    "listen_ip": "127.0.0.1",
+    "listen_port": 8080
+  },
+  "mysql": {
+    "host": "127.0.0.1",
+    "port": 3306,
+    "username": "root",
+    "password": "",
+    "database": "chat_stress",
+    "connect_timeout_seconds": 5,
+    "read_timeout_seconds": 5,
+    "write_timeout_seconds": 5,
+    "pool": {
+      "min_connections": 4,
+      "max_connections": 16,
+      "borrow_timeout_ms": 1000
+    }
+  },
+  "redis": {
+    "enabled": false,
+    "host": "127.0.0.1",
+    "port": 6379,
+    "password": "",
+    "database": 15,
+    "pool_size": 16,
+    "connect_timeout_ms": 500,
+    "command_timeout_ms": 500,
+    "key_prefix": "stress",
+    "server_id": "stress-server-1",
+    "session_ttl_seconds": 604800,
+    "presence_ttl_seconds": 120,
+    "user_cache_ttl_seconds": 300,
+    "user_not_found_ttl_seconds": 30,
+    "message_dedup_ttl_seconds": 86400,
+    "login_rate_limit": 100000,
+    "login_rate_window_seconds": 60,
+    "register_rate_limit": 100000,
+    "register_rate_window_seconds": 60,
+    "send_rate_limit": 100000,
+    "send_rate_window_seconds": 60
+  },
+  "log": {
+    "level": "warn",
+    "console": false,
+    "file_path": "logs/stress.log",
+    "max_size_mb": 100,
+    "max_files": 5,
+    "async": true
+  },
+  "timeout": {
+    "remote_push_ms": 500
+  },
+  "connection": {
+    "idle_timeout_ms": 300000
+  },
+  "heartbeat": {
+    "timeout_ms": 90000
+  }
+}
