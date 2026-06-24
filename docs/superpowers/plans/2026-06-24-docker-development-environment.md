@@ -6,7 +6,7 @@
 
 **Architecture:** A multi-stage Ubuntu image builds only the `server` target and runs it as an unprivileged user. A three-service Compose project supplies MySQL schema initialization, Redis persistence, private dependency networking, environment-based credentials, health checks, and a single published chat port.
 
-**Tech Stack:** Docker Engine, Docker Compose, Ubuntu 22.04, CMake, C++17, MySQL 8, Redis 7
+**Tech Stack:** Docker Engine, Docker Compose, Ubuntu 24.04, CMake, C++17, MySQL 8, Redis 7
 
 ---
 
@@ -67,7 +67,7 @@ Create `compose.yaml` with three services:
 
 - `mysql` uses `mysql:8.0`, creates the application database and account from `.env`, mounts `sql/001_create_chat_tables.sql` read-only, persists `/var/lib/mysql`, and checks health with authenticated `mysqladmin ping`.
 - `redis` uses `redis:7.0-alpine`, starts with `--appendonly yes`, persists `/data`, and checks health with `redis-cli ping`.
-- `server` builds the repository Dockerfile, passes all supported MySQL and Redis environment overrides, waits for healthy dependencies, publishes only `${CHAT_SERVER_PORT:-8080}:8080`, and checks port `8080` with `nc`.
+- `server` builds the repository Dockerfile, passes all supported MySQL and Redis environment overrides, waits for healthy dependencies, publishes only `127.0.0.1:${CHAT_SERVER_PORT:-8080}:8080`, and checks port `8080` with `nc`.
 
 Use `unless-stopped` restart policies, omit obsolete top-level `version`, omit fixed container names, and do not publish MySQL or Redis ports.
 
@@ -121,15 +121,15 @@ Expected: PASS, demonstrating the draft still copies the unnecessary client bina
 
 Update `Dockerfile` so the builder stage:
 
-- uses `ubuntu:22.04`;
-- installs `build-essential`, `cmake`, `ca-certificates`, `default-libmysqlclient-dev`, `libhiredis-dev`, `libcrypt-dev`, and `libgtest-dev`;
+- uses `ubuntu:24.04`;
+- installs `build-essential`, `cmake`, `ca-certificates`, `default-libmysqlclient-dev`, `libcrypt-dev`, and `libgtest-dev`;
 - configures a Release build;
 - builds only the `server` target.
 
 Update the runtime stage so it:
 
-- uses `ubuntu:22.04`;
-- installs `ca-certificates`, `libmariadb3`, `libhiredis0.14`, `libcrypt1`, and `netcat-openbsd`;
+- uses `ubuntu:24.04`;
+- installs `ca-certificates`, `libmysqlclient21`, `libcrypt1`, and `netcat-openbsd`;
 - creates a system user named `chat`;
 - copies only `/build/server` and `config/server.docker.json`;
 - runs from `/app` as `chat`;
