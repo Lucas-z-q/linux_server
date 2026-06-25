@@ -7,10 +7,6 @@
 
 // 本文件定义用户表在服务端内部使用的数据模型。
 // 它通常由 Repository 构造并返回给 Service 使用。
-//
-// TODO(lzq): 根据建表语句确认 status 字段的枚举含义。
-// TODO(lzq): 将 created_at 和 updated_at 改为统一时间类型。
-// TODO(lzq): 如后续支持手机号和邮箱登录，可补充相应字段。
 
 namespace chat {
 
@@ -28,7 +24,7 @@ struct UserRecord {
     // 用户昵称。
     std::string nickname;
 
-    // 用户状态，例如正常、禁用、注销。
+    // 用户状态：1 表示启用，0 表示禁用。
     int status = 0;
 
     // 用户创建时间。

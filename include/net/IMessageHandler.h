@@ -11,13 +11,10 @@
 // TcpServer 只依赖这个抽象，从而避免与具体业务实现耦合。
 //
 // 【并发与生命周期语义】
-// 1. Worker 线程通过 handle() 处理请求，此过程为纯粹的查库计算，不允许直接修改全局会话状态。
-// 2. Worker 产出 HandleResult (含响应报文及可延后执行的 SessionAction) 投递回 I/O 线程。
-// 3. I/O 线程接手时需通过 weak_ptr<Connection>.lock() 校验连接存活状态：
-//    - 若存活：发送响应，并根据 action 调用 applyBindSession / applyUnbindSession 落实副作用。
-//    - 若失效：直接丢弃 HandleResult 及副作用。不再尝试取消 worker 任务。
-//
-// TODO(lzq): 明确 handle 的异常约束，统一使用返回值还是错误对象。
+// 1. handle() 在 worker 线程执行，可以调用持久化和外部服务，但不能直接操作 socket。
+// 2. 本地连接会话的绑定和解绑通过 HandleResult 延后到 I/O 线程执行。
+// 3. TcpServer 在应用延后副作用前重新校验连接是否存活；失效连接的响应和会话动作会被丢弃。
+// 4. handle() 抛出的异常由 TcpServer 捕获，并转换为关闭连接的响应任务。
 
 enum class SessionAction { NONE, BIND, UNBIND };
 
@@ -67,8 +64,8 @@ class IMessageHandler {
     // 注意：该方法在 Worker 线程执行，不得直接操作 Session。
     virtual HandleResult handle(const std::string &request, const RequestContext &context) = 0;
 
-    // 连接关闭后通知业务层清理与该连接绑定的状态。
-    // 该方法仅在 I/O 线程中由网络层 (如 closeClientFd) 触发。
+    // 连接关闭后清理业务状态。TcpServer 将该回调投递到 worker pool，
+    // 避免 Redis 或数据库清理阻塞 I/O 线程。
     virtual void onConnectionClosed(chat::ConnectionId conn_id) { (void)conn_id; }
 
     // 以下方法供 I/O 线程在回投任务 lock() 成功后调用，真正应用延后的副作用。

@@ -14,12 +14,8 @@
 #include "db/db_connection_factory.h"
 #include "db/db_pool_config.h"
 
-// 本文件声明数据库连接池抽象。
-// 当前阶段可以先提供轻量封装，后续再补充连接复用与线程安全实现。
-//
-// TODO(lzq): 明确连接池使用的底层 MySQL C++ 客户端库。
-// TODO(lzq): 为连接借出、归还和销毁补充完整接口。
-// TODO(lzq): 增加连接健康检查和自动重连策略。
+// DbPool 管理 MySQL C API 连接的创建、健康检查、借出、归还和销毁。
+// PooledConnection 通过 RAII 将可复用连接归还连接池。
 
 namespace chat {
 

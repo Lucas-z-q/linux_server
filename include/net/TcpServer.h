@@ -31,8 +31,6 @@ struct TcpServerTimeoutOptions {
 
 // 本文件声明基于 epoll 的 TCP 服务器。
 // 该类负责连接生命周期管理、事件循环以及收发缓冲协调。
-// TODO(lzq): 将数据库访问等阻塞业务迁移到业务线程池。
-// TODO(lzq): 为连接空闲超时、优雅停机和信号退出补充机制。
 
 // 表示一个负责监听端口并分发客户端消息的 TCP 服务器。
 class TcpServer {
@@ -196,7 +194,7 @@ class TcpServer {
     // 业务消息处理器引用。
     IMessageHandler &handler_;
 
-    // 用于后续投递业务请求处理任务的工作线程池。
+    // 执行业务处理、持久化调用和连接关闭后的业务清理。
     ThreadPool worker_pool_;
 
     TcpServerTimeoutOptions timeout_options_;

@@ -5,11 +5,7 @@
 #include <cstdint>
 #include <string>
 
-// 本文件定义数据库连接相关配置项。
-// 该配置结构既可用于单连接初始化，也可用于后续连接池扩展。
-//
-// TODO(lzq): 增加从配置文件或环境变量加载的能力。
-// TODO(lzq): 对敏感字段的日志输出增加脱敏规范。
+// DbConfig 描述单个 MySQL 连接和连接池创建连接时使用的基础参数。
 
 namespace chat {
 

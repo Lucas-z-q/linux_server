@@ -12,7 +12,6 @@
 
 #include "common/types.h"
 #include "model/connection_session.h"
-// TODO(lzq): 增加单点登录与多端登录策略设计。
 
 namespace chat {
 class ISessionManager {

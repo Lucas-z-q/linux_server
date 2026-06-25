@@ -5,7 +5,6 @@
 
 #include "common/error_code.h"
 #include "protocol/auth_messages.h"
-#include "protocol/protocol_helper.h"
 
 namespace chat {
 
