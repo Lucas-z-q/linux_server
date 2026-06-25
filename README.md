@@ -611,7 +611,7 @@ printf '%s\n' '{"msg_type":"heartbeat","seq":1,"token":"","data":{}}' | nc 127.0
 | `1002` | `USER_NOT_FOUND` | 用户不存在或当前连接未登录 |
 | `1003` | `WRONG_PASSWORD` | 密码错误，当前登录流程未直接返回此码 |
 | `1004` | `INVALID_CREDENTIALS` | 用户名、密码或 token 无效 |
-| `1005` | `USER_ALREADY_ONLINE` | 用户已在线，当前流程预留 |
+| `1005` | `USER_ALREADY_ONLINE` | 兼容保留；当前重复登录会签发新 token 并撤销旧 token |
 | `2001` | `DB_INIT_FAILED` | 数据库初始化失败 |
 | `2002` | `DB_QUERY_FAILED` | 数据库查询失败 |
 | `2003` | `DB_INSERT_FAILED` | 数据库写入失败 |
@@ -656,5 +656,5 @@ cpplint $(git ls-files '*.cc' '*.h')
 - 多端策略当前是本节点连接级多端；跨节点 Redis presence 仍是用户级单 presence。
 - 消息 ACK 和已读当前是消息级状态，暂未扩展到每设备维度。
 - 当前只支持文本消息，不支持图片、文件和富媒体。
-- 应用层分包仍使用换行符，后续可升级为长度前缀协议。
+- 应用层当前使用换行符分隔消息，并限制单包大小。
 - Redis 启用时，启动阶段连接或 Push Stream 初始化失败会导致服务器启动失败。
