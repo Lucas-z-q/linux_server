@@ -598,9 +598,6 @@ bool TcpServer::submitRequestTask(RequestTask task) {
     try {
         worker_pool_.submit([this, task = std::move(task)]() mutable {
             try {
-                // TODO(lzq): Some handlers, such as login, mutate session state before
-                // the I/O thread can revalidate that the connection is still alive.
-                // A stricter phase should move those side effects behind I/O-thread validation.
                 HandleResult result = handler_.handle(task.request, RequestContext{task.conn_id, task.peer_ip});
 
                 auto context = task.context.lock();
