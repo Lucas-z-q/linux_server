@@ -22,13 +22,11 @@ target_include_directories(chat_common PUBLIC "${PROJECT_SOURCE_DIR}/third_party
 add_chat_library(chat_codec
     codec/json_codec.cc
     codec/packet_codec.cc
-    protocol/protocol_helper.cc
 )
 target_link_libraries(chat_codec PUBLIC chat_common)
 
 add_chat_library(chat_net
     ConnectionContext.cc
-    EchoHandler.cc
     TcpConnection.cc
     TcpServer.cc
     concurrency/thread_pool.cc
