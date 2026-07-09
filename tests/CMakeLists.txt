@@ -118,6 +118,7 @@ add_chat_test(redis_pool_test LIBRARIES chat_redis)
 add_chat_test(cached_user_repository_test LIBRARIES chat_redis)
 add_chat_test(redis_rate_limiter_test LIBRARIES chat_redis)
 add_chat_test(message_dedup_cache_test LIBRARIES chat_redis)
+add_chat_test(chat_service_cache_test LIBRARIES chat_service chat_redis)
 add_chat_test(redis_push_stream_test LIBRARIES chat_redis)
 add_chat_test(cross_server_push_router_test LIBRARIES chat_service)
 add_chat_test(redis_connection_integration_test
